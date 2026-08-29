@@ -33,9 +33,11 @@ def plan_downloads(download_dir: str, course_name: str, files: list[dict],
         base = root / folder_path if folder_path else root
         display = _safe_name(f.get("display_name", "file"))
         dest = base / display
+        stem = dest.stem
+        suffix = dest.suffix
         counter = 2
         while str(dest) in used:
-            dest = base / f"{dest.stem}_{counter}{dest.suffix}"
+            dest = base / f"{stem}_{counter}{suffix}"
             counter += 1
         used.add(str(dest))
         planned.append({"file_id": f["id"], "display_name": display, "dest_path": str(dest)})

@@ -22,16 +22,18 @@ def test_plan_downloads_path_and_rename(tmp_path):
         {"id": 1, "display_name": "a.pdf", "folder_id": 2},
         {"id": 2, "display_name": "a.pdf", "folder_id": 2},
         {"id": 3, "display_name": "b.pdf", "folder_id": None},
+        {"id": 4, "display_name": "a.pdf", "folder_id": 2},
     ]
     folders = [
         {"id": 1, "name": "Slides", "parent_folder_id": None},
         {"id": 2, "name": "Week 3", "parent_folder_id": 1},
     ]
     planned = files_downloader.plan_downloads(str(tmp_path), "CS 101", files, folders)
-    assert len(planned) == 3
+    assert len(planned) == 4
     assert planned[0]["dest_path"] == str(tmp_path / "CS 101" / "Slides" / "Week 3" / "a.pdf")
     assert planned[1]["dest_path"] == str(tmp_path / "CS 101" / "Slides" / "Week 3" / "a_2.pdf")
     assert planned[2]["dest_path"] == str(tmp_path / "CS 101" / "b.pdf")
+    assert planned[3]["dest_path"] == str(tmp_path / "CS 101" / "Slides" / "Week 3" / "a_3.pdf")
 
 
 def test_download_items_reports_failure(monkeypatch):
