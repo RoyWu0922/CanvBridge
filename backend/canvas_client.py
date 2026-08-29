@@ -65,3 +65,63 @@ def list_courses(canvas_url: str, token: str) -> list[dict]:
         {"id": c["id"], "name": c.get("name", f"Course {c['id']}")}
         for c in data
     ]
+
+
+class _TextExtractor(HTMLParser):
+    """抽取 HTML 文本，块级标签处换行。"""
+
+    _BLOCK = {"p", "br", "div", "li", "h1", "h2", "h3", "h4", "tr"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._BLOCK:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._BLOCK:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+
+def strip_html(html: str) -> str:
+    parser = _TextExtractor()
+    parser.feed(html or "")
+    text = "".join(parser.parts)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def get_announcements(canvas_url: str, token: str, course_ids: list[int],
+                      start_date: str, end_date: str) -> dict[int, list[dict]]:
+    """按课程分组返回公告；无公告的课程不在结果中出现。
+
+    message 已剥离 HTML。日期格式 YYYY-MM-DD。
+    """
+    base = canvas_url.rstrip("/")
+    params = {
+        "context_codes[]": [f"course_{cid}" for cid in course_ids],
+        "start_date": start_date,
+        "end_date": end_date,
+        "per_page": 100,
+    }
+    with requests.Session() as s:
+        data = _paginate(s, f"{base}/api/v1/announcements", params, token)
+    grouped: dict[int, list[dict]] = {}
+    for item in data:
+        match = re.fullmatch(r"course_(\d+)", item.get("context_code", ""))
+        if not match:
+            continue
+        cid = int(match.group(1))
+        grouped.setdefault(cid, []).append({
+            "id": item.get("id"),
+            "title": item.get("title", "(untitled)"),
+            "message": strip_html(item.get("message", "")),
+            "posted_at": item.get("posted_at", ""),
+        })
+    return grouped
