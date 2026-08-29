@@ -37,3 +37,10 @@ def test_build_prompt_includes_announcements():
     prompt = llm_client._build_prompt("CS 101", [{"title": "T", "message": "M", "posted_at": "2026-08-29"}])
     assert "CS 101" in prompt and "T" in prompt and "M" in prompt
     assert "calendar_events" in prompt
+
+
+def test_extract_fallback_on_non_dict_json(monkeypatch):
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: "[1, 2]")
+    result = llm_client.extract_course_summary("https://llm/v1", "key", "m", "CS 101", [{"title": "T", "message": "M", "posted_at": ""}])
+    assert result["warning"] == "总结失败，已展示公告原文"
+    assert result["calendar_events"] == []

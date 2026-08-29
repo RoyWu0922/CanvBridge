@@ -64,11 +64,13 @@ def _call_chat(base_url: str, api_key: str, model: str, prompt: str) -> str:
     )
     resp.raise_for_status()
     data = resp.json()
-    return data["choices"][0]["message"]["content"]
+    if not data.get("choices"):
+        raise ValueError("LLM 响应无 choices")
+    return data["choices"][0]["message"].get("content") or ""
 
 
 def _parse_json(text: str) -> dict:
-    text = text.strip()
+    text = (text or "").strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     return json.loads(text)
@@ -94,6 +96,8 @@ def extract_course_summary(base_url: str, api_key: str, model: str,
         try:
             content = _call_chat(base_url, api_key, model, prompt)
             parsed = _parse_json(content)
+            if not isinstance(parsed, dict):
+                raise ValueError("LLM 返回非 JSON 对象")
             parsed.setdefault("course_name", course_name)
             parsed.setdefault("summary_cn", "")
             parsed.setdefault("calendar_events", [])
