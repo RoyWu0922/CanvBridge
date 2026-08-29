@@ -1,0 +1,39 @@
+import json
+
+from backend import llm_client
+
+
+def test_parse_json_handles_code_fence():
+    raw = "```json\n{\"a\": 1}\n```"
+    assert llm_client._parse_json(raw) == {"a": 1}
+
+
+def test_extract_success(monkeypatch):
+    payload = json.dumps({
+        "course_name": "CS 101",
+        "summary_cn": "本周要点。",
+        "calendar_events": [{"title": "Quiz", "start": "2026-08-31T14:00:00",
+                             "end": "2026-08-31T15:00:00", "location": "A101", "notes": ""}],
+        "reminders": [{"title": "HW3", "due_date": "2026-09-02T23:59:00", "notes": ""}],
+    })
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: payload)
+    result = llm_client.extract_course_summary("https://llm/v1", "key", "m", "CS 101", [{"title": "x", "message": "y", "posted_at": ""}])
+    assert result["summary_cn"] == "本周要点。"
+    assert result["calendar_events"][0]["location"] == "A101"
+    assert result["reminders"][0]["due_date"] == "2026-09-02T23:59:00"
+
+
+def test_extract_fallback_on_persistent_failure(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("api down")
+    monkeypatch.setattr(llm_client, "_call_chat", boom)
+    result = llm_client.extract_course_summary("https://llm/v1", "key", "m", "CS 101", [{"title": "T", "message": "M", "posted_at": ""}])
+    assert result["warning"] == "总结失败，已展示公告原文"
+    assert result["calendar_events"] == []
+    assert "T" in result["summary_cn"]
+
+
+def test_build_prompt_includes_announcements():
+    prompt = llm_client._build_prompt("CS 101", [{"title": "T", "message": "M", "posted_at": "2026-08-29"}])
+    assert "CS 101" in prompt and "T" in prompt and "M" in prompt
+    assert "calendar_events" in prompt
