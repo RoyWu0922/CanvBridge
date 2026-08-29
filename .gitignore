@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Env & secrets
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# 下载的课程文件（本地产物，不入库）
+downloads/
