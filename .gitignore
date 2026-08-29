@@ -14,3 +14,6 @@ venv/
 
 # 下载的课程文件（本地产物，不入库）
 downloads/
+
+# SDD 工作区（进度/简报/审查包）
+.superpowers/
