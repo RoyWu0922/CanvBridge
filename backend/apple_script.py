@@ -21,7 +21,7 @@ def _run(script: str) -> str:
 
 def _quote(s: str) -> str:
     """把字符串安全嵌入 AppleScript 双引号字面量。"""
-    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
 
 
 def _build_date_script(iso: str, var: str) -> str:
@@ -40,12 +40,12 @@ def _build_date_script(iso: str, var: str) -> str:
 
 def list_calendars() -> list[str]:
     out = _run('tell application "Calendar" to get name of every calendar')
-    return out.split(",")
+    return [s.strip() for s in out.split(",")]
 
 
 def list_reminder_lists() -> list[str]:
     out = _run('tell application "Reminders" to get name of every list')
-    return out.split(",")
+    return [s.strip() for s in out.split(",")]
 
 
 def add_calendar_event(calendar_name: str, title: str, start_iso: str, end_iso: str,

@@ -8,6 +8,7 @@ from backend import apple_script
 def test_quote_escapes():
     assert apple_script._quote('say "hi"') == 'say \\"hi\\"'
     assert apple_script._quote("a\nb") == "a b"
+    assert apple_script._quote("a\rb") == "a b"
 
 
 def test_build_date_script_sets_components():
@@ -35,4 +36,13 @@ def test_list_calendars_splits(monkeypatch):
         stdout = "Study, 家庭, Work"
         stderr = ""
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: _P())
-    assert apple_script.list_calendars() == ["Study", " 家庭", " Work"]
+    assert apple_script.list_calendars() == ["Study", "家庭", "Work"]
+
+
+def test_list_reminder_lists_splits(monkeypatch):
+    class _P:
+        returncode = 0
+        stdout = "A, B, C"
+        stderr = ""
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _P())
+    assert apple_script.list_reminder_lists() == ["A", "B", "C"]
