@@ -125,3 +125,57 @@ def get_announcements(canvas_url: str, token: str, course_ids: list[int],
             "posted_at": item.get("posted_at", ""),
         })
     return grouped
+
+
+def get_course_files(canvas_url: str, token: str, course_id: int) -> tuple[list[dict], list[dict]]:
+    """返回 (files, folders) 供下载规划使用。"""
+    base = canvas_url.rstrip("/")
+    with requests.Session() as s:
+        files_data = _paginate(
+            s, f"{base}/api/v1/courses/{course_id}/files",
+            {"per_page": 100}, token,
+        )
+        folders_data = _paginate(
+            s, f"{base}/api/v1/courses/{course_id}/folders",
+            {"per_page": 100}, token,
+        )
+    files = [{
+        "id": f["id"],
+        "display_name": f.get("display_name", f.get("filename", "file")),
+        "folder_id": f.get("folder_id"),
+        "content_type": f.get("content-type", ""),
+        "size": f.get("size", 0),
+        "url": f.get("url", ""),
+    } for f in files_data]
+    folders = [{
+        "id": fo["id"],
+        "name": fo.get("name", ""),
+        "parent_folder_id": fo.get("parent_folder_id"),
+    } for fo in folders_data]
+    return files, folders
+
+
+def get_file(canvas_url: str, token: str, course_id: int, file_id: int) -> dict:
+    base = canvas_url.rstrip("/")
+    resp = requests.get(
+        f"{base}/api/v1/courses/{course_id}/files/{file_id}",
+        headers=_headers(token), timeout=30,
+    )
+    if resp.status_code == 401:
+        raise CanvasError("Canvas token 无效或已过期 (HTTP 401)")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def download_file(canvas_url: str, token: str, file_url: str, dest_path: str) -> None:
+    """流式下载 file_url 到 dest_path（自动建父目录）。"""
+    dest = Path(dest_path)
+    resp = requests.get(file_url, headers=_headers(token), stream=True, timeout=60)
+    if resp.status_code == 401:
+        raise CanvasError("Canvas token 无效或已过期 (HTTP 401)")
+    resp.raise_for_status()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with open(dest, "wb") as fh:
+        for chunk in resp.iter_content(chunk_size=65536):
+            if chunk:
+                fh.write(chunk)

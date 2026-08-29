@@ -1,3 +1,5 @@
+import requests
+
 from backend import canvas_client
 
 
@@ -91,3 +93,44 @@ def test_get_announcements_groups_and_strips(monkeypatch):
     assert result[5][0]["message"] == "Hello world"
     assert result[5][0]["title"] == "A"
     assert result[7][0]["message"] == "plain"
+
+
+def test_get_course_files_maps(monkeypatch):
+    files_data = [{
+        "id": 9, "display_name": "a.pdf", "folder_id": 1,
+        "content-type": "application/pdf", "size": 10,
+        "url": "http://x/courses/1/files/9/download",
+    }]
+    folders_data = [{"id": 1, "name": "Slides", "parent_folder_id": None}]
+    monkeypatch.setattr(
+        canvas_client, "_paginate",
+        lambda s, u, p, t: files_data if "/files" in u else folders_data,
+    )
+    files, folders = canvas_client.get_course_files("https://x", "tok", 1)
+    assert files[0]["id"] == 9
+    assert files[0]["content_type"] == "application/pdf"
+    assert folders == [{"id": 1, "name": "Slides", "parent_folder_id": None}]
+
+
+def test_get_file_returns_url(monkeypatch):
+    monkeypatch.setattr(
+        requests, "get",
+        lambda *a, **k: _Resp({"id": 9, "url": "http://x/files/9/download"}),
+    )
+    info = canvas_client.get_file("https://x", "tok", 1, 9)
+    assert info["url"] == "http://x/files/9/download"
+
+
+def test_download_file_writes(tmp_path, monkeypatch):
+    class _StreamResp(_Resp):
+        def __init__(self):
+            super().__init__({})
+            self._chunks = [b"abc", b"def"]
+
+        def iter_content(self, chunk_size):
+            return iter(self._chunks)
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _StreamResp())
+    dest = tmp_path / "out" / "a.pdf"
+    canvas_client.download_file("https://x", "tok", "http://x/files/9/download", str(dest))
+    assert dest.read_bytes() == b"abcdef"
