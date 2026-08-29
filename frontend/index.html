@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canvas 课程助手</title>
+<style>
+  :root { --bg:#f5f6fa; --card:#fff; --border:#e2e5ec; --text:#1f2430;
+          --muted:#6b7280; --accent:#2563eb; --ok:#16a34a; --err:#dc2626; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+         background:var(--bg); color:var(--text); }
+  header { padding:16px 24px; background:var(--card); border-bottom:1px solid var(--border); font-size:20px; font-weight:600; }
+  main { max-width:980px; margin:24px auto; padding:0 16px; display:flex; flex-direction:column; gap:20px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:18px; }
+  .card h2 { margin:0 0 12px; font-size:16px; }
+  details summary { cursor:pointer; font-size:16px; font-weight:600; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:10px; }
+  label { display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--muted); }
+  input,select,button { padding:8px 10px; border:1px solid var(--border); border-radius:8px; font-size:14px; background:#fff; }
+  button { cursor:pointer; background:var(--accent); color:#fff; border:none; font-weight:500; }
+  button.secondary { background:#e5e7eb; color:var(--text); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .muted { color:var(--muted); font-size:13px; }
+  .ok { color:var(--ok); } .err { color:var(--err); }
+  .course-card { border:1px solid var(--border); border-radius:10px; padding:12px; margin-bottom:12px; }
+  .summary { white-space:pre-wrap; font-size:14px; line-height:1.6; }
+  .item { display:flex; gap:8px; align-items:flex-start; padding:6px 0; border-top:1px dashed var(--border); }
+  .item input { margin-top:2px; }
+  .file-path { color:var(--muted); font-size:12px; }
+  #status { position:fixed; right:16px; bottom:16px; background:#1f2430; color:#fff;
+            padding:10px 14px; border-radius:8px; display:none; max-width:420px; font-size:13px; }
+</style>
+</head>
+<body>
+<header>📚 Canvas 课程助手</header>
+<main>
+  <section class="card">
+    <details open>
+      <summary>⚙️ 设置</summary>
+      <div class="grid" style="margin-top:12px">
+        <label>Canvas 实例 URL<input id="canvasUrl" placeholder="https://xxx.instructure.com"></label>
+        <label>Canvas API Token<input id="canvasToken" type="password" placeholder="…"></label>
+        <label>LLM Base URL<input id="llmBaseUrl" placeholder="https://api.deepseek.com/v1"></label>
+        <label>LLM API Key<input id="llmApiKey" type="password" placeholder="sk-…"></label>
+        <label>LLM 模型名<input id="llmModel" placeholder="deepseek-chat"></label>
+        <label>下载目录<input id="downloadDir" placeholder="~/Downloads/Canvas课程文件"></label>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="btnTest">🔌 测试连接</button>
+        <label>写入日历 <select id="selCalendar"></select></label>
+        <label>写入提醒列表 <select id="selList"></select></label>
+        <button id="btnLoadCalendars" class="secondary">刷新日历/列表</button>
+      </div>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2>🗓 同步公告并总结</h2>
+    <div class="row">
+      <label>时间段
+        <select id="selRange">
+          <option value="week">本周</option>
+          <option value="month">本月</option>
+          <option value="custom">自定义</option>
+        </select>
+      </label>
+      <label id="lblStart" style="display:none">开始 <input id="inpStart" type="date"></label>
+      <label id="lblEnd" style="display:none">结束 <input id="inpEnd" type="date"></label>
+      <button id="btnLoadCourses" class="secondary">📂 加载课程</button>
+      <button id="btnSync">✨ 同步并总结</button>
+    </div>
+    <div id="courseCheckboxes" class="muted" style="margin-top:10px"></div>
+  </section>
+
+  <section class="card" id="resultCard" style="display:none">
+    <h2>📄 结果</h2>
+    <div id="summaries"></div>
+    <div class="row" style="margin-top:12px; border-top:1px solid var(--border); padding-top:12px">
+      <button id="btnWriteCalendar">📅 写入选中的日历事件</button>
+      <button id="btnWriteReminders">✅ 写入选中的提醒</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>📁 下载课程文件（Files）</h2>
+    <div class="row">
+      <button id="btnListFiles">🗂 加载文件列表</button>
+      <label>类型过滤 <input id="inpTypeFilter" placeholder="pdf, pptx, docx…（留空=全部）"></label>
+      <button id="btnSelectAllFiles" class="secondary">全选</button>
+      <button id="btnDownloadFiles">⬇ 下载所选</button>
+    </div>
+    <div id="filesArea" class="muted" style="margin-top:10px"></div>
+  </section>
+</main>
+<div id="status"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+const KEY = ["canvasUrl","canvasToken","llmBaseUrl","llmApiKey","llmModel","downloadDir"];
+function loadSettings(){ KEY.forEach(k=>{ const v=localStorage.getItem("sc_"+k); if(v) $(k).value=v; }); }
+function saveSettings(){ KEY.forEach(k=>localStorage.setItem("sc_"+k, $(k).value)); }
+function settings(){
+  saveSettings();
+  return { canvas_url:$("canvasUrl").value.trim(), canvas_token:$("canvasToken").value.trim(),
+           llm_base_url:$("llmBaseUrl").value.trim(), llm_api_key:$("llmApiKey").value.trim(),
+           llm_model:$("llmModel").value.trim() };
+}
+function downloadDir(){ saveSettings(); return $("downloadDir").value.trim() || "~/Downloads/Canvas课程文件"; }
+function setStatus(msg, ok){
+  const s=$("status"); s.textContent=msg; s.style.display="block";
+  s.style.background = ok===false ? "#dc2626" : "#1f2430";
+  clearTimeout(s._t); s._t=setTimeout(()=>s.style.display="none", 4000);
+}
+async function api(path, body){
+  const r = await fetch("/api/"+path, { method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify(body||{}) });
+  return r.json();
+}
+function fillSelect(id, names){
+  const sel=$(id); sel.innerHTML="";
+  names.forEach(n=>{ const o=document.createElement("option"); o.value=o.textContent=n; sel.appendChild(o); });
+}
+function esc(t){ const d=document.createElement("div"); d.textContent = t==null?"":String(t); return d.innerHTML; }
+
+$("btnTest").onclick = async () => {
+  const s=settings();
+  if(!s.canvas_url||!s.canvas_token){ setStatus("请填写 Canvas URL 和 Token", false); return; }
+  const r=await api("test_connection", s);
+  setStatus(r.ok ? `连接成功，共 ${r.courses.length} 门课程` : "连接失败："+(r.error||""), r.ok);
+};
+$("btnLoadCalendars").onclick = async () => {
+  const [cal, list] = await Promise.all([api("calendars"), api("reminder_lists")]);
+  fillSelect("selCalendar", cal.calendars||[]);
+  fillSelect("selList", list.lists||[]);
+  if(cal.ok===false) setStatus(cal.error, false); else setStatus("日历/提醒列表已刷新");
+};
+
+$("selRange").onchange = () => {
+  const v=$("selRange").value;
+  $("lblStart").style.display = $("lblEnd").style.display = v==="custom" ? "flex" : "none";
+};
+function range(){
+  const now=new Date();
+  const p=n=>String(n).padStart(2,"0");
+  const fmt=d=>`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+  const v=$("selRange").value;
+  if(v==="custom") return { start_date:$("inpStart").value, end_date:$("inpEnd").value };
+  if(v==="week"){
+    const day=(now.getDay()+6)%7;           // 周一起
+    const start=new Date(now); start.setDate(now.getDate()-day);
+    const end=new Date(start); end.setDate(start.getDate()+6);
+    return { start_date:fmt(start), end_date:fmt(end) };
+  }
+  return { start_date:`${now.getFullYear()}-${p(now.getMonth()+1)}-01`, end_date:fmt(now) };
+}
+
+let courseList=[], summaryResults=[], fileCourses=[];
+$("btnLoadCourses").onclick = async () => {
+  const s=settings();
+  if(!s.canvas_url||!s.canvas_token){ setStatus("请先填写 Canvas 配置", false); return; }
+  const r=await api("courses", s);
+  if(!r.ok){ setStatus("加载课程失败："+r.error, false); return; }
+  courseList=r.courses;
+  $("courseCheckboxes").innerHTML = courseList.map(c=>
+    `<label style="flex-direction:row;align-items:center"><input type="checkbox" checked data-id="${c.id}"> ${esc(c.name)}</label>`).join("");
+  setStatus(`已加载 ${courseList.length} 门课程`);
+};
+function selectedCourses(){ return [...document.querySelectorAll("#courseCheckboxes input:checked")].map(i=>Number(i.dataset.id)); }
+
+$("btnSync").onclick = async () => {
+  const s=settings(), ids=selectedCourses();
+  if(!ids.length){ setStatus("请先勾选课程", false); return; }
+  setStatus("同步并总结中，请稍候…");
+  const r=await api("sync_announcements", { ...s, course_ids:ids, ...range() });
+  if(!r.ok){ setStatus("同步失败："+r.error, false); return; }
+  summaryResults=r.courses; renderSummaries(); setStatus("同步完成");
+};
+function renderSummaries(){
+  $("resultCard").style.display="block";
+  $("summaries").innerHTML = summaryResults.map((c,ci)=>`
+    <div class="course-card">
+      <div style="font-weight:600">${esc(c.course_name)}</div>
+      ${c.warning?`<div class="err">${esc(c.warning)}</div>`:""}
+      <div class="summary">${esc(c.summary_cn)}</div>
+      <div style="margin-top:8px;font-size:13px;color:var(--muted)">📅 日历事件 (${(c.calendar_events||[]).length})</div>
+      ${(c.calendar_events||[]).map((e,ei)=>`
+        <div class="item"><input type="checkbox" class="ev" data-ci="${ci}" data-ei="${ei}">
+          <div><div>${esc(e.title)}</div>
+          <div class="file-path">${esc(e.start)} → ${esc(e.end)}${e.location?` · ${esc(e.location)}`:""}</div></div></div>`).join("")}
+      <div style="margin-top:8px;font-size:13px;color:var(--muted)">✅ 提醒 (${(c.reminders||[]).length})</div>
+      ${(c.reminders||[]).map((e,ei)=>`
+        <div class="item"><input type="checkbox" class="rm" data-ci="${ci}" data-ei="${ei}">
+          <div><div>${esc(e.title)}</div><div class="file-path">截止 ${esc(e.due_date)}</div></div></div>`).join("")}
+    </div>`).join("");
+}
+
+$("btnWriteCalendar").onclick = async () => {
+  const cal=$("selCalendar").value;
+  if(!cal){ setStatus("请先刷新并选择日历", false); return; }
+  const evs=[...document.querySelectorAll(".ev:checked")].map(i=>{
+    const c=summaryResults[Number(i.dataset.ci)]; return c.calendar_events[Number(i.dataset.ei)]; });
+  if(!evs.length){ setStatus("没有选中要写入的日历事件", false); return; }
+  let n=0;
+  for(const e of evs){
+    const r=await api("add_calendar_event",{ calendar_name:cal, title:e.title, start:e.start,
+      end:e.end, location:e.location||"", notes:e.notes||"" });
+    if(r.ok) n++; else setStatus("写入失败："+r.error, false);
+  }
+  setStatus(`已写入 ${n}/${evs.length} 条日历事件`, n===evs.length);
+};
+$("btnWriteReminders").onclick = async () => {
+  const list=$("selList").value;
+  if(!list){ setStatus("请先刷新并选择提醒列表", false); return; }
+  const rms=[...document.querySelectorAll(".rm:checked")].map(i=>{
+    const c=summaryResults[Number(i.dataset.ci)]; return c.reminders[Number(i.dataset.ei)]; });
+  if(!rms.length){ setStatus("没有选中要写入的提醒", false); return; }
+  let n=0;
+  for(const e of rms){
+    const r=await api("add_reminder",{ list_name:list, title:e.title, due_date:e.due_date, notes:e.notes||"" });
+    if(r.ok) n++; else setStatus("写入失败："+r.error, false);
+  }
+  setStatus(`已写入 ${n}/${rms.length} 条提醒`, n===rms.length);
+};
+
+$("btnListFiles").onclick = async () => {
+  const s=settings(), ids=selectedCourses();
+  if(!ids.length){ setStatus("请先勾选课程", false); return; }
+  const r=await api("list_files",{ ...s, course_ids:ids, download_dir:downloadDir() });
+  if(!r.ok){ setStatus("加载文件失败："+r.error, false); return; }
+  fileCourses=r.courses; renderFiles(); setStatus("文件列表已加载");
+};
+function renderFiles(){
+  const filter=$("inpTypeFilter").value.toLowerCase().trim().replace(/^\./,"");
+  const shown=fileCourses.map(c=>({...c, files:(c.files||[]).filter(f=>{
+    if(!filter) return true;
+    return (f.content_type||"").toLowerCase().includes(filter)
+        || (f.display_name||"").toLowerCase().endsWith("."+filter);
+  })}));
+  $("filesArea").innerHTML = shown.map((c,ci)=>`
+    <div class="course-card">
+      <div style="font-weight:600">${esc(c.name)} ${c.error?`<span class="err">(${esc(c.error)})</span>`:""}</div>
+      ${(c.files||[]).map(f=>`
+        <div class="item"><input type="checkbox" class="fl" data-ci="${ci}" data-fi="${f.file_id}">
+          <div><div>${esc(f.display_name)} <span class="muted">(${esc(f.content_type)})</span></div>
+          <div class="file-path">${esc(f.path||"/")}</div></div></div>`).join("")}
+    </div>`).join("") || "<div class='muted'>没有匹配的文件</div>";
+}
+$("inpTypeFilter").oninput = renderFiles;
+$("btnSelectAllFiles").onclick = ()=>document.querySelectorAll(".fl").forEach(i=>i.checked=true);
+$("btnDownloadFiles").onclick = async () => {
+  const s=settings();
+  const items=[...document.querySelectorAll(".fl:checked")].map(i=>{
+    const c=fileCourses[Number(i.dataset.ci)];
+    const f=c.files.find(x=>x.file_id===Number(i.dataset.fi));
+    return { course_id:c.course_id, file_id:f.file_id, dest_path:f.dest_path }; });
+  if(!items.length){ setStatus("没有选中要下载的文件", false); return; }
+  setStatus(`正在下载 ${items.length} 个文件…`);
+  const r=await api("download_files",{ ...s, download_dir:downloadDir(), items });
+  if(!r.ok){ setStatus("下载失败："+r.error, false); return; }
+  const failed=(r.failed||[]).length;
+  setStatus(`下载完成：成功 ${r.downloaded.length}，失败 ${failed}`, failed===0);
+};
+
+loadSettings();
+fillSelect("selCalendar", []); fillSelect("selList", []);
+</script>
+</body>
+</html>
