@@ -209,6 +209,31 @@ def build_event_specs(courses: list[dict], selected: set[str]) -> list[dict]:
     return specs
 
 
+def enrich_meetings(courses: list[dict]) -> list[dict]:
+    """为每个 meeting 追加 start_min/end_min/days_list 供前端日历落位。
+
+    原 time/days/range 字段不变。无固定时间（time 解析失败）的 meeting 不追加定位字段。
+    不修改入参：每个 course 与 meeting 都复制一份。
+    """
+    out: list[dict] = []
+    for c in courses:
+        c2 = dict(c)
+        meetings = []
+        for m in c.get("meetings", []):
+            m2 = dict(m)
+            try:
+                (sh, sm), (eh, em) = parse_time_range(m["time"])
+                m2["start_min"] = sh * 60 + sm
+                m2["end_min"] = eh * 60 + em
+                m2["days_list"] = [d for d in m.get("days", "") if d in _WEEKDAY]
+            except BanwebError:
+                pass
+            meetings.append(m2)
+        c2["meetings"] = meetings
+        out.append(c2)
+    return out
+
+
 # ---------------- 课表同步（删旧建新） ----------------
 
 _WEEKDAY_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday",
@@ -617,5 +642,5 @@ def get_schedule(term: str) -> list[dict]:
                     raise  # 窗口被关：放行给 _retry_once 整体重试
                 raise BanwebError("抓取课表失败（可能登录已失效）：" + str(exc)) from exc
             _require_logged_in(page)
-            return parse_schedule_html(page.content())
+            return enrich_meetings(parse_schedule_html(page.content()))
     return _on_browser_thread(lambda: _retry_once(_run))

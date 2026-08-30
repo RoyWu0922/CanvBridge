@@ -105,6 +105,28 @@ def test_build_event_specs_unselected_ignored():
     assert banweb.build_event_specs(courses, set()) == []
 
 
+# ---------------- enrich_meetings（前端日历定位字段） ----------------
+
+def test_enrich_meetings_parses_time_and_days():
+    courses = [{"code": "CS1315", "section": "C01",
+                "meetings": [{"time": "12:00 pm - 2:50 pm", "days": "MWF",
+                              "room": "MMW 2450", "range": "Aug 31, 2026 - Nov 28, 2026",
+                              "instr": "Kenneth LEE"}]}]
+    out = banweb.enrich_meetings(courses)
+    m = out[0]["meetings"][0]
+    assert m["start_min"] == 720
+    assert m["end_min"] == 890
+    assert m["days_list"] == ["M", "W", "F"]
+    assert m["days"] == "MWF"          # 原字段保留
+
+
+def test_enrich_meetings_skips_unparseable_time():
+    courses = [{"code": "CS1315", "section": "C02",
+                "meetings": [{"type": "Lecture", "time": "", "days": ""}]}]
+    out = banweb.enrich_meetings(courses)
+    assert "start_min" not in out[0]["meetings"][0]
+
+
 # ---------------- reconcile_block（课表变更同步） ----------------
 
 def _mc(code, section, course, meetings):
