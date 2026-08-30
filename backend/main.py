@@ -5,13 +5,17 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import apple_script, banweb, canvas_client, files_downloader, llm_client
 
 app = FastAPI(title="Canvas 课程助手")
 
-FRONTEND = Path(__file__).resolve().parents[1] / "frontend" / "index.html"
+FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
+FRONTEND = FRONTEND_DIR / "index.html"
+
+app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 
 class CanvasConfig(BaseModel):

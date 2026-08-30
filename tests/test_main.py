@@ -231,3 +231,11 @@ def test_banweb_write_calendar_time_changed_updates(monkeypatch):
     assert edits[0][2] == sp["title"] # new_summary
     assert edits[0][3] == sp["start"] # 新开始时间
     assert created == [] and hidden == []
+
+
+def test_index_and_static(monkeypatch):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    for path in ["/static/app.css", "/static/app.js", "/static/i18n.js"]:
+        assert client.get(path).status_code == 200
