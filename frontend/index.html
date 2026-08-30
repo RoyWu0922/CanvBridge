@@ -8,76 +8,77 @@
 </head>
 <body>
 <header class="app-header">
-  <div class="app-title">📚 Canvas 课程助手</div>
+  <div class="app-title" data-i18n="app.title"></div>
   <div class="header-right">
-    <div class="range-pill" id="rangePill">请选择起止日期</div>
-    <button id="btnSettings" class="icon-btn" title="设置" aria-label="打开设置">⚙️</button>
+    <div class="range-pill" id="rangePill"></div>
+    <button id="btnLang" class="lang-btn" data-i18n-aria="lang.switch"></button>
+    <button id="btnSettings" class="btn btn-ghost" data-i18n="btn.settings"></button>
   </div>
 </header>
 
 <main>
   <section class="card">
     <div class="card-head">
-      <span class="eyebrow">时间范围</span>
-      <h2>同步公告并总结</h2>
+      <span class="eyebrow" data-i18n="sync.eyebrow"></span>
+      <h2 data-i18n="sync.heading"></h2>
     </div>
     <div class="row">
-      <label class="field">开始日期<input id="inpStart" type="date"></label>
-      <label class="field">结束日期<input id="inpEnd" type="date"></label>
-      <button id="btnLoadCourses" class="btn btn-ghost">📂 加载课程</button>
-      <button id="btnSync" class="btn btn-primary">✨ 同步并总结</button>
+      <label class="field"><span data-i18n="sync.start"></span><input id="inpStart" type="date"></label>
+      <label class="field"><span data-i18n="sync.end"></span><input id="inpEnd" type="date"></label>
+      <button id="btnLoadCourses" class="btn btn-ghost" data-i18n="btn.load_courses"></button>
+      <button id="btnSync" class="btn btn-primary" data-i18n="btn.sync"></button>
     </div>
     <div id="courseCheckboxes" class="chips"></div>
   </section>
 
   <section class="card">
     <div class="tabs" role="tablist">
-      <button class="tab active" data-target="tabAnnounce" role="tab" aria-selected="true">📄 公告总结</button>
-      <button class="tab" data-target="tabFiles" role="tab" aria-selected="false">🗂 课程文件</button>
-      <button class="tab" data-target="tabSchedule" role="tab" aria-selected="false">🗓 课表</button>
+      <button class="tab active" data-target="tabAnnounce" role="tab" aria-selected="true" data-i18n="tab.announce"></button>
+      <button class="tab" data-target="tabFiles" role="tab" aria-selected="false" data-i18n="tab.files"></button>
+      <button class="tab" data-target="tabSchedule" role="tab" aria-selected="false" data-i18n="tab.schedule"></button>
     </div>
 
     <div id="tabAnnounce" class="tab-panel" role="tabpanel">
       <div class="filter-bar">
-        <span class="filter-label">事件筛选</span>
-        <label class="check"><input type="checkbox" id="chkShowAll"> 显示全部公告内事件</label>
-        <label class="field">从<input id="filterStart" type="date"></label>
-        <label class="field">到<input id="filterEnd" type="date"></label>
+        <span class="filter-label" data-i18n="announce.filter.label"></span>
+        <label class="check"><input type="checkbox" id="chkShowAll"> <span data-i18n="announce.filter.show_all"></span></label>
+        <label class="field"><span data-i18n="announce.filter.from"></span><input id="filterStart" type="date"></label>
+        <label class="field"><span data-i18n="announce.filter.to"></span><input id="filterEnd" type="date"></label>
       </div>
       <div id="summaries"></div>
       <div class="write-bar">
-        <button id="btnWriteCalendar" class="btn btn-accent">📅 写入选中的日历事件</button>
-        <label class="field">提前提醒<select id="selAlert"></select></label>
-        <button id="btnWriteReminders" class="btn btn-accent">✅ 写入选中的提醒</button>
+        <button id="btnWriteCalendar" class="btn btn-accent" data-i18n="btn.write_calendar"></button>
+        <label class="field"><span data-i18n="announce.alert"></span><select id="selAlert"></select></label>
+        <button id="btnWriteReminders" class="btn btn-accent" data-i18n="btn.write_reminders"></button>
       </div>
     </div>
 
     <div id="tabFiles" class="tab-panel" role="tabpanel" hidden>
       <div class="row">
-        <button id="btnListFiles" class="btn btn-primary">🗂 加载文件列表</button>
-        <label class="field">类型过滤<input id="inpTypeFilter" type="text" placeholder="pdf, pptx…（留空=全部）"></label>
-        <button id="btnSelectAllFiles" class="btn btn-ghost">全选</button>
-        <button id="btnDownloadFiles" class="btn btn-primary">⬇ 下载所选</button>
+        <button id="btnListFiles" class="btn btn-primary" data-i18n="btn.list_files"></button>
+        <label class="field"><span data-i18n="files.type_filter"></span><input id="inpTypeFilter" type="text" data-i18n-ph="files.placeholder"></label>
+        <button id="btnSelectAllFiles" class="btn btn-ghost" data-i18n="btn.select_all"></button>
+        <button id="btnDownloadFiles" class="btn btn-primary" data-i18n="btn.download"></button>
       </div>
       <div id="filesArea" class="muted" style="margin-top:14px"></div>
     </div>
 
     <div id="tabSchedule" class="tab-panel" role="tabpanel" hidden>
       <div class="filter-bar" id="banwebStatus">
-        <span class="filter-label">AIMS 登录</span>
-        <span id="banwebStatusText" class="muted">检测中…</span>
-        <button id="btnBanwebLogin" class="btn btn-primary" hidden>🔑 重新登录</button>
+        <span class="filter-label" data-i18n="schedule.login_label"></span>
+        <span id="banwebStatusText" class="muted"></span>
+        <button id="btnBanwebLogin" class="btn btn-primary" hidden data-i18n="btn.relogin"></button>
       </div>
       <div class="row" style="margin-bottom:16px">
-        <label class="field">学期<select id="selTerm"></select></label>
-        <button id="btnFetchSchedule" class="btn btn-primary">🔍 抓取课表</button>
+        <label class="field"><span data-i18n="schedule.term"></span><select id="selTerm"></select></label>
+        <button id="btnFetchSchedule" class="btn btn-primary" data-i18n="btn.fetch"></button>
       </div>
       <div id="schedulePreview"></div>
       <div class="write-bar">
-        <label class="field">写入日历<select id="selSchedCalendar"></select></label>
-        <label class="field">提前提醒<select id="selSchedAlert"></select></label>
-        <button id="btnWriteSchedule" class="btn btn-accent">📅 同步课表</button>
-        <button id="btnClearSchedule" class="btn btn-ghost">清除预览</button>
+        <label class="field"><span data-i18n="schedule.calendar"></span><select id="selSchedCalendar"></select></label>
+        <label class="field"><span data-i18n="schedule.alert"></span><select id="selSchedAlert"></select></label>
+        <button id="btnWriteSchedule" class="btn btn-accent" data-i18n="btn.sync_schedule"></button>
+        <button id="btnClearSchedule" class="btn btn-ghost" data-i18n="btn.clear"></button>
       </div>
     </div>
   </section>
@@ -87,22 +88,22 @@
   <div class="modal-backdrop"></div>
   <div class="modal-card">
     <div class="modal-head">
-      <h3 id="settingsTitle">设置</h3>
-      <button id="btnCloseSettings" class="modal-close" aria-label="关闭设置">✕</button>
+      <h3 id="settingsTitle" data-i18n="settings.title"></h3>
+      <button id="btnCloseSettings" class="modal-close" data-i18n-aria="settings.close">✕</button>
     </div>
     <div class="grid">
-      <label class="field">Canvas 实例 URL<input id="canvasUrl" type="text" placeholder="https://canvas.cityu.edu.hk"></label>
-      <label class="field">Canvas API Token<input id="canvasToken" type="password" placeholder="…"></label>
-      <label class="field">LLM Base URL<input id="llmBaseUrl" type="text" placeholder="https://api.deepseek.com/v1"></label>
-      <label class="field">LLM API Key<input id="llmApiKey" type="password" placeholder="sk-…"></label>
-      <label class="field">LLM 模型名<input id="llmModel" type="text" placeholder="deepseek-chat"></label>
-      <label class="field">下载目录<input id="downloadDir" type="text" placeholder="~/Downloads/Canvas课程文件"></label>
+      <label class="field"><span data-i18n="settings.canvas_url"></span><input id="canvasUrl" type="text" placeholder="https://canvas.cityu.edu.hk"></label>
+      <label class="field"><span data-i18n="settings.canvas_token"></span><input id="canvasToken" type="password" placeholder="…"></label>
+      <label class="field"><span data-i18n="settings.llm_base"></span><input id="llmBaseUrl" type="text" placeholder="https://api.deepseek.com/v1"></label>
+      <label class="field"><span data-i18n="settings.llm_key"></span><input id="llmApiKey" type="password" placeholder="sk-…"></label>
+      <label class="field"><span data-i18n="settings.llm_model"></span><input id="llmModel" type="text" placeholder="deepseek-chat"></label>
+      <label class="field"><span data-i18n="settings.download_dir"></span><input id="downloadDir" type="text" placeholder="~/Downloads/Canvas课程文件"></label>
     </div>
     <div class="row" style="margin-top:16px">
-      <button id="btnTest" class="btn btn-primary">🔌 测试连接</button>
-      <label class="field">写入日历<select id="selCalendar"></select></label>
-      <label class="field">写入提醒列表<select id="selList"></select></label>
-      <button id="btnLoadCalendars" class="btn btn-ghost">刷新日历/列表</button>
+      <button id="btnTest" class="btn btn-primary" data-i18n="btn.test"></button>
+      <label class="field"><span data-i18n="settings.calendar"></span><select id="selCalendar"></select></label>
+      <label class="field"><span data-i18n="settings.list"></span><select id="selList"></select></label>
+      <button id="btnLoadCalendars" class="btn btn-ghost" data-i18n="btn.refresh_calendars"></button>
     </div>
   </div>
 </div>
@@ -111,7 +112,7 @@
 <div id="overlay">
   <div class="overlay-card">
     <div class="spinner"></div>
-    <div id="overlayText">处理中…</div>
+    <div id="overlayText"></div>
   </div>
 </div>
 

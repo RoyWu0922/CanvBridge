@@ -26,6 +26,10 @@
     color:var(--ink); font-size:16px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center;
     transition:background .15s, transform .25s; flex:none; }
   .icon-btn:hover { background:var(--surface-2); transform:rotate(25deg); }
+  .lang-btn { min-width:38px; height:38px; padding:0 12px; border-radius:999px; border:1px solid var(--border);
+    background:#fff; color:var(--ink); font-size:13px; font-weight:700; cursor:pointer;
+    display:inline-flex; align-items:center; justify-content:center; flex:none; transition:background .15s; }
+  .lang-btn:hover { background:var(--surface-2); }
 
   main { max-width:1020px; margin:0 auto; padding:24px 20px 96px; }
   .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);

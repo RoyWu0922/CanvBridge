@@ -2,7 +2,7 @@
 const $ = (id) => document.getElementById(id);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
 const KEY = ["canvasUrl","canvasToken","llmBaseUrl","llmApiKey","llmModel","downloadDir"];
-const ALERTS = [[0,"无提醒"],[5,"提前 5 分钟"],[10,"提前 10 分钟"],[30,"提前 30 分钟"],[60,"提前 1 小时"],[1440,"提前 1 天"]];
+const ALERTS = [[0,"alert.none"],[5,"alert.min5"],[10,"alert.min10"],[30,"alert.min30"],[60,"alert.hour1"],[1440,"alert.day1"]];
 
 function loadSettings(){ KEY.forEach(k=>{ const v=localStorage.getItem("sc_"+k); if(v) $(k).value=v; }); }
 function saveSettings(){ KEY.forEach(k=>localStorage.setItem("sc_"+k, $(k).value)); }
@@ -10,7 +10,7 @@ function settings(){
   saveSettings();
   return { canvas_url:$("canvasUrl").value.trim(), canvas_token:$("canvasToken").value.trim(),
            llm_base_url:$("llmBaseUrl").value.trim(), llm_api_key:$("llmApiKey").value.trim(),
-           llm_model:$("llmModel").value.trim() };
+           llm_model:$("llmModel").value.trim(), language:LANG() };
 }
 function downloadDir(){ saveSettings(); return $("downloadDir").value.trim() || "~/Downloads/Canvas课程文件"; }
 
@@ -24,15 +24,15 @@ function defaultRange(){
 }
 function refreshPill(){
   const st=$("inpStart").value, en=$("inpEnd").value;
-  if(!st || !en){ $("rangePill").textContent = "请选择起止日期"; return; }
-  if(st>en){ $("rangePill").textContent = "⚠️ 开始日期晚于结束日期"; return; }
+  if(!st || !en){ $("rangePill").textContent = t("range.placeholder"); return; }
+  if(st>en){ $("rangePill").textContent = t("range.invalid"); return; }
   const days = Math.round((new Date(en)-new Date(st))/86400000)+1;
-  $("rangePill").textContent = `${short(st)} → ${short(en)} · 共 ${days} 天`;
+  $("rangePill").textContent = `${short(st)} → ${short(en)} · ${t("range.days", {n: days})}`;
 }
 function range(){
   const st=$("inpStart").value, en=$("inpEnd").value;
-  if(!st || !en){ setStatus("请先选择开始和结束日期","err"); return null; }
-  if(st>en){ setStatus("开始日期不能晚于结束日期","err"); return null; }
+  if(!st || !en){ setStatus(t("status.need_date"),"err"); return null; }
+  if(st>en){ setStatus(t("status.date_invalid"),"err"); return null; }
   return { start_date:st, end_date:en };
 }
 
@@ -46,9 +46,9 @@ async function api(path, body){
   let r;
   try { r = await fetch("/api/"+path, { method:"POST",
     headers:{"Content-Type":"application/json"}, body: JSON.stringify(body||{}) }); }
-  catch(e){ return { ok:false, error:"无法连接后端，请确认服务已启动" }; }
+  catch(e){ return { ok:false, error:t("status.backend_fail") }; }
   try { return await r.json(); }
-  catch(e){ return { ok:false, error:"后端响应无法解析（HTTP "+r.status+"）" }; }
+  catch(e){ return { ok:false, error:t("status.parse_fail", {s: r.status}) }; }
 }
 async function withBusy(text, button, fn){
   $("overlayText").textContent=text;
@@ -63,7 +63,8 @@ function fillSelect(id, names){
 }
 function fillAlert(id){
   const sel=$(id||"selAlert");
-  ALERTS.forEach(([v,label])=>{ const o=document.createElement("option"); o.value=v; o.textContent=label; sel.appendChild(o); });
+  sel.innerHTML="";
+  ALERTS.forEach(([v,key])=>{ const o=document.createElement("option"); o.value=v; o.textContent=t(key); sel.appendChild(o); });
 }
 function esc(t){ const d=document.createElement("div"); d.textContent = t==null?"":String(t); return d.innerHTML; }
 
@@ -110,34 +111,34 @@ function refreshFilterState(){
 
 $("btnTest").onclick = async () => {
   const s=settings();
-  if(!s.canvas_url||!s.canvas_token){ setStatus("请填写 Canvas URL 和 Token","err"); return; }
-  await withBusy("正在测试连接…", $("btnTest"), async ()=>{
+  if(!s.canvas_url||!s.canvas_token){ setStatus(t("status.need_canvas"),"err"); return; }
+  await withBusy(t("status.connecting"), $("btnTest"), async ()=>{
     const r=await api("test_connection", s);
-    setStatus(r.ok ? `连接成功，共 ${r.courses.length} 门课程` : "连接失败："+(r.error||""), r.ok?"ok":"err");
+    setStatus(r.ok ? t("status.connected", {n: r.courses.length}) : t("status.connect_fail")+(r.error||""), r.ok?"ok":"err");
   });
 };
 $("btnLoadCalendars").onclick = async () => {
-  await withBusy("正在读取日历与提醒列表…", $("btnLoadCalendars"), async ()=>{
+  await withBusy(t("status.reading_cal"), $("btnLoadCalendars"), async ()=>{
     const [cal, list] = await Promise.all([api("calendars"), api("reminder_lists")]);
     fillSelect("selCalendar", cal.calendars||[]);
     fillSelect("selList", list.lists||[]);
-    if(cal.ok===false) setStatus("日历读取失败："+cal.error, "err");
-    else if(list.ok===false) setStatus("提醒列表读取失败："+list.error, "err");
-    else setStatus(`已刷新：${(cal.calendars||[]).length} 个日历、${(list.lists||[]).length} 个提醒列表`, "ok");
+    if(cal.ok===false) setStatus(t("status.cal_fail")+cal.error, "err");
+    else if(list.ok===false) setStatus(t("status.list_fail")+list.error, "err");
+    else setStatus(t("status.refreshed", {c:(cal.calendars||[]).length, l:(list.lists||[]).length}), "ok");
   });
 };
 
 let courseList=[], summaryResults=[], displayResults=[], fileCourses=[];
 $("btnLoadCourses").onclick = async () => {
   const s=settings();
-  if(!s.canvas_url||!s.canvas_token){ setStatus("请先填写 Canvas 配置","err"); return; }
-  await withBusy("正在加载课程…", $("btnLoadCourses"), async ()=>{
+  if(!s.canvas_url||!s.canvas_token){ setStatus(t("status.need_canvas_config"),"err"); return; }
+  await withBusy(t("status.loading_courses"), $("btnLoadCourses"), async ()=>{
     const r=await api("courses", s);
-    if(!r.ok){ setStatus("加载课程失败："+r.error,"err"); return; }
+    if(!r.ok){ setStatus(t("status.courses_fail")+r.error,"err"); return; }
     courseList=r.courses;
     $("courseCheckboxes").innerHTML = courseList.map(c=>
       `<label class="chip"><input type="checkbox" checked data-id="${c.id}"> ${esc(c.name)}</label>`).join("");
-    setStatus(`已加载 ${courseList.length} 门课程`,"ok");
+    setStatus(t("status.courses_loaded", {n: courseList.length}),"ok");
   });
 };
 function selectedCourses(){ return [...document.querySelectorAll("#courseCheckboxes input:checked")].map(i=>Number(i.dataset.id)); }
@@ -145,15 +146,15 @@ function selectedCourses(){ return [...document.querySelectorAll("#courseCheckbo
 $("btnSync").onclick = async () => {
   const s=settings(), ids=selectedCourses();
   const rng=range(); if(!rng) return;
-  if(!ids.length){ setStatus("请先勾选要同步的课程","err"); return; }
-  await withBusy("正在同步公告并生成总结…", $("btnSync"), async ()=>{
-    const r=await api("sync_announcements", { ...s, course_ids:ids, ...rng });
-    if(!r.ok){ setStatus("同步失败："+r.error,"err"); return; }
+  if(!ids.length){ setStatus(t("status.need_select_course"),"err"); return; }
+  await withBusy(t("status.syncing"), $("btnSync"), async ()=>{
+    const r=await api("sync_announcements", { ...s, course_ids:ids, ...rng, language:LANG() });
+    if(!r.ok){ setStatus(t("status.sync_fail")+r.error,"err"); return; }
     summaryResults=r.courses;
     if(!$("filterStart").value) $("filterStart").value=rng.start_date;
     if(!$("filterEnd").value) $("filterEnd").value=rng.end_date;
     renderSummaries();
-    setStatus(`同步完成：${summaryResults.length} 门课程已总结`,"ok");
+    setStatus(t("status.sync_done", {n: summaryResults.length}),"ok");
     switchTab("tabAnnounce");
   });
 };
@@ -165,7 +166,7 @@ function renderSummaries(){
     reminders:(c.reminders||[]).filter(e=>dayWithin(e.due_date,f)),
   }));
   if(!displayResults.length){
-    $("summaries").innerHTML = `<div class="empty"><span class="big">📭</span>还没有同步结果。先在上方选择时间范围、勾选课程，点击「同步并总结」。</div>`;
+    $("summaries").innerHTML = `<div class="empty">${t("announce.empty")}</div>`;
     return;
   }
   const evCount = (shown,total) => (f && total>0) ? `${shown}<span class="count"> / ${total}</span>` : `${shown}`;
@@ -176,17 +177,17 @@ function renderSummaries(){
     return `
     <div class="course-card">
       <div class="course-name">${esc(c.course_name)}</div>
-      ${c.warning?`<div style="color:var(--err);font-size:12.5px;margin-bottom:6px">⚠️ ${esc(c.warning)}</div>`:""}
-      <div class="summary">${esc(c.summary_cn)}</div>
-      <div class="sub-label">📅 日历事件（${evCount(evs.length,evTotal)}）</div>
+      ${c.warning?`<div style="color:var(--err);font-size:12.5px;margin-bottom:6px">${esc(c.warning)}</div>`:""}
+      <div class="summary">${esc(c.summary)}</div>
+      <div class="sub-label">${t("announce.calendar_events")}（${evCount(evs.length,evTotal)}）</div>
       ${evs.map((e,ei)=>`
         <div class="item"><input type="checkbox" class="ev" data-ci="${ci}" data-ei="${ei}">
           <div><div class="item-title">${esc(e.title)}</div>
           <div class="file-path">${esc(e.start)} → ${esc(e.end)}${e.location?` · ${esc(e.location)}`:""}</div></div></div>`).join("")}
-      <div class="sub-label">✅ 提醒（${evCount(rms.length,rmTotal)}）</div>
+      <div class="sub-label">${t("announce.reminders")}（${evCount(rms.length,rmTotal)}）</div>
       ${rms.map((e,ei)=>`
         <div class="item"><input type="checkbox" class="rm" data-ci="${ci}" data-ei="${ei}">
-          <div><div class="item-title">${esc(e.title)}</div><div class="file-path">截止 ${esc(e.due_date)}</div></div></div>`).join("")}
+          <div><div class="item-title">${esc(e.title)}</div><div class="file-path">${t("announce.due")} ${esc(e.due_date)}</div></div></div>`).join("")}
     </div>`;
   }).join("");
 }
@@ -197,46 +198,46 @@ $("filterEnd").addEventListener("change", refreshFilterState);
 $("btnWriteCalendar").onclick = async () => {
   const cal=$("selCalendar").value;
   const amVal = $("selAlert").value ? Number($("selAlert").value) : null;
-  if(!cal){ setStatus("请先刷新并选择要写入的日历","err"); return; }
+  if(!cal){ setStatus(t("status.need_calendar"),"err"); return; }
   const evs=[...document.querySelectorAll(".ev:checked")].map(i=>{
     const c=displayResults[Number(i.dataset.ci)]; return c.calendar_events[Number(i.dataset.ei)]; });
-  if(!evs.length){ setStatus("没有选中要写入的日历事件","err"); return; }
-  await withBusy(`正在写入 ${evs.length} 条日历事件…`, $("btnWriteCalendar"), async ()=>{
+  if(!evs.length){ setStatus(t("status.no_event"),"err"); return; }
+  await withBusy(t("status.writing_events", {n: evs.length}), $("btnWriteCalendar"), async ()=>{
     let n=0;
     for(const e of evs){
       const r=await api("add_calendar_event",{ calendar_name:cal, title:e.title, start:e.start,
         end:e.end, location:e.location||"", notes:e.notes||"", alert_minutes:amVal });
-      if(r.ok) n++; else setStatus("写入失败："+r.error,"err");
+      if(r.ok) n++; else setStatus(t("status.write_fail")+r.error,"err");
     }
-    const alertLabel = amVal ? "，已设提醒" : "";
-    setStatus(`已写入 ${n}/${evs.length} 条日历事件${alertLabel}`, n===evs.length?"ok":"err");
+    const alertLabel = amVal ? t("status.alert_set") : "";
+    setStatus(t("status.events_done", {a:n, b:evs.length})+alertLabel, n===evs.length?"ok":"err");
   });
 };
 $("btnWriteReminders").onclick = async () => {
   const list=$("selList").value;
-  if(!list){ setStatus("请先刷新并选择提醒列表","err"); return; }
+  if(!list){ setStatus(t("status.need_list"),"err"); return; }
   const rms=[...document.querySelectorAll(".rm:checked")].map(i=>{
     const c=displayResults[Number(i.dataset.ci)]; return c.reminders[Number(i.dataset.ei)]; });
-  if(!rms.length){ setStatus("没有选中要写入的提醒","err"); return; }
-  await withBusy(`正在写入 ${rms.length} 条提醒…`, $("btnWriteReminders"), async ()=>{
+  if(!rms.length){ setStatus(t("status.no_reminder"),"err"); return; }
+  await withBusy(t("status.writing_reminders", {n: rms.length}), $("btnWriteReminders"), async ()=>{
     let n=0;
     for(const e of rms){
       const r=await api("add_reminder",{ list_name:list, title:e.title, due_date:e.due_date, notes:e.notes||"" });
-      if(r.ok) n++; else setStatus("写入失败："+r.error,"err");
+      if(r.ok) n++; else setStatus(t("status.write_fail")+r.error,"err");
     }
-    setStatus(`已写入 ${n}/${rms.length} 条提醒`, n===rms.length?"ok":"err");
+    setStatus(t("status.reminders_done", {a:n, b:rms.length}), n===rms.length?"ok":"err");
   });
 };
 
 $("btnListFiles").onclick = async () => {
   const s=settings(), ids=selectedCourses();
-  if(!ids.length){ setStatus("请先勾选课程","err"); return; }
+  if(!ids.length){ setStatus(t("status.need_course"),"err"); return; }
   switchTab("tabFiles");
-  await withBusy("正在加载文件列表…", $("btnListFiles"), async ()=>{
+  await withBusy(t("status.loading_files"), $("btnListFiles"), async ()=>{
     const r=await api("list_files",{ ...s, course_ids:ids, download_dir:downloadDir() });
-    if(!r.ok){ setStatus("加载文件失败："+r.error,"err"); return; }
+    if(!r.ok){ setStatus(t("status.files_fail")+r.error,"err"); return; }
     fileCourses=r.courses; renderFiles();
-    setStatus(`已加载 ${fileCourses.length} 门课程的文件`,"ok");
+    setStatus(t("status.files_loaded", {n: fileCourses.length}),"ok");
   });
 };
 function renderFiles(){
@@ -253,7 +254,7 @@ function renderFiles(){
         <div class="item"><input type="checkbox" class="fl" data-ci="${ci}" data-fi="${f.file_id}">
           <div><div class="item-title">${esc(f.display_name)} <span class="muted">（${esc(f.content_type)}）</span></div>
           <div class="file-path">${esc(f.path||"/")}</div></div></div>`).join("")}
-    </div>`).join("") || "<div class='muted' style='padding:12px 0'>没有匹配的文件</div>";
+    </div>`).join("") || `<div class='muted' style='padding:12px 0'>${t("files.empty")}</div>`;
 }
 $("inpTypeFilter").oninput = renderFiles;
 $("btnSelectAllFiles").onclick = ()=>document.querySelectorAll(".fl").forEach(i=>i.checked=true);
@@ -263,12 +264,12 @@ $("btnDownloadFiles").onclick = async () => {
     const c=fileCourses[Number(i.dataset.ci)];
     const f=c.files.find(x=>x.file_id===Number(i.dataset.fi));
     return { course_id:c.course_id, file_id:f.file_id, dest_path:f.dest_path }; });
-  if(!items.length){ setStatus("没有选中要下载的文件","err"); return; }
-  await withBusy(`正在下载 ${items.length} 个文件…`, $("btnDownloadFiles"), async ()=>{
+  if(!items.length){ setStatus(t("status.no_file"),"err"); return; }
+  await withBusy(t("status.downloading", {n: items.length}), $("btnDownloadFiles"), async ()=>{
     const r=await api("download_files",{ ...s, download_dir:downloadDir(), items });
-    if(!r.ok){ setStatus("下载失败："+r.error,"err"); return; }
+    if(!r.ok){ setStatus(t("status.download_fail")+r.error,"err"); return; }
     const failed=(r.failed||[]).length;
-    setStatus(`下载完成：成功 ${r.downloaded.length}，失败 ${failed}`, failed===0?"ok":"err");
+    setStatus(t("status.download_done", {a:r.downloaded.length, b:failed}), failed===0?"ok":"err");
   });
 };
 
@@ -289,32 +290,32 @@ function setBanwebStatusText(msg, kind){
 }
 async function checkBanwebStatus(){
   const r=await api("banweb/status");
-  if(r.ok!==true){ setBanwebStatusText("无法连接后端：网关检测失败","err"); return; }
+  if(r.ok!==true){ setBanwebStatusText(t("status.banweb_gw"),"err"); return; }
   const loginBtn=$("btnBanwebLogin");
   if(r.status==="logged_in"){
-    setBanwebStatusText("已登录 AIMS ✓","ok");
+    setBanwebStatusText(t("status.banweb_ok"),"ok");
     loginBtn.hidden=true;
     stopBanwebPoll();
     if(!$("selTerm").options.length) loadTerms();
   } else if(r.status==="needs_login"){
-    setBanwebStatusText("已退登：点「重新登录」打开登录窗口，登录后自动继续…","err");
+    setBanwebStatusText(t("status.banweb_need_login"),"err");
     loginBtn.hidden=false;
     startBanwebPoll();
   } else if(r.status==="opening"){
-    setBanwebStatusText("正在打开 Chrome 登录窗口…","muted");
+    setBanwebStatusText(t("status.banweb_opening"),"muted");
     loginBtn.hidden=true;
     startBanwebPoll();
   } else {
-    setBanwebStatusText("状态未知，稍后重试…","err");
+    setBanwebStatusText(t("status.banweb_unknown"),"err");
     loginBtn.hidden=true;
     startBanwebPoll();
   }
 }
 $("btnBanwebLogin").onclick = async () => {
-  await withBusy("正在打开登录窗口…", $("btnBanwebLogin"), async ()=>{
+  await withBusy(t("status.opening_login"), $("btnBanwebLogin"), async ()=>{
     const r=await api("banweb/open_login");
-    if(r.ok===true) setStatus("已打开 AIMS 登录窗口，请在新窗口中登录","ok",6000);
-    else setStatus("打开登录窗口失败："+(r.error||""),"err");
+    if(r.ok===true) setStatus(t("status.login_opened"),"ok",6000);
+    else setStatus(t("status.login_fail")+(r.error||""),"err");
     checkBanwebStatus();
   });
 };
@@ -324,11 +325,11 @@ async function loadTerms(){
   const r=await api("banweb/terms");
   if(r.ok!==true){
     if((r.error||"").includes("尚未登录")){
-      setBanwebStatusText("已退登：请在弹出的 Chrome 窗口登录一次，登录后自动继续…","err");
+      setBanwebStatusText(t("status.banweb_need_login_manual"),"err");
       startBanwebPoll();
     } else {
       // 瞬时故障（如抓取窗口被关）→ 恢复轮询，浏览器重开/登录恢复后会自动重载学期
-      setBanwebStatusText("读取学期失败："+(r.error||"")+"，正在自动重试…","err");
+      setBanwebStatusText(t("status.banweb_terms_fail", {e: (r.error||"")}),"err");
       startBanwebPoll();
     }
     return;
@@ -344,17 +345,17 @@ function schedBadge(res){
   // res 可能是字符串（旧版保存）或 {s:状态, old:旧时间}
   const st=(res&&res.s)?res.s:res;
   const old=(res&&res.old)?res.old:"";
-  if(st==="created") return `<span class="sched-badge ok">已新建</span>`;
-  if(st==="updated") return `<span class="sched-badge ok"${old?` title="旧 ${old}"`:""}>已更新${old?`（${old}）`:""}</span>`;
-  if(st==="exists") return `<span class="sched-badge exists">已存在 · 跳过</span>`;
-  if(st==="error") return `<span class="sched-badge err">写入失败</span>`;
+  if(st==="created") return `<span class="sched-badge ok">${t("badge.created")}</span>`;
+  if(st==="updated") return `<span class="sched-badge ok"${old?` title="${esc(t("badge.old_title",{s:old}))}"`:""}>${esc(old?t("badge.updated_old",{s:old}):t("badge.updated"))}</span>`;
+  if(st==="exists") return `<span class="sched-badge exists">${t("badge.exists")}</span>`;
+  if(st==="error") return `<span class="sched-badge err">${t("badge.error")}</span>`;
   return "";
 }
 function renderSchedule(){
   const el=$("schedulePreview");
   const data=banwebSchedule;
   if(!data.courses.length){
-    el.innerHTML=`<div class="empty"><span class="big">🗓</span>还没有课表。选好学期后点「抓取课表」。</div>`;
+    el.innerHTML=`<div class="empty">${t("schedule.empty")}</div>`;
     $("btnWriteSchedule").disabled=true;
     return;
   }
@@ -376,7 +377,7 @@ function renderCourseBlock(c, writableBlocks){
       <label class="check" style="border:none;padding:0;background:transparent">
         <input type="checkbox" data-key="${esc(key)}" ${checked?"checked":""} ${disabled?"disabled":""}> ${esc(c.code)} ${esc(c.section)} · ${esc(c.course)}
       </label>
-      ${!hasMeetings?`<span class="sched-badge muted">无固定上课时间</span>`:schedBadge(res)}
+      ${!hasMeetings?`<span class="sched-badge muted">${t("badge.no_time")}</span>`:schedBadge(res)}
     </div>
     ${meetings?`<div style="margin-top:4px">${meetings}</div>`:""}
   </div>`;
@@ -387,35 +388,35 @@ function updateSelected(){
 }
 $("btnFetchSchedule").onclick = async () => {
   const term=$("selTerm").value;
-  if(!term){ setStatus("请先选择学期","err"); return; }
-  await withBusy("正在抓取课表…", $("btnFetchSchedule"), async ()=>{
+  if(!term){ setStatus(t("status.need_term"),"err"); return; }
+  await withBusy(t("status.fetching"), $("btnFetchSchedule"), async ()=>{
     const r=await api("banweb/schedule",{ term });
-    if(r.ok!==true){ setStatus("抓取失败："+(r.error||""),"err"); return; }
+    if(r.ok!==true){ setStatus(t("status.fetch_fail")+(r.error||""),"err"); return; }
     banwebSchedule={ term, fetchedAt:new Date().toISOString(), courses:r.courses, selected:[], results:{} };
     banwebSchedule.selected = r.courses.filter(c=>(c.meetings||[]).length>0).map(c=>c.code+":"+c.section);
     saveBanweb();
     renderSchedule();
-    setStatus(`课表已抓取：${r.courses.length} 个课程块`,"ok");
+    setStatus(t("status.fetched", {n: r.courses.length}),"ok");
   });
 };
 $("schedulePreview").addEventListener("change", (e)=>{ if(e.target.matches("input[type=checkbox]")) updateSelected(); });
 $("btnWriteSchedule").onclick = async () => {
   const cal=$("selSchedCalendar").value;
-  if(!cal){ setStatus("请先刷新并选择要写入的日历","err"); return; }
+  if(!cal){ setStatus(t("status.need_sched_calendar"),"err"); return; }
   const selected=[...document.querySelectorAll("#schedulePreview .check input:checked")].map(i=>i.dataset.key);
-  if(!selected.length){ setStatus("没有选中要写入的课程","err"); return; }
+  if(!selected.length){ setStatus(t("status.no_sched"),"err"); return; }
   const amVal = $("selSchedAlert").value ? Number($("selSchedAlert").value) : null;
-  await withBusy(`正在同步 ${selected.length} 个课程块…`, $("btnWriteSchedule"), async ()=>{
+  await withBusy(t("status.syncing_sched", {n: selected.length}), $("btnWriteSchedule"), async ()=>{
     const r=await api("banweb/write_calendar",{ calendar_name:cal, courses:banwebSchedule.courses,
       selected, alert_minutes:amVal });
-    if(r.ok!==true){ setStatus("写入失败："+(r.error||""),"err"); return; }
+    if(r.ok!==true){ setStatus(t("status.sched_fail")+(r.error||""),"err"); return; }
     const newRes={}; (r.items||[]).forEach(it=>{
       const block=it.key.split(":").slice(0,2).join(":");
       newRes[block]=it.old_time?{s:it.status,old:it.old_time}:it.status; });
     banwebSchedule.results=newRes;
     saveBanweb();
     renderSchedule();
-    setStatus(`同步完成：新建 ${r.created} · 已存在 ${r.exists} · 更新 ${r.updated} · 删除 ${r.removed} · 失败 ${r.errors}`,
+    setStatus(t("status.sched_done", {a:r.created, b:r.exists, c:r.updated, d:r.removed, e:r.errors}),
       r.errors===0?"ok":"err");
   });
 };
@@ -423,12 +424,13 @@ $("btnClearSchedule").onclick = () => {
   banwebSchedule={ term:"",fetchedAt:null,courses:[],selected:[],results:{} };
   localStorage.removeItem(BANWEB_KEY);
   renderSchedule();
-  setStatus("课表预览已清除","ok");
+  setStatus(t("status.sched_cleared"),"ok");
 };
 let schedTabInit=false;
 async function initScheduleTab(){
   if(schedTabInit) return;
   schedTabInit=true;
+  setBanwebStatusText(t("schedule.checking"), "muted");
   if(!$("selSchedCalendar").options.length){
     const r=await api("calendars");
     fillSelect("selSchedCalendar", r.calendars||[]);
@@ -438,6 +440,11 @@ async function initScheduleTab(){
   checkBanwebStatus();
 }
 
+$("btnLang").onclick = () => {
+  localStorage.setItem("sc_lang", LANG() === "zh" ? "en" : "zh");
+  applyLang();
+};
+applyLang();
 loadSettings();
 defaultRange();
 fillSelect("selCalendar", []); fillSelect("selList", []);
