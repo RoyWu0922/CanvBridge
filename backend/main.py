@@ -33,6 +33,7 @@ class SyncRequest(CanvasConfig, LLMConfig):
     course_ids: list[int]
     start_date: str
     end_date: str
+    language: str = "zh"
 
 
 class AddEventRequest(BaseModel):
@@ -124,7 +125,7 @@ def sync(req: SyncRequest):
         anns = announcements.get(cid, [])
         results.append(llm_client.extract_course_summary(
             req.llm_base_url, req.llm_api_key, req.llm_model,
-            name_by_id.get(cid, f"Course {cid}"), anns))
+            name_by_id.get(cid, f"Course {cid}"), anns, language=req.language))
     return {"ok": True, "courses": results}
 
 

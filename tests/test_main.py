@@ -35,13 +35,30 @@ def test_sync_announcements(monkeypatch):
     monkeypatch.setattr(canvas_client, "get_announcements", lambda u, t, ids, a, b: {5: [{"title": "T", "message": "M", "posted_at": ""}]})
     monkeypatch.setattr(canvas_client, "list_courses", lambda u, t: [{"id": 5, "name": "CS 101"}])
     monkeypatch.setattr(llm_client, "extract_course_summary",
-                        lambda *a, **k: {"course_name": "CS 101", "summary_cn": "要点", "calendar_events": [], "reminders": []})
+                        lambda *a, **k: {"course_name": "CS 101", "summary": "要点", "calendar_events": [], "reminders": []})
     body = {"canvas_url": "https://x", "canvas_token": "t", "llm_base_url": "https://llm/v1",
             "llm_api_key": "k", "llm_model": "m", "course_ids": [5],
             "start_date": "2026-08-01", "end_date": "2026-08-31"}
     r = client.post("/api/sync_announcements", json=body)
     assert r.json()["ok"] is True
-    assert r.json()["courses"][0]["summary_cn"] == "要点"
+    assert r.json()["courses"][0]["summary"] == "要点"
+
+
+def test_sync_announcements_passes_language(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(canvas_client, "get_announcements",
+                        lambda u, t, ids, a, b: {5: [{"title": "T", "message": "M", "posted_at": ""}]})
+    monkeypatch.setattr(canvas_client, "list_courses", lambda u, t: [{"id": 5, "name": "CS 101"}])
+    def fake(base, key, model, name, anns, language="zh"):
+        captured["language"] = language
+        return {"course_name": name, "summary": "s", "calendar_events": [], "reminders": []}
+    monkeypatch.setattr(llm_client, "extract_course_summary", fake)
+    body = {"canvas_url": "https://x", "canvas_token": "t", "llm_base_url": "https://llm/v1",
+            "llm_api_key": "k", "llm_model": "m", "course_ids": [5],
+            "start_date": "2026-08-01", "end_date": "2026-08-31", "language": "en"}
+    r = client.post("/api/sync_announcements", json=body)
+    assert r.json()["ok"] is True
+    assert captured["language"] == "en"
 
 
 def test_add_calendar_event(monkeypatch):
