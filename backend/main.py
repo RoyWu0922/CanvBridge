@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import apple_script, canvas_client, files_downloader, llm_client
+from . import apple_script, banweb, canvas_client, files_downloader, llm_client
 
 app = FastAPI(title="Canvas 课程助手")
 
@@ -38,6 +38,7 @@ class AddEventRequest(BaseModel):
     end: str
     location: str = ""
     notes: str = ""
+    alert_minutes: int | None = None
 
 
 class AddReminderRequest(BaseModel):
@@ -54,6 +55,17 @@ class ListFilesRequest(CanvasConfig):
 
 class DownloadRequest(CanvasConfig):
     items: list[dict]  # [{course_id, file_id, dest_path}]
+
+
+class BanwebScheduleRequest(BaseModel):
+    term: str
+
+
+class BanwebWriteRequest(BaseModel):
+    calendar_name: str
+    courses: list[dict]   # 前端预览的课程块（原样传回，由后端转事件规格）
+    selected: list[str]   # 勾选的 "code:section" 键
+    alert_minutes: int | None = None
 
 
 @app.get("/")
@@ -117,7 +129,7 @@ def add_event(req: AddEventRequest):
     try:
         apple_script.add_calendar_event(
             req.calendar_name, req.title, req.start, req.end,
-            req.location, req.notes)
+            req.location, req.notes, req.alert_minutes)
         return {"ok": True}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -172,3 +184,107 @@ def download_files(req: DownloadRequest):
             continue
     planned = [{"file_id": i["file_id"], "dest_path": i["dest_path"]} for i in req.items]
     return files_downloader.download_items(req.canvas_url, req.canvas_token, files_by_id, planned)
+
+
+@app.post("/api/banweb/status")
+def banweb_status():
+    """AIMS 登录态（opening / needs_login / logged_in / error）。"""
+    return banweb.get_status()
+
+
+@app.post("/api/banweb/terms")
+def banweb_terms():
+    try:
+        return {"ok": True, "terms": banweb.list_terms()}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/banweb/open_login")
+def banweb_open_login():
+    """重新打开 AIMS 登录窗口并置前，供用户手动登录。"""
+    try:
+        banweb.open_login()
+        return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/banweb/schedule")
+def banweb_schedule(req: BanwebScheduleRequest):
+    try:
+        return {"ok": True, "term": req.term, "courses": banweb.get_schedule(req.term)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/banweb/write_calendar")
+def banweb_write(req: BanwebWriteRequest):
+    """自动同步课表：检测已改时间的旧事件，删除后写入新时间。
+
+    按课程块分组，每块用 find_events 读回现有事件，reconcile_block 对比
+    (星期, 开始, 结束, 标题) 四元组：全等 → 保留；任一不同 → 先删旧再建新。
+    只在选中日历、限当前课程块前缀内操作，不会误删别的课程事件。
+    """
+    try:
+        specs = banweb.build_event_specs(req.courses, set(req.selected))
+        if not specs:
+            return {"ok": True, "items": [], "created": 0, "exists": 0,
+                    "updated": 0, "removed": 0, "errors": 0}
+        blocks: dict[str, list[dict]] = {}
+        for sp in specs:
+            blocks.setdefault(sp["block"], []).append(sp)
+        items: list[dict] = []
+        created = exists = updated = removed = errors = 0
+        for block, block_specs in blocks.items():
+            prefix = block.replace(":", " ")
+            try:
+                existing = apple_script.find_events(req.calendar_name, prefix)
+            except Exception as exc:
+                for sp in block_specs:
+                    items.append({"key": sp["key"], "title": sp["title"],
+                                  "status": "error", "error": str(exc)})
+                errors += len(block_specs)
+                continue
+            dec = banweb.reconcile_block(block_specs, existing)
+            removed += dec["removed"]
+            # 整节取消的旧事件 → 隐藏（把重复截止改到过去）；AppleScript 无法真删重复系列
+            for summary in dec["remove"]:
+                try:
+                    apple_script.hide_recurring_event(req.calendar_name, summary)
+                except Exception as exc:
+                    items.append({"key": block, "title": summary,
+                                  "status": "error", "error": str(exc)})
+                    errors += 1
+            for sp in dec["create"]:
+                try:
+                    apple_script.add_recurring_event(
+                        req.calendar_name, sp["title"], sp["start"], sp["end"],
+                        sp["until"], sp["location"], sp["notes"], req.alert_minutes)
+                    items.append({"key": sp["key"], "title": sp["title"], "status": "created"})
+                    created += 1
+                except Exception as exc:
+                    items.append({"key": sp["key"], "title": sp["title"], "status": "error",
+                                  "error": str(exc)})
+                    errors += 1
+            for upd in dec["update"]:
+                sp = upd["spec"]
+                try:
+                    # 时间/天/标题变了 → 原地编辑旧事件，保留事件身份
+                    apple_script.edit_recurring_event(
+                        req.calendar_name, upd["old"]["summary"], sp["title"],
+                        sp["start"], sp["end"], sp["until"])
+                    items.append({"key": sp["key"], "title": sp["title"], "status": "updated",
+                                  "old_time": upd["old_time"]})
+                    updated += 1
+                except Exception as exc:
+                    items.append({"key": sp["key"], "title": sp["title"], "status": "error",
+                                  "error": str(exc)})
+                    errors += 1
+            for sp in dec["exists"]:
+                items.append({"key": sp["key"], "title": sp["title"], "status": "exists"})
+                exists += 1
+        return {"ok": True, "items": items, "created": created, "exists": exists,
+                "updated": updated, "removed": removed, "errors": errors}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}

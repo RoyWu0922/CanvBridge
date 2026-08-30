@@ -1,0 +1,916 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/transitional.dtd"><html lang="en"><head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta name="referrer" content="no-referrer-when-downgrade">
+<link rel="stylesheet" href="/cityu2/css/web_defaultapp.css" type="text/css">
+<link rel="stylesheet" href="/css/web_defaultprint.css" type="text/css" media="print">
+<title>Student Detail Schedule</title>
+<meta http-equiv="Content-Script-Type" name="Default_Script_Language" content="text/javascript">
+<script language="JavaScript" type="text/javascript">
+<!-- Hide JavaScript from older browsers 
+window.onunload = function() {submitcount=0;}
+var submitcount=0;
+function checkSubmit() {
+if (submitcount == 0)
+   {
+   submitcount++;
+   return true;
+   }
+else
+   {
+alert("Your changes have already been submitted.");
+   return false;
+   }
+}
+//  End script hiding -->
+</script>
+<script language="JavaScript" type="text/javascript">
+<!-- Hide JavaScript from older browsers 
+//  Function to open a window
+function windowOpen(window_url) {
+   helpWin = window.open(window_url,'','toolbar=yes,status=no,scrollbars=yes,menubar=yes,resizable=yes,directories=no,location=no,width=350,height=400');
+   if (document.images) { 
+       if (helpWin) helpWin.focus()
+   }
+}
+//  Function to open a window with location
+function JSWinOpen_cityu(window_url,wname) { 
+ if ( wname==undefined || wname==null || wname.length<=0 ) {
+   helpWin = window.open(window_url,'','toolbar=yes,scrollbars=yes,status=yes,location=yes,menubar=yes,resizable=yes,width=700,height=400');
+ } else {
+   helpWin = window.open(window_url,wname,'toolbar=yes,scrollbars=yes,status=yes,location=yes,menubar=yes,resizable=yes,width=700,height=400');
+ }
+ if (document.images) { 
+     if (helpWin) helpWin.focus()
+ }
+}
+//  End script hiding -->
+</script>
+</head>
+<body>
+<noscript><p><br><font color=red> Error: Your browser either does not support JavaScript, or you have JavaScript turned off.</font></noscript>
+<!-- CityU Bar --> <div class="cityubar_outer"> <div class="cityubar_inner"> <!-- CityU Logo --> <div style="float: left;"> <a href="http://www.cityu.edu.hk/" target="_blank"> <img src="https://template.cityu.edu.hk/template/img/logos/cityu_deptpage.png" alt="City University of Hong Kong"></a></div> <!-- Tool Bar --> <div style="float: right;" class="cityubar_tools"> 
+<a href="/pls/PROD/twbkwbis.P_GenMenu?name=amenu.P_RegMnu" class="submenulinktext2" id="ssbbackurl">Return to Course Registration Menu</a>
+|
+<a href="javascript:JSWinOpen_cityu('https://www.cityu.edu.hk/esu/AIMS_Menu_Help.pdf')" class="submenulinktext2">How to Navigate</a>
+|
+<a href="twgksimu_cityu.P_DispSiteMap" accesskey="2" class="submenulinktext2">Site Map</a>
+|
+<a href="/pls/PROD/twbkfrmt.P_DispHelp?pagename_in=bwskfshd.P_CrseSchdDetl" accesskey="H" onclick="popup = window.open('/pls/PROD/twbkfrmt.P_DispHelp?pagename_in=bwskfshd.P_CrseSchdDetl', 'PopupPage','height=450,width=500,scrollbars=yes,resizable=yes'); window.popup.focus(); return false" target="_blank" onmouseover="window.status='';  return true" onmouseout="window.status=''; return true" onfocus="window.status='';  return true" onblur="window.status=''; return true" class="submenulinktext2">Help</a>
+|
+<a href="twbkwbis.P_Logout" accesskey="3" class="submenulinktext2">Exit</a>
+</div> </div> </div>
+<!-- Header --> <div class="header_outer"> <img src="/cityu2/gifs/web_header.png" alt="AIMS (Version 8.33)"> </div>
+<div class="cityu_noprint">
+<table width="100%"><tbody><tr><td align="right"><font color="#ffffff"><b>AIMS (Version 8.33)</b></font></td><td align="right"><font size="-2"><form action="/pls/PROD/twgkutil_cityu.P_Search" method="post" name="cityu_search" style="margin:0"><b>Find a Page </b><input type="text" name="in_text" size="30" maxlength="65" id="keyword_in_id"> <input type="submit" value="Go"></form></font></td></tr></tbody></table>
+<span class="pageheaderlinks2">
+<map name="Module_Navigation_Links_H" title="Module Navigation Links">
+<p>
+<a href="#skip_Module_Navigation_Links_H" onmouseover="window.status='Skip Module Navigation Links'; return true" onmouseout="window.status=''; return true" onfocus="window.status='Skip Module Navigation Links'; return true" onblur="window.status=''; return true" class="skiplinks">Skip Module Navigation Links</a>
+</p><table class="plaintable" summary="This is main table for displaying Tab Items." width="100%" cellspacing="0" cellpadding="0" border="0">
+<tbody><tr>
+<td class="pldefault">
+<table class="plaintable" summary="This table displays Tab Items." cellspacing="0" cellpadding="0" border="0">
+<tbody><tr>
+<td class="taboff" height="22">
+<a href="/pls/PROD/twbkwbis.P_GenMenu?name=bmenu.P_MainMnu">Personal Information</a>
+</td>
+<td class="bgtaboff" height="22" valign="top" align="right">
+<img src="/wtlgifs/web_tab_corner_right.gif" alt="Tab Corner Right" class="headerImg" title="Tab Corner Right" name="web_tab_corner_right" hspace="0" vspace="0" border="0" height="20" width="8">
+</td>
+<td class="taboff" height="22">
+<a href="/pls/PROD/twbkwbis.P_GenMenu?name=amenu.P_AdminMnu">Student Record</a>
+</td>
+<td class="bgtaboff" height="22" valign="top" align="right">
+<img src="/wtlgifs/web_tab_corner_right.gif" alt="Tab Corner Right" class="headerImg" title="Tab Corner Right" name="web_tab_corner_right" hspace="0" vspace="0" border="0" height="20" width="8">
+</td>
+<td class="taboff" height="22">
+<a href="/pls/PROD/twbkwbis.P_GenMenu?name=amenu.P_RegMnu">Course Registration</a>
+</td>
+<td class="bgtaboff" height="22" valign="top" align="right">
+<img src="/wtlgifs/web_tab_corner_right.gif" alt="Tab Corner Right" class="headerImg" title="Tab Corner Right" name="web_tab_corner_right" hspace="0" vspace="0" border="0" height="20" width="8">
+</td>
+<td class="taboff" height="22">
+<a href="/pls/PROD/twbkwbis.P_GenMenu?name=amenu_cityu.P_StudServMnu">Student Services</a>
+</td>
+<td class="bgtaboff" height="22" valign="top" align="right">
+<img src="/wtlgifs/web_tab_corner_right.gif" alt="Tab Corner Right" class="headerImg" title="Tab Corner Right" name="web_tab_corner_right" hspace="0" vspace="0" border="0" height="20" width="8">
+</td>
+<td class="taboff" height="22">
+<a href="/pls/PROD/twbkwbis.P_GenMenu?name=amenu_cityu.P_StudyPlan">Study Plan</a>
+</td>
+<td class="bgtaboff" height="22" valign="top" align="right">
+<img src="/wtlgifs/web_tab_corner_right.gif" alt="Tab Corner Right" class="headerImg" title="Tab Corner Right" name="web_tab_corner_right" hspace="0" vspace="0" border="0" height="20" width="8">
+</td>
+<td class="taboff" height="22">
+<a href="/pls/PROD/twbkwbis.P_GenMenu?name=amenu_cityu.P_NewStudMnu">Services for New Student</a>
+</td>
+<td class="bgtaboff" height="22" valign="top" align="right">
+<img src="/wtlgifs/web_tab_corner_right.gif" alt="Tab Corner Right" class="headerImg" title="Tab Corner Right" name="web_tab_corner_right" hspace="0" vspace="0" border="0" height="20" width="8">
+</td>
+</tr>
+</tbody></table>
+</td>
+</tr>
+<tr>
+<td class="bgtabon" width="100%" colspan="2"><img src="/wtlgifs/web_transparent.gif" alt="Transparent Image" class="headerImg" title="Transparent Image" name="web_transparent" hspace="0" vspace="0" border="0" height="3" width="10"></td></tr></tbody></table>
+</map>
+</span>
+<a name="skip_Module_Navigation_Links_H"></a>
+<form name="twbktmlb_cityu_f1" style="margin:0">
+<input type="hidden" name="event_time" value="1788017441289">
+<input type="hidden" name="last_time" value="1788017441289">
+<input type="hidden" name="event_time_x" value="2026-08-29.23:30:41">
+<input type="hidden" name="last_time_x" value="2026-08-29.23:30:41">
+<input type="hidden" name="timer" value="2026-08-29.23:30:41">
+</form>
+<script language="JavaScript" type="text/javascript">
+<!--
+
+        var twbktmlb_cityu_xmlhttp;
+        var twbktmlb_cityu_timer;
+        var init_time;
+        var init_time_x;
+
+        function twbktmlb_cityu_curtime()
+        {
+           mysysdt = new Date();
+           return mysysdt;
+        }
+        function twbktmlb_cityu_curtime_x(pdate)
+        {
+	   cyy = pdate.getFullYear();
+           cmm = pdate.getMonth() + 1;
+           cdd = pdate.getDate();
+           chr = pdate.getHours();
+           cmn = pdate.getMinutes();
+           css = pdate.getSeconds();
+           if (cmm < 10){cmm = "0" + cmm};
+           if (cdd < 10){cdd = "0" + cdd};
+           if (chr < 10){chr = "0" + chr};
+           if (cmn < 10){cmn = "0" + cmn};
+           if (css < 10){css = "0" + css};
+           return cyy + "-" + cmm + "-" + cdd + "." + chr + ":" + cmn + ":" + css;
+        }
+
+        function twbktmlb_cityu_UpdateLastAccess(ptime) {
+           twbktmlb_cityu_xmlhttp=twbktmlb_cityu_GetXmlHttpObject();
+           if (twbktmlb_cityu_xmlhttp==null) {
+              alert ("Your browser does not support XMLHTTP!");
+              return;
+           }
+           var url="twbktmlb_cityu.P_Release_Timeout?in_pd=1667567&in_tm="+ptime+"&in_ran=214950139302340082629";
+
+           twbktmlb_cityu_xmlhttp.onreadystatechange=twbktmlb_cityu_stateChanged;
+           twbktmlb_cityu_xmlhttp.open("GET",url,true);
+           twbktmlb_cityu_xmlhttp.send(null);
+        }
+
+        function twbktmlb_cityu_GetXmlHttpObject() {
+           if (window.XMLHttpRequest) {
+              // code for IE7+, Firefox, Chrome, Opera, Safari
+              return new XMLHttpRequest();
+           }
+           if (window.ActiveXObject) {
+              // code for IE6, IE5
+              return new ActiveXObject("Microsoft.XMLHTTP");
+           }
+        }
+
+           function twbktmlb_cityu_stateChanged() {
+           if (twbktmlb_cityu_xmlhttp.readyState==4) {
+              if (twbktmlb_cityu_xmlhttp.responseText.substring(0,6) == "Failed") {
+                  window.clearTimeout(twbktmlb_cityu_timer);
+              }
+           }
+           }
+
+        function twbktmlb_cityu_init()
+        {
+          if (document.addEventListener)
+          {
+              document.addEventListener("click",twbktmlb_cityu_KeyMouseDown,false);
+              document.addEventListener("keydown",twbktmlb_cityu_KeyMouseDown,false);
+          }
+          else if (document.attachEvent)
+          {
+              document.attachEvent("onkeydown", twbktmlb_cityu_KeyMouseDown);
+              document.attachEvent("onmousedown", twbktmlb_cityu_KeyMouseDown);
+          }
+          else
+          {
+             document.onkeydown=twbktmlb_cityu_KeyMouseDown;
+             document.onmousedown=twbktmlb_cityu_KeyMouseDown;
+          }
+          var cur_date = twbktmlb_cityu_curtime();
+          var cur_date_str = twbktmlb_cityu_curtime_x(cur_date);
+          init_time = cur_date.valueOf();
+          init_time_x = cur_date_str;
+          if (document.twbktmlb_cityu_f1.last_time_x.value == "") {
+             document.twbktmlb_cityu_f1.last_time.value=cur_date.valueOf();
+             document.twbktmlb_cityu_f1.last_time_x.value=cur_date_str;
+          }
+          document.twbktmlb_cityu_f1.event_time.value=cur_date.valueOf();
+          document.twbktmlb_cityu_f1.event_time_x.value=cur_date_str;
+
+          window.setTimeout("twbktmlb_cityu_init_2();", 0.01 * 1000);
+          twbktmlb_cityu_timer=window.setTimeout("twbktmlb_cityu_ChkTimeOut();", 5 * 1000);
+          document.twbktmlb_cityu_f1.timer.value=cur_date_str;
+        }
+        function twbktmlb_cityu_init_2()
+        {
+	   document.twbktmlb_cityu_f1.event_time.value=init_time;
+           document.twbktmlb_cityu_f1.event_time_x.value=init_time_x;
+        }
+        function twbktmlb_cityu_UpdateEventTime()
+        {
+           var cur_date = twbktmlb_cityu_curtime();
+           var cur_date_str = twbktmlb_cityu_curtime_x(cur_date);
+	   document.twbktmlb_cityu_f1.event_time.value=cur_date.valueOf();
+           document.twbktmlb_cityu_f1.event_time_x.value=cur_date_str;
+        }
+
+        function twbktmlb_cityu_KeyMouseDown(e)
+        {
+           if (!e) e= event;
+               twbktmlb_cityu_UpdateEventTime();
+        }
+        function twbktmlb_cityu_ChkTimeOut()
+        {
+
+           var cur_date = twbktmlb_cityu_curtime();
+           var cur_date_str = twbktmlb_cityu_curtime_x(cur_date);
+           var t0 = document.twbktmlb_cityu_f1.last_time.value;
+           var t1 = document.twbktmlb_cityu_f1.event_time.value;
+           var t2 = cur_date.valueOf();
+           if ( ((t2 - t0) >= 13.5 * 60 * 1000) && (t1 > t0) )
+
+           {
+               twbktmlb_cityu_UpdateLastAccess(document.twbktmlb_cityu_f1.event_time_x.value);
+               document.twbktmlb_cityu_f1.last_time.value=t1;
+               document.twbktmlb_cityu_f1.last_time_x.value=document.twbktmlb_cityu_f1.event_time_x.value;
+           };
+           twbktmlb_cityu_timer=window.setTimeout("twbktmlb_cityu_ChkTimeOut();", 5 * 1000);
+           document.twbktmlb_cityu_f1.timer.value=cur_date_str;
+        };
+        twbktmlb_cityu_init();
+// end -->
+</script>
+<br>
+</div>
+<div class="pagetitlediv">
+<table class="plaintable" summary="This table displays title and static header displays." width="100%">
+<tbody><tr>
+<td class="pldefault">
+<h2>Student Detail Schedule</h2>
+</td>
+<td class="pldefault">
+&nbsp;
+</td>
+<td class="pldefault"><p class="rightaligntext" p="">
+</p><div class="staticheaders">
+60567710 Ji WU<br>
+Semester A 2026/27<br>
+Aug 29, 2026 11:30 pm<br>
+</div>
+</td>
+</tr>
+<tr>
+<td class="bg3" width="100%" colspan="3"><img src="/wtlgifs/web_transparent.gif" alt="Transparent Image" class="headerImg" title="Transparent Image" name="web_transparent" hspace="0" vspace="0" border="0" height="3" width="10"></td>
+</tr>
+</tbody></table>
+<a name="main_content"></a>
+</div>
+<div class="body">
+<!--  ** END OF twbkwbis.P_OpenDoc **  -->
+<div class="infotextdiv"><table class="infotexttable" summary="This layout table contains information that may be helpful in understanding the content and functionality of this page.  It could be a brief set of instructions, a description of error messages, or other special information."><tbody><tr><td class="indefault"><span class="infotext">  <font size="3.5">As some courses do not meet every week, you are strongly advised to observe the date range of each course before attending the classes.</font></span></td></tr></tbody></table><p></p></div>
+Total Credit Hours: 18.000
+<br>
+<br>
+<table class="datadisplaytable" summary="This layout table is used to present the schedule course detail" cellspacing="0" cellpadding="2"><caption class="captiontext">Introduction to Comp Programme - CS 1315 - C01</caption>
+<tbody><tr>
+<th colspan="2" class="ddlabel" scope="row">Associated Term:</th>
+<td class="dddefault">Semester A 2026/27</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row"><acronym title="Course Reference Number">CRN</acronym>:</th>
+<td class="dddefault">13018</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Status:</th>
+<td class="dddefault">Registered on Aug 21, 2026</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Assigned Instructor:</th>
+<td class="dddefault">
+Ka Chun K. LEE
+</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Grade Mode:</th>
+<td class="dddefault">Letter grade</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Credits:</th>
+<td class="dddefault">    3.000</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Level:</th>
+<td class="dddefault">Bachelor's Degree</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Campus:</th>
+<td class="dddefault">Main Campus</td>
+</tr>
+</tbody></table>
+<table class="datadisplaytable" summary="This table lists the scheduled meeting times and assigned instructors for this class.." cellspacing="0" cellpadding="2"><caption class="captiontext">Scheduled Meeting Times</caption>
+<tbody><tr>
+<th class="ddheader" scope="col">Type</th>
+<th class="ddheader" scope="col">Time</th>
+<th class="ddheader" scope="col">Days</th>
+<th class="ddheader" scope="col">Where</th>
+<th class="ddheader" scope="col">Date Range</th>
+<th class="ddheader" scope="col">Schedule Type</th>
+<th class="ddheader" scope="col">Instructors</th>
+</tr>
+<tr>
+<td class="dddefault">Class</td>
+<td class="dddefault">12:00 pm - 2:50 pm</td>
+<td class="dddefault">F</td>
+<td class="dddefault">Mong Man Wai Building 2450</td>
+<td class="dddefault">Aug 31, 2026 - Nov 28, 2026</td>
+<td class="dddefault">First room</td>
+<td class="dddefault">Ka Chun Kenneth  LEE (<abbr title="Primary">P</abbr>)</td>
+</tr>
+</tbody></table>
+<br>
+<table class="datadisplaytable" summary="This layout table is used to present the schedule course detail" cellspacing="0" cellpadding="2"><caption class="captiontext">Introduction to Comp Programme - CS 1315 - L02</caption>
+<tbody><tr>
+<th colspan="2" class="ddlabel" scope="row">Associated Term:</th>
+<td class="dddefault">Semester A 2026/27</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row"><acronym title="Course Reference Number">CRN</acronym>:</th>
+<td class="dddefault">13021</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Status:</th>
+<td class="dddefault">Registered on Aug 21, 2026</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Assigned Instructor:</th>
+<td class="dddefault">
+Ka Chun K. LEE
+</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Grade Mode:</th>
+<td class="dddefault">Letter grade</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Credits:</th>
+<td class="dddefault">    0.000</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Level:</th>
+<td class="dddefault">Bachelor's Degree</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Campus:</th>
+<td class="dddefault">Main Campus</td>
+</tr>
+</tbody></table>
+<table class="datadisplaytable" summary="This table lists the scheduled meeting times and assigned instructors for this class.." cellspacing="0" cellpadding="2"><caption class="captiontext">Scheduled Meeting Times</caption>
+<tbody><tr>
+<th class="ddheader" scope="col">Type</th>
+<th class="ddheader" scope="col">Time</th>
+<th class="ddheader" scope="col">Days</th>
+<th class="ddheader" scope="col">Where</th>
+<th class="ddheader" scope="col">Date Range</th>
+<th class="ddheader" scope="col">Schedule Type</th>
+<th class="ddheader" scope="col">Instructors</th>
+</tr>
+<tr>
+<td class="dddefault">Class</td>
+<td class="dddefault">3:00 pm - 3:50 pm</td>
+<td class="dddefault">T</td>
+<td class="dddefault">Li Dak Sum Yip Yio Chin A Bldg 4208</td>
+<td class="dddefault">Aug 31, 2026 - Nov 28, 2026</td>
+<td class="dddefault">First room</td>
+<td class="dddefault">Ka Chun Kenneth  LEE (<abbr title="Primary">P</abbr>)</td>
+</tr>
+</tbody></table>
+<br>
+<table class="datadisplaytable" summary="This layout table is used to present the schedule course detail" cellspacing="0" cellpadding="2"><caption class="captiontext">Introduction to Data Science - DSC 1001 - C01</caption>
+<tbody><tr>
+<th colspan="2" class="ddlabel" scope="row">Associated Term:</th>
+<td class="dddefault">Semester A 2026/27</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row"><acronym title="Course Reference Number">CRN</acronym>:</th>
+<td class="dddefault">12087</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Status:</th>
+<td class="dddefault">Registered on Aug 21, 2026</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Assigned Instructor:</th>
+<td class="dddefault">
+Kevin Yang CAI
+</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Grade Mode:</th>
+<td class="dddefault">Letter grade</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Credits:</th>
+<td class="dddefault">    2.000</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Level:</th>
+<td class="dddefault">Bachelor's Degree</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Campus:</th>
+<td class="dddefault">Main Campus</td>
+</tr>
+</tbody></table>
+<table class="datadisplaytable" summary="This table lists the scheduled meeting times and assigned instructors for this class.." cellspacing="0" cellpadding="2"><caption class="captiontext">Scheduled Meeting Times</caption>
+<tbody><tr>
+<th class="ddheader" scope="col">Type</th>
+<th class="ddheader" scope="col">Time</th>
+<th class="ddheader" scope="col">Days</th>
+<th class="ddheader" scope="col">Where</th>
+<th class="ddheader" scope="col">Date Range</th>
+<th class="ddheader" scope="col">Schedule Type</th>
+<th class="ddheader" scope="col">Instructors</th>
+</tr>
+<tr>
+<td class="dddefault">Class</td>
+<td class="dddefault">12:00 pm - 2:50 pm</td>
+<td class="dddefault">M</td>
+<td class="dddefault">Li Dak Sum Yip Yio Chin A Bldg 3505</td>
+<td class="dddefault">Aug 31, 2026 - Nov 28, 2026</td>
+<td class="dddefault">First room</td>
+<td class="dddefault">Kevin Yang   CAI (<abbr title="Primary">P</abbr>)</td>
+</tr>
+</tbody></table>
+<br>
+<table class="datadisplaytable" summary="This layout table is used to present the schedule course detail" cellspacing="0" cellpadding="2"><caption class="captiontext">Exploring Gen AI in Practice - GE 1362 - C01</caption>
+<tbody><tr>
+<th colspan="2" class="ddlabel" scope="row">Associated Term:</th>
+<td class="dddefault">Semester A 2026/27</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row"><acronym title="Course Reference Number">CRN</acronym>:</th>
+<td class="dddefault">14467</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Status:</th>
+<td class="dddefault">Web registered on Aug 26, 2026</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Assigned Instructor:</th>
+<td class="dddefault">
+Ziye MA
+</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Grade Mode:</th>
+<td class="dddefault">Letter grade</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Credits:</th>
+<td class="dddefault">    3.000</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Level:</th>
+<td class="dddefault">Bachelor's Degree</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Campus:</th>
+<td class="dddefault">Main Campus</td>
+</tr>
+</tbody></table>
+<table class="datadisplaytable" summary="This table lists the scheduled meeting times and assigned instructors for this class.." cellspacing="0" cellpadding="2"><caption class="captiontext">Scheduled Meeting Times</caption>
+<tbody><tr>
+<th class="ddheader" scope="col">Type</th>
+<th class="ddheader" scope="col">Time</th>
+<th class="ddheader" scope="col">Days</th>
+<th class="ddheader" scope="col">Where</th>
+<th class="ddheader" scope="col">Date Range</th>
+<th class="ddheader" scope="col">Schedule Type</th>
+<th class="ddheader" scope="col">Instructors</th>
+</tr>
+<tr>
+<td class="dddefault">Class</td>
+<td class="dddefault">4:00 pm - 5:50 pm</td>
+<td class="dddefault">R</td>
+<td class="dddefault">Li Dak Sum Yip Yio Chin A Bldg 1507</td>
+<td class="dddefault">Aug 31, 2026 - Nov 28, 2026</td>
+<td class="dddefault">First room</td>
+<td class="dddefault">Ziye   MA (<abbr title="Primary">P</abbr>)</td>
+</tr>
+</tbody></table>
+<br>
+<table class="datadisplaytable" summary="This layout table is used to present the schedule course detail" cellspacing="0" cellpadding="2"><caption class="captiontext">Exploring Gen AI in Practice - GE 1362 - T01</caption>
+<tbody><tr>
+<th colspan="2" class="ddlabel" scope="row">Associated Term:</th>
+<td class="dddefault">Semester A 2026/27</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row"><acronym title="Course Reference Number">CRN</acronym>:</th>
+<td class="dddefault">14468</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Status:</th>
+<td class="dddefault">Web registered on Aug 26, 2026</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Assigned Instructor:</th>
+<td class="dddefault">
+Ziye MA
+</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Grade Mode:</th>
+<td class="dddefault">Letter grade</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Credits:</th>
+<td class="dddefault">    0.000</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Level:</th>
+<td class="dddefault">Bachelor's Degree</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Campus:</th>
+<td class="dddefault">Main Campus</td>
+</tr>
+</tbody></table>
+<table class="datadisplaytable" summary="This table lists the scheduled meeting times and assigned instructors for this class.." cellspacing="0" cellpadding="2"><caption class="captiontext">Scheduled Meeting Times</caption>
+<tbody><tr>
+<th class="ddheader" scope="col">Type</th>
+<th class="ddheader" scope="col">Time</th>
+<th class="ddheader" scope="col">Days</th>
+<th class="ddheader" scope="col">Where</th>
+<th class="ddheader" scope="col">Date Range</th>
+<th class="ddheader" scope="col">Schedule Type</th>
+<th class="ddheader" scope="col">Instructors</th>
+</tr>
+<tr>
+<td class="dddefault">Class</td>
+<td class="dddefault">6:00 pm - 6:50 pm</td>
+<td class="dddefault">R</td>
+<td class="dddefault">Li Dak Sum Yip Yio Chin A Bldg 1507</td>
+<td class="dddefault">Aug 31, 2026 - Nov 28, 2026</td>
+<td class="dddefault">First room</td>
+<td class="dddefault">Ziye   MA (<abbr title="Primary">P</abbr>)</td>
+</tr>
+</tbody></table>
+<br>
+<table class="datadisplaytable" summary="This layout table is used to present the schedule course detail" cellspacing="0" cellpadding="2"><caption class="captiontext">University English - GE 1401 - A01</caption>
+<tbody><tr>
+<th colspan="2" class="ddlabel" scope="row">Associated Term:</th>
+<td class="dddefault">Semester A 2026/27</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row"><acronym title="Course Reference Number">CRN</acronym>:</th>
+<td class="dddefault">10904</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Status:</th>
+<td class="dddefault">Registered on Aug 25, 2026</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Assigned Instructor:</th>
+<td colspan="1" class="dddefault">&nbsp;</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Grade Mode:</th>
+<td class="dddefault">Letter grade</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Credits:</th>
+<td class="dddefault">    0.000</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Level:</th>
+<td class="dddefault">Bachelor's Degree</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Campus:</th>
+<td class="dddefault">Main Campus</td>
+</tr>
+</tbody></table>
+<br>
+<table class="datadisplaytable" summary="This layout table is used to present the schedule course detail" cellspacing="0" cellpadding="2"><caption class="captiontext">University English - GE 1401 - T83</caption>
+<tbody><tr>
+<th colspan="2" class="ddlabel" scope="row">Associated Term:</th>
+<td class="dddefault">Semester A 2026/27</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row"><acronym title="Course Reference Number">CRN</acronym>:</th>
+<td class="dddefault">11498</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Status:</th>
+<td class="dddefault">Registered on Aug 25, 2026</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Assigned Instructor:</th>
+<td class="dddefault">
+Cecily CHAO
+</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Grade Mode:</th>
+<td class="dddefault">Letter grade</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Credits:</th>
+<td class="dddefault">    3.000</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Level:</th>
+<td class="dddefault">Bachelor's Degree</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Campus:</th>
+<td class="dddefault">Main Campus</td>
+</tr>
+</tbody></table>
+<table class="datadisplaytable" summary="This table lists the scheduled meeting times and assigned instructors for this class.." cellspacing="0" cellpadding="2"><caption class="captiontext">Scheduled Meeting Times</caption>
+<tbody><tr>
+<th class="ddheader" scope="col">Type</th>
+<th class="ddheader" scope="col">Time</th>
+<th class="ddheader" scope="col">Days</th>
+<th class="ddheader" scope="col">Where</th>
+<th class="ddheader" scope="col">Date Range</th>
+<th class="ddheader" scope="col">Schedule Type</th>
+<th class="ddheader" scope="col">Instructors</th>
+</tr>
+<tr>
+<td class="dddefault">Class</td>
+<td class="dddefault">3:00 pm - 5:50 pm</td>
+<td class="dddefault">F</td>
+<td class="dddefault">Li Dak Sum Yip Yio Chin A Bldg 2413</td>
+<td class="dddefault">Aug 31, 2026 - Nov 28, 2026</td>
+<td class="dddefault">First room</td>
+<td class="dddefault">Cecily   CHAO (<abbr title="Primary">P</abbr>)</td>
+</tr>
+</tbody></table>
+<br>
+<table class="datadisplaytable" summary="This layout table is used to present the schedule course detail" cellspacing="0" cellpadding="2"><caption class="captiontext">English for Science - GE 2401 - A02</caption>
+<tbody><tr>
+<th colspan="2" class="ddlabel" scope="row">Associated Term:</th>
+<td class="dddefault">Semester A 2026/27</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row"><acronym title="Course Reference Number">CRN</acronym>:</th>
+<td class="dddefault">10907</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Status:</th>
+<td class="dddefault">Web registered on Aug 24, 2026</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Assigned Instructor:</th>
+<td colspan="1" class="dddefault">&nbsp;</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Grade Mode:</th>
+<td class="dddefault">Letter grade</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Credits:</th>
+<td class="dddefault">    0.000</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Level:</th>
+<td class="dddefault">Bachelor's Degree</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Campus:</th>
+<td class="dddefault">Main Campus</td>
+</tr>
+</tbody></table>
+<br>
+<table class="datadisplaytable" summary="This layout table is used to present the schedule course detail" cellspacing="0" cellpadding="2"><caption class="captiontext">English for Science - GE 2401 - T01</caption>
+<tbody><tr>
+<th colspan="2" class="ddlabel" scope="row">Associated Term:</th>
+<td class="dddefault">Semester A 2026/27</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row"><acronym title="Course Reference Number">CRN</acronym>:</th>
+<td class="dddefault">12128</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Status:</th>
+<td class="dddefault">Web registered on Aug 24, 2026</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Assigned Instructor:</th>
+<td class="dddefault">
+Allan Chu Lim CHEUNG
+</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Grade Mode:</th>
+<td class="dddefault">Letter grade</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Credits:</th>
+<td class="dddefault">    3.000</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Level:</th>
+<td class="dddefault">Bachelor's Degree</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Campus:</th>
+<td class="dddefault">Main Campus</td>
+</tr>
+</tbody></table>
+<table class="datadisplaytable" summary="This table lists the scheduled meeting times and assigned instructors for this class.." cellspacing="0" cellpadding="2"><caption class="captiontext">Scheduled Meeting Times</caption>
+<tbody><tr>
+<th class="ddheader" scope="col">Type</th>
+<th class="ddheader" scope="col">Time</th>
+<th class="ddheader" scope="col">Days</th>
+<th class="ddheader" scope="col">Where</th>
+<th class="ddheader" scope="col">Date Range</th>
+<th class="ddheader" scope="col">Schedule Type</th>
+<th class="ddheader" scope="col">Instructors</th>
+</tr>
+<tr>
+<td class="dddefault">Class</td>
+<td class="dddefault">9:00 am - 11:50 am</td>
+<td class="dddefault">F</td>
+<td class="dddefault">Yeung Kin Man Acad Building B5-207</td>
+<td class="dddefault">Aug 31, 2026 - Nov 28, 2026</td>
+<td class="dddefault">First room</td>
+<td class="dddefault">Allan Chu Lim   CHEUNG (<abbr title="Primary">P</abbr>)</td>
+</tr>
+</tbody></table>
+<br>
+<table class="datadisplaytable" summary="This layout table is used to present the schedule course detail" cellspacing="0" cellpadding="2"><caption class="captiontext">Calculus - MA 1508 - CA1</caption>
+<tbody><tr>
+<th colspan="2" class="ddlabel" scope="row">Associated Term:</th>
+<td class="dddefault">Semester A 2026/27</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row"><acronym title="Course Reference Number">CRN</acronym>:</th>
+<td class="dddefault">11511</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Status:</th>
+<td class="dddefault">Registered on Aug 21, 2026</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Assigned Instructor:</th>
+<td class="dddefault">
+Lizuo LIU
+</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Grade Mode:</th>
+<td class="dddefault">Letter grade</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Credits:</th>
+<td class="dddefault">    4.000</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Level:</th>
+<td class="dddefault">Bachelor's Degree</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Campus:</th>
+<td class="dddefault">Main Campus</td>
+</tr>
+</tbody></table>
+<table class="datadisplaytable" summary="This table lists the scheduled meeting times and assigned instructors for this class.." cellspacing="0" cellpadding="2"><caption class="captiontext">Scheduled Meeting Times</caption>
+<tbody><tr>
+<th class="ddheader" scope="col">Type</th>
+<th class="ddheader" scope="col">Time</th>
+<th class="ddheader" scope="col">Days</th>
+<th class="ddheader" scope="col">Where</th>
+<th class="ddheader" scope="col">Date Range</th>
+<th class="ddheader" scope="col">Schedule Type</th>
+<th class="ddheader" scope="col">Instructors</th>
+</tr>
+<tr>
+<td class="dddefault">Class</td>
+<td class="dddefault">12:00 pm - 2:50 pm</td>
+<td class="dddefault">T</td>
+<td class="dddefault">Yeung Kin Man Acad Building LT-6</td>
+<td class="dddefault">Aug 31, 2026 - Nov 28, 2026</td>
+<td class="dddefault">First room</td>
+<td class="dddefault">Lizuo   LIU (<abbr title="Primary">P</abbr>)</td>
+</tr>
+</tbody></table>
+<br>
+<table class="datadisplaytable" summary="This layout table is used to present the schedule course detail" cellspacing="0" cellpadding="2"><caption class="captiontext">Calculus - MA 1508 - TA1</caption>
+<tbody><tr>
+<th colspan="2" class="ddlabel" scope="row">Associated Term:</th>
+<td class="dddefault">Semester A 2026/27</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row"><acronym title="Course Reference Number">CRN</acronym>:</th>
+<td class="dddefault">11709</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Status:</th>
+<td class="dddefault">Registered on Aug 21, 2026</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Assigned Instructor:</th>
+<td class="dddefault">
+Dongrui SHEN
+</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Grade Mode:</th>
+<td class="dddefault">Letter grade</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Credits:</th>
+<td class="dddefault">    0.000</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Level:</th>
+<td class="dddefault">Bachelor's Degree</td>
+</tr>
+<tr>
+<th colspan="2" class="ddlabel" scope="row">Campus:</th>
+<td class="dddefault">Main Campus</td>
+</tr>
+</tbody></table>
+<table class="datadisplaytable" summary="This table lists the scheduled meeting times and assigned instructors for this class.." cellspacing="0" cellpadding="2"><caption class="captiontext">Scheduled Meeting Times</caption>
+<tbody><tr>
+<th class="ddheader" scope="col">Type</th>
+<th class="ddheader" scope="col">Time</th>
+<th class="ddheader" scope="col">Days</th>
+<th class="ddheader" scope="col">Where</th>
+<th class="ddheader" scope="col">Date Range</th>
+<th class="ddheader" scope="col">Schedule Type</th>
+<th class="ddheader" scope="col">Instructors</th>
+</tr>
+<tr>
+<td class="dddefault">Class</td>
+<td class="dddefault">3:00 pm - 3:50 pm</td>
+<td class="dddefault">M</td>
+<td class="dddefault">Yeung Kin Man Acad Building LT-18</td>
+<td class="dddefault">Aug 31, 2026 - Nov 28, 2026</td>
+<td class="dddefault">First room</td>
+<td class="dddefault">Dongrui   SHEN (<abbr title="Primary">P</abbr>)</td>
+</tr>
+</tbody></table>
+<br>
+<a href="javascript:history.go(-1)" onmouseover="window.status='Return to Previous';  return true" onfocus="window.status='Return to Previous';  return true" onmouseout="window.status='';  return true" onblur="window.status='';  return true">Return to Previous</a>
+
+<!--  ** START OF twbkwbis.P_CloseDoc **  -->
+<table style="margin:0"></table>
+<a href="#top" onmouseover="window.status='Skip to top of page'; return true" onmouseout="window.status=''; return true" onfocus="window.status='Skip to top of page'; return true" onblur="window.status=''; return true" class="skiplinks">Skip to top of page</a>
+</div>
+<div class="footerbeforediv">
+
+</div>
+<div class="footer_outer"> <div class="footer_inner">
+<div class="poweredbydiv">
+<a href="https://apps.apple.com/hk/app/cityu-mobile/id750718911" target="_blank"> <img id="imgAppIOS" class="app-button" src="/cityu2/gifs/button_ios_apps.png" alt="Download iPhone/iPad app for AIMS" style="border-width:0px;" width="100px"></a> <a href="https://play.google.com/store/apps/details?id=hk.edu.cityu.mobile" target="_blank"> <img id="imgAppAndroid" class="app-button" src="/cityu2/gifs/button_android_apps.png" alt="Download Android app for AIMS" style="border-width:0px;" width="100px"></a> <a href="http://www6.cityu.edu.hk/web2.0/#apps" target="_blank"> <img id="ctl00_imgApp" class="app-button" src="/cityu2/gifs/button_cityu_apps.png" alt="CityU Apps" style="border-width:0px;" width="100px"></a>
+</div>
+<table class="plaintable" width="100%">
+<tbody><tr>
+<td class="pldefault">[ <a href="#" class="submenulinktext2" onclick="popup=window.open('/cityu/pics.htm','PopupPage','height=450,width=500,scrollbars=yes,resizable=yes'); window.popup.focus(); return false" target="_blank">Personal Information Collection Statement</a> | <a href="#" class="submenulinktext2" onclick="popup=window.open('/cityu/cityu_copyright.htm','PopupPage','height=450,width=500,scrollbars=yes,resizable=yes'); window.popup.focus(); return false" target="_blank">Copyright</a> | <a href="#" class="submenulinktext2" onclick="popup=window.open('/cityu/cityu_copyright.htm','PopupPage','height=450,width=500,scrollbars=yes,resizable=yes'); window.popup.focus(); return false" target="_blank">Disclaimer</a> ]<br>© 2026 City University of Hong Kong. All Rights Reserved.</td>
+<td class="pldefault" width="3%">&nbsp;</td>
+<td class="pldefault">IT Service Desk: +852 3442-8340<br>Email: <a href="mailto:it.servicedesk@cityu.edu.hk" class="submenulinktext2">it.servicedesk@cityu.edu.hk</a></td>
+</tr>
+</tbody></table>
+<div class="footerafterdiv">
+
+</div>
+<div class="globalafterdiv">
+
+</div>
+<div class="globalfooterdiv">
+
+</div>
+<div class="pagefooterdiv">
+<strong>Release: 8.7.1</strong></div>
+</div>
+<div class="poweredbydiv">
+</div>
+<div class="div1"></div>
+<div class="div2"></div>
+<div class="div3"></div>
+<div class="div4"></div>
+<div class="div5"></div>
+<div class="div6"></div>
+<div class="banner_copyright"></div>
+<!-- Google tag (gtag.js) --> <script async="" src="https://www.googletagmanager.com/gtag/js?id=G-LL0S5D6RMP"></script><script> window.dataLayer = window.dataLayer || []; function gtag(){dataLayer.push(arguments);} gtag('js', new Date()); gtag('config', 'G-LL0S5D6RMP'); </script>
+
+
+</div></body></html>

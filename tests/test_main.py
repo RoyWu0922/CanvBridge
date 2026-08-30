@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from backend import apple_script, canvas_client, files_downloader, llm_client, main
+from backend import apple_script, banweb, canvas_client, files_downloader, llm_client, main
 
 client = TestClient(main.app)
 
@@ -46,7 +46,7 @@ def test_sync_announcements(monkeypatch):
 
 def test_add_calendar_event(monkeypatch):
     called = {}
-    def add(calendar_name, title, start, end, location, notes):
+    def add(calendar_name, title, start, end, location, notes, alert_minutes=None):
         called.update(locals())
     monkeypatch.setattr(apple_script, "add_calendar_event", add)
     r = client.post("/api/add_calendar_event", json={
@@ -54,6 +54,19 @@ def test_add_calendar_event(monkeypatch):
         "end": "2026-08-31T15:00:00", "location": "A101", "notes": ""})
     assert r.json() == {"ok": True}
     assert called["title"] == "Quiz"
+    assert called["alert_minutes"] is None
+
+
+def test_add_calendar_event_with_alert(monkeypatch):
+    called = {}
+    def add(calendar_name, title, start, end, location, notes, alert_minutes=None):
+        called["alert_minutes"] = alert_minutes
+    monkeypatch.setattr(apple_script, "add_calendar_event", add)
+    r = client.post("/api/add_calendar_event", json={
+        "calendar_name": "Study", "title": "Quiz", "start": "2026-08-31T14:00:00",
+        "end": "2026-08-31T15:00:00", "location": "", "notes": "", "alert_minutes": 30})
+    assert r.json() == {"ok": True}
+    assert called["alert_minutes"] == 30
 
 
 def test_list_files_and_download(monkeypatch):
@@ -79,3 +92,142 @@ def test_list_files_and_download(monkeypatch):
     dl = r.json()
     assert dl["ok"] is True
     assert dl["downloaded"] == [dest]
+
+
+def test_banweb_status(monkeypatch):
+    monkeypatch.setattr(banweb, "get_status", lambda: {"ok": True, "status": "logged_in"})
+    r = client.post("/api/banweb/status", json={})
+    assert r.json() == {"ok": True, "status": "logged_in"}
+
+
+def test_banweb_open_login(monkeypatch):
+    called = {}
+    monkeypatch.setattr(banweb, "open_login", lambda: called.update(done=True))
+    r = client.post("/api/banweb/open_login", json={})
+    assert r.json() == {"ok": True}
+    assert called.get("done") is True
+
+
+def test_banweb_open_login_error(monkeypatch):
+    def boom():
+        raise banweb.BanwebError("无法打开浏览器")
+    monkeypatch.setattr(banweb, "open_login", boom)
+    r = client.post("/api/banweb/open_login", json={})
+    assert r.json()["ok"] is False
+    assert "无法打开浏览器" in r.json()["error"]
+
+
+def test_banweb_terms(monkeypatch):
+    monkeypatch.setattr(banweb, "list_terms",
+                        lambda: [{"value": "202609", "label": "Semester A 2026/27"}])
+    r = client.post("/api/banweb/terms", json={})
+    assert r.json()["ok"] is True
+    assert r.json()["terms"][0]["value"] == "202609"
+
+
+def test_banweb_schedule(monkeypatch):
+    monkeypatch.setattr(banweb, "get_schedule", lambda term: [{"code": "CS1315"}])
+    r = client.post("/api/banweb/schedule", json={"term": "202609"})
+    assert r.json() == {"ok": True, "term": "202609", "courses": [{"code": "CS1315"}]}
+
+
+def test_banweb_schedule_error(monkeypatch):
+    def boom(term):
+        raise banweb.BanwebError("尚未登录 AIMS：请在新打开的浏览器窗口登录后再试")
+    monkeypatch.setattr(banweb, "get_schedule", boom)
+    r = client.post("/api/banweb/schedule", json={"term": "202609"})
+    assert r.json()["ok"] is False
+    assert "尚未登录" in r.json()["error"]
+
+
+def _sched_course(code="CS1315", section="C01", course="Intro to Comp",
+                  time="12:00 pm - 2:50 pm", days="F", room="MMW 2450",
+                  range_="Aug 31, 2026 - Nov 28, 2026", instr="Kenneth LEE (P)"):
+    return {"code": code, "section": section, "course": course,
+            "meetings": [{"time": time, "days": days, "room": room,
+                          "range": range_, "instr": instr}]}
+
+
+def test_banweb_write_calendar_create(monkeypatch):
+    """日历里没有旧事件 → 新建；写入参数正确传递。"""
+    courses = [_sched_course()]
+    specs = banweb.build_event_specs(courses, {"CS1315:C01"})
+    monkeypatch.setattr(banweb, "build_event_specs", lambda cs, sel: specs)
+    created, hidden = [], []
+    monkeypatch.setattr(apple_script, "find_events", lambda cal, prefix: [])
+    monkeypatch.setattr(apple_script, "hide_recurring_event",
+                        lambda cal, summary: hidden.append(summary))
+    monkeypatch.setattr(apple_script, "add_recurring_event",
+                        lambda *a, **k: created.append((a, k)))
+    r = client.post("/api/banweb/write_calendar", json={
+        "calendar_name": "Study", "courses": courses,
+        "selected": ["CS1315:C01"], "alert_minutes": 30})
+    body = r.json()
+    assert body["ok"] is True
+    assert body["created"] == 1
+    assert body["exists"] == 0
+    assert body["updated"] == 0
+    assert body["removed"] == 0
+    assert body["errors"] == 0
+    assert body["items"][0]["status"] == "created"
+    assert hidden == []   # 没有旧事件 → 不隐藏
+    args, _kwargs = created[0]
+    assert args[4] == "2026-11-28"    # until（位置参数）
+    assert args[7] == 30              # alert_minutes
+
+
+def test_banweb_write_calendar_all_exists(monkeypatch):
+    """日历里四元组全等 → 全部跳过，不重复写入、不删除。"""
+    courses = [_sched_course()]
+    specs = banweb.build_event_specs(courses, {"CS1315:C01"})
+    monkeypatch.setattr(banweb, "build_event_specs", lambda cs, sel: specs)
+    sp = specs[0]
+    monkeypatch.setattr(apple_script, "find_events",
+                        lambda cal, prefix: [{"summary": sp["title"],
+                                              "start": sp["start"], "end": sp["end"]}])
+    created, hidden = [], []
+    monkeypatch.setattr(apple_script, "add_recurring_event",
+                        lambda *a, **k: created.append(1))
+    monkeypatch.setattr(apple_script, "hide_recurring_event",
+                        lambda cal, summary: hidden.append(summary))
+    r = client.post("/api/banweb/write_calendar", json={
+        "calendar_name": "Study", "courses": courses,
+        "selected": ["CS1315:C01"]})
+    body = r.json()
+    assert body["created"] == 0
+    assert body["exists"] == 1
+    assert created == []   # 已存在 → 不重复写入
+    assert hidden == []    # 全匹配 → 不隐藏
+
+
+def test_banweb_write_calendar_time_changed_updates(monkeypatch):
+    """旧事件时间已改（标题不变）→ 原地编辑旧事件，状态 updated 并附旧时间。"""
+    courses = [_sched_course()]
+    specs = banweb.build_event_specs(courses, {"CS1315:C01"})
+    monkeypatch.setattr(banweb, "build_event_specs", lambda cs, sel: specs)
+    sp = specs[0]
+    # 旧事件同标题但时间从 12:00-14:50 改到了 10:00-11:50
+    old = {"summary": sp["title"], "start": "2026-09-04T10:00:00",
+           "end": "2026-09-04T11:50:00"}
+    monkeypatch.setattr(apple_script, "find_events", lambda cal, prefix: [old])
+    edits, created, hidden = [], [], []
+    monkeypatch.setattr(apple_script, "edit_recurring_event",
+                        lambda *a: edits.append(a))
+    monkeypatch.setattr(apple_script, "add_recurring_event",
+                        lambda *a, **k: created.append(a))
+    monkeypatch.setattr(apple_script, "hide_recurring_event",
+                        lambda cal, summary: hidden.append(summary))
+    r = client.post("/api/banweb/write_calendar", json={
+        "calendar_name": "Study", "courses": courses,
+        "selected": ["CS1315:C01"]})
+    body = r.json()
+    assert body["updated"] == 1
+    assert body["removed"] == 0       # 同标题重建 → 不算纯删除
+    assert body["items"][0]["status"] == "updated"
+    assert body["items"][0]["old_time"] == "Fri 10:00-11:50"
+    assert len(edits) == 1            # 原地编辑旧事件
+    assert edits[0][0] == "Study"     # calendar_name
+    assert edits[0][1] == sp["title"] # old_summary
+    assert edits[0][2] == sp["title"] # new_summary
+    assert edits[0][3] == sp["start"] # 新开始时间
+    assert created == [] and hidden == []

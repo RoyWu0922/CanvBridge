@@ -5,99 +5,263 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Canvas 课程助手</title>
 <style>
-  :root { --bg:#f5f6fa; --card:#fff; --border:#e2e5ec; --text:#1f2430;
-          --muted:#6b7280; --accent:#2563eb; --ok:#16a34a; --err:#dc2626; }
+  :root {
+    --bg:#f6f7fb; --surface:#ffffff; --surface-2:#eef0f7; --border:#e3e7f0;
+    --ink:#1b2437; --muted:#66708a;
+    --accent:#4f46e5; --accent-strong:#4338ca; --accent-soft:#eef0ff;
+    --ok:#0e7a34; --ok-bg:#e8f7ee; --ok-border:#b5e6c8;
+    --err:#b91c1c; --err-bg:#fdecec; --err-border:#f5c2c2;
+    --shadow-sm:0 1px 2px rgba(27,36,55,.05), 0 1px 3px rgba(27,36,55,.06);
+    --shadow-md:0 8px 28px rgba(27,36,55,.12);
+    --radius:14px; --radius-sm:9px;
+  }
   * { box-sizing:border-box; }
-  body { margin:0; font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
-         background:var(--bg); color:var(--text); }
-  header { padding:16px 24px; background:var(--card); border-bottom:1px solid var(--border); font-size:20px; font-weight:600; }
-  main { max-width:980px; margin:24px auto; padding:0 16px; display:flex; flex-direction:column; gap:20px; }
-  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:18px; }
-  .card h2 { margin:0 0 12px; font-size:16px; }
-  details summary { cursor:pointer; font-size:16px; font-weight:600; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:10px; }
-  label { display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--muted); }
-  input,select,button { padding:8px 10px; border:1px solid var(--border); border-radius:8px; font-size:14px; background:#fff; }
-  button { cursor:pointer; background:var(--accent); color:#fff; border:none; font-weight:500; }
-  button.secondary { background:#e5e7eb; color:var(--text); }
-  button:disabled { opacity:.5; cursor:not-allowed; }
-  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-  .muted { color:var(--muted); font-size:13px; }
-  .ok { color:var(--ok); } .err { color:var(--err); }
-  .course-card { border:1px solid var(--border); border-radius:10px; padding:12px; margin-bottom:12px; }
-  .summary { white-space:pre-wrap; font-size:14px; line-height:1.6; }
-  .item { display:flex; gap:8px; align-items:flex-start; padding:6px 0; border-top:1px dashed var(--border); }
-  .item input { margin-top:2px; }
-  .file-path { color:var(--muted); font-size:12px; }
-  #status { position:fixed; right:16px; bottom:16px; background:#1f2430; color:#fff;
-            padding:10px 14px; border-radius:8px; display:none; max-width:420px; font-size:13px; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+         background:var(--bg); color:var(--ink); font-size:14px; line-height:1.55; -webkit-font-smoothing:antialiased; }
+
+  .app-header { position:sticky; top:0; z-index:20; display:flex; align-items:center; justify-content:space-between;
+    gap:12px; padding:14px 24px; background:rgba(255,255,255,.88); backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--border); }
+  .app-title { font-size:18px; font-weight:700; letter-spacing:-.02em; white-space:nowrap; }
+  .header-right { display:flex; align-items:center; gap:10px; }
+  .range-pill { display:inline-flex; align-items:center; gap:6px; padding:6px 14px; border-radius:999px;
+    background:var(--accent-soft); color:var(--accent); font-size:12.5px; font-weight:600;
+    font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .range-pill::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none; }
+  .icon-btn { width:38px; height:38px; border-radius:50%; border:1px solid var(--border); background:#fff;
+    color:var(--ink); font-size:16px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center;
+    transition:background .15s, transform .25s; flex:none; }
+  .icon-btn:hover { background:var(--surface-2); transform:rotate(25deg); }
+
+  main { max-width:1020px; margin:0 auto; padding:24px 20px 96px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+    box-shadow:var(--shadow-sm); padding:20px 22px; margin-bottom:18px; }
+  .card-head { margin-bottom:14px; }
+  .eyebrow { display:block; font-size:11px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); margin-bottom:3px; }
+  .card-head h2 { margin:0; font-size:16px; font-weight:700; letter-spacing:-.01em; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(248px,1fr)); gap:12px; }
+  .field { display:flex; flex-direction:column; gap:5px; font-size:12px; font-weight:500; color:var(--muted); }
+  input[type=text],input[type=password],input[type=date],select { padding:8px 12px; border:1px solid var(--border);
+    border-radius:var(--radius-sm); background:#fff; color:var(--ink); outline:none; min-width:0;
+    transition:border-color .15s, box-shadow .15s; }
+  input:focus, select:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+  input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-allowed; }
+  .row { display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; }
+
+  .btn { cursor:pointer; padding:9px 16px; border-radius:var(--radius-sm); border:1px solid transparent;
+    font-weight:600; font-size:14px; transition:background .15s, box-shadow .15s, transform .05s; white-space:nowrap; }
+  .btn:active { transform:translateY(1px); }
+  .btn:disabled { opacity:.55; cursor:not-allowed; }
+  .btn-primary { background:var(--accent); color:#fff; }
+  .btn-primary:hover:not(:disabled) { background:var(--accent-strong); box-shadow:0 4px 14px rgba(79,70,229,.30); }
+  .btn-ghost { background:var(--surface-2); color:var(--ink); border-color:var(--border); }
+  .btn-ghost:hover:not(:disabled) { background:#e5e8f2; }
+  .btn-accent { background:var(--accent-soft); color:var(--accent); }
+  .btn-accent:hover:not(:disabled) { background:#e0e3ff; }
+
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+  .chip { display:inline-flex; align-items:center; gap:7px; padding:6px 12px; background:var(--surface-2);
+    border:1px solid var(--border); border-radius:999px; font-size:13px; cursor:pointer; user-select:none; }
+  .chip:hover { border-color:var(--accent); }
+  .chip input { accent-color:var(--accent); margin:0; }
+
+  .tabs { display:flex; gap:4px; border-bottom:1px solid var(--border); margin:-4px 0 18px; }
+  .tab { border:none; background:transparent; padding:10px 16px; font-size:14px; font-weight:600; color:var(--muted);
+    cursor:pointer; position:relative; transition:color .15s; }
+  .tab:hover { color:var(--ink); }
+  .tab.active { color:var(--accent); }
+  .tab.active::after { content:""; position:absolute; left:12px; right:12px; bottom:-1px; height:2px;
+    border-radius:2px; background:var(--accent); }
+  .tab-panel[hidden] { display:none; }
+
+  .filter-bar { display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap; padding:12px 16px;
+    background:var(--surface-2); border:1px solid var(--border); border-radius:12px; margin-bottom:16px; }
+  .filter-label { font-size:12px; font-weight:700; color:var(--muted); align-self:center; letter-spacing:.04em; }
+  .check { display:inline-flex; align-items:center; gap:7px; font-size:13px; font-weight:500; cursor:pointer;
+    align-self:center; padding:7px 12px; border:1px solid var(--border); border-radius:999px; background:#fff;
+    transition:border-color .15s; user-select:none; }
+  .check:hover { border-color:var(--accent); }
+  .check input { accent-color:var(--accent); margin:0; }
+
+  .muted { color:var(--muted); font-size:12px; }
+  .course-card { border:1px solid var(--border); border-left:4px solid var(--accent); border-radius:10px;
+    padding:14px 16px; margin-bottom:14px; background:var(--surface); }
+  .course-name { font-weight:700; font-size:14px; margin-bottom:6px; }
+  .summary { white-space:pre-wrap; font-size:13.5px; line-height:1.7; }
+  .sub-label { margin:12px 0 4px; font-size:12px; font-weight:600; color:var(--muted); }
+  .sub-label .count { color:var(--accent); font-variant-numeric:tabular-nums; }
+  .item { display:flex; gap:10px; align-items:flex-start; padding:7px 0; border-top:1px dashed var(--border); }
+  .item input { margin-top:3px; accent-color:var(--accent); }
+  .item-title { font-size:13.5px; font-weight:500; }
+  .file-path { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+  .write-bar { display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-top:16px;
+    padding-top:14px; border-top:1px solid var(--border); }
+  .empty { padding:30px 0; text-align:center; color:var(--muted); font-size:13.5px; }
+  .empty .big { font-size:22px; display:block; margin-bottom:8px; }
+  .sched-badge { display:inline-block; padding:2px 9px; border-radius:999px; font-size:11.5px; font-weight:600; margin-left:8px; vertical-align:2px; }
+  .sched-badge.ok { background:var(--ok-bg); color:var(--ok); }
+  .sched-badge.exists { background:var(--accent-soft); color:var(--accent); }
+  .sched-badge.err { background:var(--err-bg); color:var(--err); }
+  .sched-badge.muted { background:var(--surface-2); color:var(--muted); }
+
+  /* 设置弹窗 */
+  .modal { position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:center; }
+  .modal[hidden] { display:none; }
+  .modal-backdrop { position:absolute; inset:0; background:rgba(27,36,55,.38); backdrop-filter:blur(3px); }
+  .modal-card { position:relative; z-index:1; width:min(660px, calc(100vw - 32px)); max-height:86vh; overflow-y:auto;
+    background:#fff; border-radius:18px; box-shadow:var(--shadow-md); padding:22px 24px; animation:modalIn .18s ease; }
+  @keyframes modalIn { from { opacity:0; transform:translateY(10px) scale(.98); } to { opacity:1; transform:none; } }
+  .modal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+  .modal-head h3 { margin:0; font-size:16px; font-weight:700; }
+  .modal-close { border:none; background:transparent; color:var(--muted); font-size:16px; cursor:pointer;
+    width:30px; height:30px; border-radius:50%; transition:background .15s, color .15s; }
+  .modal-close:hover { background:var(--surface-2); color:var(--ink); }
+
+  .banner { position:fixed; right:18px; bottom:18px; z-index:60; max-width:440px; padding:12px 16px;
+    border-radius:12px; font-size:13.5px; font-weight:500; box-shadow:var(--shadow-md); opacity:0;
+    transform:translateY(8px); pointer-events:none; transition:opacity .2s, transform .2s; }
+  .banner.show { opacity:1; transform:none; }
+  .banner-ok { background:var(--ok-bg); color:var(--ok); border:1px solid var(--ok-border); }
+  .banner-err { background:var(--err-bg); color:var(--err); border:1px solid var(--err-border); }
+  .banner-info { background:#1b2437; color:#fff; }
+
+  #overlay { position:fixed; inset:0; z-index:50; display:flex; align-items:center; justify-content:center;
+    background:rgba(27,36,55,.32); backdrop-filter:blur(2px); opacity:0; pointer-events:none; transition:opacity .18s; }
+  #overlay.show { opacity:1; pointer-events:auto; }
+  .overlay-card { display:flex; flex-direction:column; align-items:center; gap:14px; background:#fff;
+    padding:28px 38px; border-radius:16px; box-shadow:var(--shadow-md); }
+  .spinner { width:30px; height:30px; border-radius:50%; border:3px solid var(--accent-soft);
+    border-top-color:var(--accent); animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  #overlayText { font-size:14px; font-weight:600; }
+
+  @media (max-width:640px) {
+    .app-header { padding:12px 16px; }
+    main { padding:16px 12px 96px; }
+    .banner { left:12px; right:12px; max-width:none; }
+    .range-pill { font-size:11px; padding:5px 10px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner, .modal-card { animation-duration:1.6s; }
+    * { transition:none !important; }
+  }
 </style>
 </head>
 <body>
-<header>📚 Canvas 课程助手</header>
+<header class="app-header">
+  <div class="app-title">📚 Canvas 课程助手</div>
+  <div class="header-right">
+    <div class="range-pill" id="rangePill">请选择起止日期</div>
+    <button id="btnSettings" class="icon-btn" title="设置" aria-label="打开设置">⚙️</button>
+  </div>
+</header>
+
 <main>
   <section class="card">
-    <details open>
-      <summary>⚙️ 设置</summary>
-      <div class="grid" style="margin-top:12px">
-        <label>Canvas 实例 URL<input id="canvasUrl" placeholder="https://xxx.instructure.com"></label>
-        <label>Canvas API Token<input id="canvasToken" type="password" placeholder="…"></label>
-        <label>LLM Base URL<input id="llmBaseUrl" placeholder="https://api.deepseek.com/v1"></label>
-        <label>LLM API Key<input id="llmApiKey" type="password" placeholder="sk-…"></label>
-        <label>LLM 模型名<input id="llmModel" placeholder="deepseek-chat"></label>
-        <label>下载目录<input id="downloadDir" placeholder="~/Downloads/Canvas课程文件"></label>
-      </div>
-      <div class="row" style="margin-top:12px">
-        <button id="btnTest">🔌 测试连接</button>
-        <label>写入日历 <select id="selCalendar"></select></label>
-        <label>写入提醒列表 <select id="selList"></select></label>
-        <button id="btnLoadCalendars" class="secondary">刷新日历/列表</button>
-      </div>
-    </details>
+    <div class="card-head">
+      <span class="eyebrow">时间范围</span>
+      <h2>同步公告并总结</h2>
+    </div>
+    <div class="row">
+      <label class="field">开始日期<input id="inpStart" type="date"></label>
+      <label class="field">结束日期<input id="inpEnd" type="date"></label>
+      <button id="btnLoadCourses" class="btn btn-ghost">📂 加载课程</button>
+      <button id="btnSync" class="btn btn-primary">✨ 同步并总结</button>
+    </div>
+    <div id="courseCheckboxes" class="chips"></div>
   </section>
 
   <section class="card">
-    <h2>🗓 同步公告并总结</h2>
-    <div class="row">
-      <label>时间段
-        <select id="selRange">
-          <option value="week">本周</option>
-          <option value="month">本月</option>
-          <option value="custom">自定义</option>
-        </select>
-      </label>
-      <label id="lblStart" style="display:none">开始 <input id="inpStart" type="date"></label>
-      <label id="lblEnd" style="display:none">结束 <input id="inpEnd" type="date"></label>
-      <button id="btnLoadCourses" class="secondary">📂 加载课程</button>
-      <button id="btnSync">✨ 同步并总结</button>
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-target="tabAnnounce" role="tab" aria-selected="true">📄 公告总结</button>
+      <button class="tab" data-target="tabFiles" role="tab" aria-selected="false">🗂 课程文件</button>
+      <button class="tab" data-target="tabSchedule" role="tab" aria-selected="false">🗓 课表</button>
     </div>
-    <div id="courseCheckboxes" class="muted" style="margin-top:10px"></div>
-  </section>
 
-  <section class="card" id="resultCard" style="display:none">
-    <h2>📄 结果</h2>
-    <div id="summaries"></div>
-    <div class="row" style="margin-top:12px; border-top:1px solid var(--border); padding-top:12px">
-      <button id="btnWriteCalendar">📅 写入选中的日历事件</button>
-      <button id="btnWriteReminders">✅ 写入选中的提醒</button>
+    <div id="tabAnnounce" class="tab-panel" role="tabpanel">
+      <div class="filter-bar">
+        <span class="filter-label">事件筛选</span>
+        <label class="check"><input type="checkbox" id="chkShowAll"> 显示全部公告内事件</label>
+        <label class="field">从<input id="filterStart" type="date"></label>
+        <label class="field">到<input id="filterEnd" type="date"></label>
+      </div>
+      <div id="summaries"></div>
+      <div class="write-bar">
+        <button id="btnWriteCalendar" class="btn btn-accent">📅 写入选中的日历事件</button>
+        <label class="field">提前提醒<select id="selAlert"></select></label>
+        <button id="btnWriteReminders" class="btn btn-accent">✅ 写入选中的提醒</button>
+      </div>
     </div>
-  </section>
 
-  <section class="card">
-    <h2>📁 下载课程文件（Files）</h2>
-    <div class="row">
-      <button id="btnListFiles">🗂 加载文件列表</button>
-      <label>类型过滤 <input id="inpTypeFilter" placeholder="pdf, pptx, docx…（留空=全部）"></label>
-      <button id="btnSelectAllFiles" class="secondary">全选</button>
-      <button id="btnDownloadFiles">⬇ 下载所选</button>
+    <div id="tabFiles" class="tab-panel" role="tabpanel" hidden>
+      <div class="row">
+        <button id="btnListFiles" class="btn btn-primary">🗂 加载文件列表</button>
+        <label class="field">类型过滤<input id="inpTypeFilter" type="text" placeholder="pdf, pptx…（留空=全部）"></label>
+        <button id="btnSelectAllFiles" class="btn btn-ghost">全选</button>
+        <button id="btnDownloadFiles" class="btn btn-primary">⬇ 下载所选</button>
+      </div>
+      <div id="filesArea" class="muted" style="margin-top:14px"></div>
     </div>
-    <div id="filesArea" class="muted" style="margin-top:10px"></div>
+
+    <div id="tabSchedule" class="tab-panel" role="tabpanel" hidden>
+      <div class="filter-bar" id="banwebStatus">
+        <span class="filter-label">AIMS 登录</span>
+        <span id="banwebStatusText" class="muted">检测中…</span>
+        <button id="btnBanwebLogin" class="btn btn-primary" hidden>🔑 重新登录</button>
+      </div>
+      <div class="row" style="margin-bottom:16px">
+        <label class="field">学期<select id="selTerm"></select></label>
+        <button id="btnFetchSchedule" class="btn btn-primary">🔍 抓取课表</button>
+      </div>
+      <div id="schedulePreview"></div>
+      <div class="write-bar">
+        <label class="field">写入日历<select id="selSchedCalendar"></select></label>
+        <label class="field">提前提醒<select id="selSchedAlert"></select></label>
+        <button id="btnWriteSchedule" class="btn btn-accent">📅 同步课表</button>
+        <button id="btnClearSchedule" class="btn btn-ghost">清除预览</button>
+      </div>
+    </div>
   </section>
 </main>
-<div id="status"></div>
+
+<div id="settingsModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" hidden>
+  <div class="modal-backdrop"></div>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3 id="settingsTitle">设置</h3>
+      <button id="btnCloseSettings" class="modal-close" aria-label="关闭设置">✕</button>
+    </div>
+    <div class="grid">
+      <label class="field">Canvas 实例 URL<input id="canvasUrl" type="text" placeholder="https://canvas.cityu.edu.hk"></label>
+      <label class="field">Canvas API Token<input id="canvasToken" type="password" placeholder="…"></label>
+      <label class="field">LLM Base URL<input id="llmBaseUrl" type="text" placeholder="https://api.deepseek.com/v1"></label>
+      <label class="field">LLM API Key<input id="llmApiKey" type="password" placeholder="sk-…"></label>
+      <label class="field">LLM 模型名<input id="llmModel" type="text" placeholder="deepseek-chat"></label>
+      <label class="field">下载目录<input id="downloadDir" type="text" placeholder="~/Downloads/Canvas课程文件"></label>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="btnTest" class="btn btn-primary">🔌 测试连接</button>
+      <label class="field">写入日历<select id="selCalendar"></select></label>
+      <label class="field">写入提醒列表<select id="selList"></select></label>
+      <button id="btnLoadCalendars" class="btn btn-ghost">刷新日历/列表</button>
+    </div>
+  </div>
+</div>
+
+<div id="status" class="banner" role="status"></div>
+<div id="overlay">
+  <div class="overlay-card">
+    <div class="spinner"></div>
+    <div id="overlayText">处理中…</div>
+  </div>
+</div>
+
 <script>
 const $ = (id) => document.getElementById(id);
+const $$ = (sel) => [...document.querySelectorAll(sel)];
 const KEY = ["canvasUrl","canvasToken","llmBaseUrl","llmApiKey","llmModel","downloadDir"];
+const ALERTS = [[0,"无提醒"],[5,"提前 5 分钟"],[10,"提前 10 分钟"],[30,"提前 30 分钟"],[60,"提前 1 小时"],[1440,"提前 1 天"]];
+
 function loadSettings(){ KEY.forEach(k=>{ const v=localStorage.getItem("sc_"+k); if(v) $(k).value=v; }); }
 function saveSettings(){ KEY.forEach(k=>localStorage.setItem("sc_"+k, $(k).value)); }
 function settings(){
@@ -107,128 +271,231 @@ function settings(){
            llm_model:$("llmModel").value.trim() };
 }
 function downloadDir(){ saveSettings(); return $("downloadDir").value.trim() || "~/Downloads/Canvas课程文件"; }
-function setStatus(msg, ok){
-  const s=$("status"); s.textContent=msg; s.style.display="block";
-  s.style.background = ok===false ? "#dc2626" : "#1f2430";
-  clearTimeout(s._t); s._t=setTimeout(()=>s.style.display="none", 4000);
+
+const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const short = iso => `${+iso.slice(5,7)}/${+iso.slice(8,10)}`;
+function defaultRange(){
+  const now = new Date();
+  const start = new Date(now); start.setDate(now.getDate()-7);
+  $("inpStart").value = fmt(start);
+  $("inpEnd").value = fmt(now);
+}
+function refreshPill(){
+  const st=$("inpStart").value, en=$("inpEnd").value;
+  if(!st || !en){ $("rangePill").textContent = "请选择起止日期"; return; }
+  if(st>en){ $("rangePill").textContent = "⚠️ 开始日期晚于结束日期"; return; }
+  const days = Math.round((new Date(en)-new Date(st))/86400000)+1;
+  $("rangePill").textContent = `${short(st)} → ${short(en)} · 共 ${days} 天`;
+}
+function range(){
+  const st=$("inpStart").value, en=$("inpEnd").value;
+  if(!st || !en){ setStatus("请先选择开始和结束日期","err"); return null; }
+  if(st>en){ setStatus("开始日期不能晚于结束日期","err"); return null; }
+  return { start_date:st, end_date:en };
+}
+
+function setStatus(msg, kind, ms){
+  const s=$("status");
+  s.textContent=msg;
+  s.className="banner show banner-"+(kind==="err"?"err":kind==="ok"?"ok":"info");
+  clearTimeout(s._t); s._t=setTimeout(()=>s.classList.remove("show"), ms||4500);
 }
 async function api(path, body){
-  const r = await fetch("/api/"+path, { method:"POST",
-    headers:{"Content-Type":"application/json"}, body: JSON.stringify(body||{}) });
-  return r.json();
+  let r;
+  try { r = await fetch("/api/"+path, { method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify(body||{}) }); }
+  catch(e){ return { ok:false, error:"无法连接后端，请确认服务已启动" }; }
+  try { return await r.json(); }
+  catch(e){ return { ok:false, error:"后端响应无法解析（HTTP "+r.status+"）" }; }
+}
+async function withBusy(text, button, fn){
+  $("overlayText").textContent=text;
+  $("overlay").classList.add("show");
+  if(button) button.disabled=true;
+  try { return await fn(); }
+  finally { $("overlay").classList.remove("show"); if(button) button.disabled=false; }
 }
 function fillSelect(id, names){
   const sel=$(id); sel.innerHTML="";
   names.forEach(n=>{ const o=document.createElement("option"); o.value=o.textContent=n; sel.appendChild(o); });
 }
+function fillAlert(id){
+  const sel=$(id||"selAlert");
+  ALERTS.forEach(([v,label])=>{ const o=document.createElement("option"); o.value=v; o.textContent=label; sel.appendChild(o); });
+}
 function esc(t){ const d=document.createElement("div"); d.textContent = t==null?"":String(t); return d.innerHTML; }
+
+/* 设置弹窗 */
+function openSettings(){ $("settingsModal").hidden=false; setTimeout(()=>$("canvasUrl").focus(), 60); }
+function closeSettings(){ $("settingsModal").hidden=true; }
+$("btnSettings").onclick = openSettings;
+$("btnCloseSettings").onclick = closeSettings;
+$("settingsModal").querySelector(".modal-backdrop").addEventListener("click", closeSettings);
+document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("settingsModal").hidden) closeSettings(); });
+
+/* 标签页 */
+function switchTab(target){
+  $$(".tab").forEach(x=>{ const on=x.dataset.target===target; x.classList.toggle("active",on); x.setAttribute("aria-selected",on); });
+  $$(".tab-panel").forEach(p=>{ p.hidden = p.id!==target; });
+}
+$$(".tab").forEach(b=> b.addEventListener("click", ()=>{
+  const target=b.dataset.target;
+  switchTab(target);
+  if(target==="tabSchedule") initScheduleTab();
+}));
+
+/* 事件日期筛选 */
+function filterVisible(){
+  if($("chkShowAll").checked) return null;          // 显示全部
+  const st=$("filterStart").value, en=$("filterEnd").value;
+  if(!st && !en) return null;
+  return { st, en };
+}
+function dayWithin(iso, f){
+  if(!f) return true;
+  const d=(iso||"").slice(0,10);
+  if(!d) return false;
+  if(f.st && d<f.st) return false;
+  if(f.en && d>f.en) return false;
+  return true;
+}
+function refreshFilterState(){
+  const all=$("chkShowAll").checked;
+  $("filterStart").disabled = all;
+  $("filterEnd").disabled = all;
+  renderSummaries();
+}
 
 $("btnTest").onclick = async () => {
   const s=settings();
-  if(!s.canvas_url||!s.canvas_token){ setStatus("请填写 Canvas URL 和 Token", false); return; }
-  const r=await api("test_connection", s);
-  setStatus(r.ok ? `连接成功，共 ${r.courses.length} 门课程` : "连接失败："+(r.error||""), r.ok);
+  if(!s.canvas_url||!s.canvas_token){ setStatus("请填写 Canvas URL 和 Token","err"); return; }
+  await withBusy("正在测试连接…", $("btnTest"), async ()=>{
+    const r=await api("test_connection", s);
+    setStatus(r.ok ? `连接成功，共 ${r.courses.length} 门课程` : "连接失败："+(r.error||""), r.ok?"ok":"err");
+  });
 };
 $("btnLoadCalendars").onclick = async () => {
-  const [cal, list] = await Promise.all([api("calendars"), api("reminder_lists")]);
-  fillSelect("selCalendar", cal.calendars||[]);
-  fillSelect("selList", list.lists||[]);
-  if(cal.ok===false) setStatus(cal.error, false); else setStatus("日历/提醒列表已刷新");
+  await withBusy("正在读取日历与提醒列表…", $("btnLoadCalendars"), async ()=>{
+    const [cal, list] = await Promise.all([api("calendars"), api("reminder_lists")]);
+    fillSelect("selCalendar", cal.calendars||[]);
+    fillSelect("selList", list.lists||[]);
+    if(cal.ok===false) setStatus("日历读取失败："+cal.error, "err");
+    else if(list.ok===false) setStatus("提醒列表读取失败："+list.error, "err");
+    else setStatus(`已刷新：${(cal.calendars||[]).length} 个日历、${(list.lists||[]).length} 个提醒列表`, "ok");
+  });
 };
 
-$("selRange").onchange = () => {
-  const v=$("selRange").value;
-  $("lblStart").style.display = $("lblEnd").style.display = v==="custom" ? "flex" : "none";
-};
-function range(){
-  const now=new Date();
-  const p=n=>String(n).padStart(2,"0");
-  const fmt=d=>`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
-  const v=$("selRange").value;
-  if(v==="custom") return { start_date:$("inpStart").value, end_date:$("inpEnd").value };
-  if(v==="week"){
-    const day=(now.getDay()+6)%7;           // 周一起
-    const start=new Date(now); start.setDate(now.getDate()-day);
-    const end=new Date(start); end.setDate(start.getDate()+6);
-    return { start_date:fmt(start), end_date:fmt(end) };
-  }
-  return { start_date:`${now.getFullYear()}-${p(now.getMonth()+1)}-01`, end_date:fmt(now) };
-}
-
-let courseList=[], summaryResults=[], fileCourses=[];
+let courseList=[], summaryResults=[], displayResults=[], fileCourses=[];
 $("btnLoadCourses").onclick = async () => {
   const s=settings();
-  if(!s.canvas_url||!s.canvas_token){ setStatus("请先填写 Canvas 配置", false); return; }
-  const r=await api("courses", s);
-  if(!r.ok){ setStatus("加载课程失败："+r.error, false); return; }
-  courseList=r.courses;
-  $("courseCheckboxes").innerHTML = courseList.map(c=>
-    `<label style="flex-direction:row;align-items:center"><input type="checkbox" checked data-id="${c.id}"> ${esc(c.name)}</label>`).join("");
-  setStatus(`已加载 ${courseList.length} 门课程`);
+  if(!s.canvas_url||!s.canvas_token){ setStatus("请先填写 Canvas 配置","err"); return; }
+  await withBusy("正在加载课程…", $("btnLoadCourses"), async ()=>{
+    const r=await api("courses", s);
+    if(!r.ok){ setStatus("加载课程失败："+r.error,"err"); return; }
+    courseList=r.courses;
+    $("courseCheckboxes").innerHTML = courseList.map(c=>
+      `<label class="chip"><input type="checkbox" checked data-id="${c.id}"> ${esc(c.name)}</label>`).join("");
+    setStatus(`已加载 ${courseList.length} 门课程`,"ok");
+  });
 };
 function selectedCourses(){ return [...document.querySelectorAll("#courseCheckboxes input:checked")].map(i=>Number(i.dataset.id)); }
 
 $("btnSync").onclick = async () => {
   const s=settings(), ids=selectedCourses();
-  if(!ids.length){ setStatus("请先勾选课程", false); return; }
-  setStatus("同步并总结中，请稍候…");
-  const r=await api("sync_announcements", { ...s, course_ids:ids, ...range() });
-  if(!r.ok){ setStatus("同步失败："+r.error, false); return; }
-  summaryResults=r.courses; renderSummaries(); setStatus("同步完成");
+  const rng=range(); if(!rng) return;
+  if(!ids.length){ setStatus("请先勾选要同步的课程","err"); return; }
+  await withBusy("正在同步公告并生成总结…", $("btnSync"), async ()=>{
+    const r=await api("sync_announcements", { ...s, course_ids:ids, ...rng });
+    if(!r.ok){ setStatus("同步失败："+r.error,"err"); return; }
+    summaryResults=r.courses;
+    if(!$("filterStart").value) $("filterStart").value=rng.start_date;
+    if(!$("filterEnd").value) $("filterEnd").value=rng.end_date;
+    renderSummaries();
+    setStatus(`同步完成：${summaryResults.length} 门课程已总结`,"ok");
+    switchTab("tabAnnounce");
+  });
 };
 function renderSummaries(){
-  $("resultCard").style.display="block";
-  $("summaries").innerHTML = summaryResults.map((c,ci)=>`
+  const f = filterVisible();
+  displayResults = summaryResults.map(c=>({
+    ...c,
+    calendar_events:(c.calendar_events||[]).filter(e=>dayWithin(e.start,f)),
+    reminders:(c.reminders||[]).filter(e=>dayWithin(e.due_date,f)),
+  }));
+  if(!displayResults.length){
+    $("summaries").innerHTML = `<div class="empty"><span class="big">📭</span>还没有同步结果。先在上方选择时间范围、勾选课程，点击「同步并总结」。</div>`;
+    return;
+  }
+  const evCount = (shown,total) => (f && total>0) ? `${shown}<span class="count"> / ${total}</span>` : `${shown}`;
+  $("summaries").innerHTML = displayResults.map((c,ci)=>{
+    const evs=c.calendar_events, rms=c.reminders;
+    const evTotal=(summaryResults[ci].calendar_events||[]).length;
+    const rmTotal=(summaryResults[ci].reminders||[]).length;
+    return `
     <div class="course-card">
-      <div style="font-weight:600">${esc(c.course_name)}</div>
-      ${c.warning?`<div class="err">${esc(c.warning)}</div>`:""}
+      <div class="course-name">${esc(c.course_name)}</div>
+      ${c.warning?`<div style="color:var(--err);font-size:12.5px;margin-bottom:6px">⚠️ ${esc(c.warning)}</div>`:""}
       <div class="summary">${esc(c.summary_cn)}</div>
-      <div style="margin-top:8px;font-size:13px;color:var(--muted)">📅 日历事件 (${(c.calendar_events||[]).length})</div>
-      ${(c.calendar_events||[]).map((e,ei)=>`
+      <div class="sub-label">📅 日历事件（${evCount(evs.length,evTotal)}）</div>
+      ${evs.map((e,ei)=>`
         <div class="item"><input type="checkbox" class="ev" data-ci="${ci}" data-ei="${ei}">
-          <div><div>${esc(e.title)}</div>
+          <div><div class="item-title">${esc(e.title)}</div>
           <div class="file-path">${esc(e.start)} → ${esc(e.end)}${e.location?` · ${esc(e.location)}`:""}</div></div></div>`).join("")}
-      <div style="margin-top:8px;font-size:13px;color:var(--muted)">✅ 提醒 (${(c.reminders||[]).length})</div>
-      ${(c.reminders||[]).map((e,ei)=>`
+      <div class="sub-label">✅ 提醒（${evCount(rms.length,rmTotal)}）</div>
+      ${rms.map((e,ei)=>`
         <div class="item"><input type="checkbox" class="rm" data-ci="${ci}" data-ei="${ei}">
-          <div><div>${esc(e.title)}</div><div class="file-path">截止 ${esc(e.due_date)}</div></div></div>`).join("")}
-    </div>`).join("");
+          <div><div class="item-title">${esc(e.title)}</div><div class="file-path">截止 ${esc(e.due_date)}</div></div></div>`).join("")}
+    </div>`;
+  }).join("");
 }
+$("chkShowAll").addEventListener("change", refreshFilterState);
+$("filterStart").addEventListener("change", refreshFilterState);
+$("filterEnd").addEventListener("change", refreshFilterState);
 
 $("btnWriteCalendar").onclick = async () => {
   const cal=$("selCalendar").value;
-  if(!cal){ setStatus("请先刷新并选择日历", false); return; }
+  const amVal = $("selAlert").value ? Number($("selAlert").value) : null;
+  if(!cal){ setStatus("请先刷新并选择要写入的日历","err"); return; }
   const evs=[...document.querySelectorAll(".ev:checked")].map(i=>{
-    const c=summaryResults[Number(i.dataset.ci)]; return c.calendar_events[Number(i.dataset.ei)]; });
-  if(!evs.length){ setStatus("没有选中要写入的日历事件", false); return; }
-  let n=0;
-  for(const e of evs){
-    const r=await api("add_calendar_event",{ calendar_name:cal, title:e.title, start:e.start,
-      end:e.end, location:e.location||"", notes:e.notes||"" });
-    if(r.ok) n++; else setStatus("写入失败："+r.error, false);
-  }
-  setStatus(`已写入 ${n}/${evs.length} 条日历事件`, n===evs.length);
+    const c=displayResults[Number(i.dataset.ci)]; return c.calendar_events[Number(i.dataset.ei)]; });
+  if(!evs.length){ setStatus("没有选中要写入的日历事件","err"); return; }
+  await withBusy(`正在写入 ${evs.length} 条日历事件…`, $("btnWriteCalendar"), async ()=>{
+    let n=0;
+    for(const e of evs){
+      const r=await api("add_calendar_event",{ calendar_name:cal, title:e.title, start:e.start,
+        end:e.end, location:e.location||"", notes:e.notes||"", alert_minutes:amVal });
+      if(r.ok) n++; else setStatus("写入失败："+r.error,"err");
+    }
+    const alertLabel = amVal ? "，已设提醒" : "";
+    setStatus(`已写入 ${n}/${evs.length} 条日历事件${alertLabel}`, n===evs.length?"ok":"err");
+  });
 };
 $("btnWriteReminders").onclick = async () => {
   const list=$("selList").value;
-  if(!list){ setStatus("请先刷新并选择提醒列表", false); return; }
+  if(!list){ setStatus("请先刷新并选择提醒列表","err"); return; }
   const rms=[...document.querySelectorAll(".rm:checked")].map(i=>{
-    const c=summaryResults[Number(i.dataset.ci)]; return c.reminders[Number(i.dataset.ei)]; });
-  if(!rms.length){ setStatus("没有选中要写入的提醒", false); return; }
-  let n=0;
-  for(const e of rms){
-    const r=await api("add_reminder",{ list_name:list, title:e.title, due_date:e.due_date, notes:e.notes||"" });
-    if(r.ok) n++; else setStatus("写入失败："+r.error, false);
-  }
-  setStatus(`已写入 ${n}/${rms.length} 条提醒`, n===rms.length);
+    const c=displayResults[Number(i.dataset.ci)]; return c.reminders[Number(i.dataset.ei)]; });
+  if(!rms.length){ setStatus("没有选中要写入的提醒","err"); return; }
+  await withBusy(`正在写入 ${rms.length} 条提醒…`, $("btnWriteReminders"), async ()=>{
+    let n=0;
+    for(const e of rms){
+      const r=await api("add_reminder",{ list_name:list, title:e.title, due_date:e.due_date, notes:e.notes||"" });
+      if(r.ok) n++; else setStatus("写入失败："+r.error,"err");
+    }
+    setStatus(`已写入 ${n}/${rms.length} 条提醒`, n===rms.length?"ok":"err");
+  });
 };
 
 $("btnListFiles").onclick = async () => {
   const s=settings(), ids=selectedCourses();
-  if(!ids.length){ setStatus("请先勾选课程", false); return; }
-  const r=await api("list_files",{ ...s, course_ids:ids, download_dir:downloadDir() });
-  if(!r.ok){ setStatus("加载文件失败："+r.error, false); return; }
-  fileCourses=r.courses; renderFiles(); setStatus("文件列表已加载");
+  if(!ids.length){ setStatus("请先勾选课程","err"); return; }
+  switchTab("tabFiles");
+  await withBusy("正在加载文件列表…", $("btnListFiles"), async ()=>{
+    const r=await api("list_files",{ ...s, course_ids:ids, download_dir:downloadDir() });
+    if(!r.ok){ setStatus("加载文件失败："+r.error,"err"); return; }
+    fileCourses=r.courses; renderFiles();
+    setStatus(`已加载 ${fileCourses.length} 门课程的文件`,"ok");
+  });
 };
 function renderFiles(){
   const filter=$("inpTypeFilter").value.toLowerCase().trim().replace(/^\./,"");
@@ -239,12 +506,12 @@ function renderFiles(){
   })}));
   $("filesArea").innerHTML = shown.map((c,ci)=>`
     <div class="course-card">
-      <div style="font-weight:600">${esc(c.name)} ${c.error?`<span class="err">(${esc(c.error)})</span>`:""}</div>
+      <div class="course-name">${esc(c.name)} ${c.error?`<span style="color:var(--err);font-size:12px">（${esc(c.error)}）</span>`:""}</div>
       ${(c.files||[]).map(f=>`
         <div class="item"><input type="checkbox" class="fl" data-ci="${ci}" data-fi="${f.file_id}">
-          <div><div>${esc(f.display_name)} <span class="muted">(${esc(f.content_type)})</span></div>
+          <div><div class="item-title">${esc(f.display_name)} <span class="muted">（${esc(f.content_type)}）</span></div>
           <div class="file-path">${esc(f.path||"/")}</div></div></div>`).join("")}
-    </div>`).join("") || "<div class='muted'>没有匹配的文件</div>";
+    </div>`).join("") || "<div class='muted' style='padding:12px 0'>没有匹配的文件</div>";
 }
 $("inpTypeFilter").oninput = renderFiles;
 $("btnSelectAllFiles").onclick = ()=>document.querySelectorAll(".fl").forEach(i=>i.checked=true);
@@ -254,16 +521,192 @@ $("btnDownloadFiles").onclick = async () => {
     const c=fileCourses[Number(i.dataset.ci)];
     const f=c.files.find(x=>x.file_id===Number(i.dataset.fi));
     return { course_id:c.course_id, file_id:f.file_id, dest_path:f.dest_path }; });
-  if(!items.length){ setStatus("没有选中要下载的文件", false); return; }
-  setStatus(`正在下载 ${items.length} 个文件…`);
-  const r=await api("download_files",{ ...s, download_dir:downloadDir(), items });
-  if(!r.ok){ setStatus("下载失败："+r.error, false); return; }
-  const failed=(r.failed||[]).length;
-  setStatus(`下载完成：成功 ${r.downloaded.length}，失败 ${failed}`, failed===0);
+  if(!items.length){ setStatus("没有选中要下载的文件","err"); return; }
+  await withBusy(`正在下载 ${items.length} 个文件…`, $("btnDownloadFiles"), async ()=>{
+    const r=await api("download_files",{ ...s, download_dir:downloadDir(), items });
+    if(!r.ok){ setStatus("下载失败："+r.error,"err"); return; }
+    const failed=(r.failed||[]).length;
+    setStatus(`下载完成：成功 ${r.downloaded.length}，失败 ${failed}`, failed===0?"ok":"err");
+  });
 };
 
+/* ===== 课表（AIMS / Banweb）===== */
+const BANWEB_KEY="sc_banweb_preview";
+let banwebSchedule = loadBanweb();        // {term,fetchedAt,courses,selected,results}
+let banwebPollTimer=null;
+function loadBanweb(){
+  try { const v=JSON.parse(localStorage.getItem(BANWEB_KEY)||"null");
+        return v && typeof v==="object" ? v : {term:"",fetchedAt:null,courses:[],selected:[],results:{}}; }
+  catch(e){ return {term:"",fetchedAt:null,courses:[],selected:[],results:{}}; }
+}
+function saveBanweb(){ localStorage.setItem(BANWEB_KEY, JSON.stringify(banwebSchedule)); }
+function setBanwebStatusText(msg, kind){
+  const el=$("banwebStatusText"); if(!el) return;
+  el.textContent=msg;
+  el.className = kind ? `muted sched-badge ${kind}` : "muted";
+}
+async function checkBanwebStatus(){
+  const r=await api("banweb/status");
+  if(r.ok!==true){ setBanwebStatusText("无法连接后端：网关检测失败","err"); return; }
+  const loginBtn=$("btnBanwebLogin");
+  if(r.status==="logged_in"){
+    setBanwebStatusText("已登录 AIMS ✓","ok");
+    loginBtn.hidden=true;
+    stopBanwebPoll();
+    if(!$("selTerm").options.length) loadTerms();
+  } else if(r.status==="needs_login"){
+    setBanwebStatusText("已退登：点「重新登录」打开登录窗口，登录后自动继续…","err");
+    loginBtn.hidden=false;
+    startBanwebPoll();
+  } else if(r.status==="opening"){
+    setBanwebStatusText("正在打开 Chrome 登录窗口…","muted");
+    loginBtn.hidden=true;
+    startBanwebPoll();
+  } else {
+    setBanwebStatusText("状态未知，稍后重试…","err");
+    loginBtn.hidden=true;
+    startBanwebPoll();
+  }
+}
+$("btnBanwebLogin").onclick = async () => {
+  await withBusy("正在打开登录窗口…", $("btnBanwebLogin"), async ()=>{
+    const r=await api("banweb/open_login");
+    if(r.ok===true) setStatus("已打开 AIMS 登录窗口，请在新窗口中登录","ok",6000);
+    else setStatus("打开登录窗口失败："+(r.error||""),"err");
+    checkBanwebStatus();
+  });
+};
+function startBanwebPoll(){ if(banwebPollTimer) return; banwebPollTimer=setInterval(checkBanwebStatus, 3000); }
+function stopBanwebPoll(){ if(banwebPollTimer){ clearInterval(banwebPollTimer); banwebPollTimer=null; } }
+async function loadTerms(){
+  const r=await api("banweb/terms");
+  if(r.ok!==true){
+    if((r.error||"").includes("尚未登录")){
+      setBanwebStatusText("已退登：请在弹出的 Chrome 窗口登录一次，登录后自动继续…","err");
+      startBanwebPoll();
+    } else {
+      // 瞬时故障（如抓取窗口被关）→ 恢复轮询，浏览器重开/登录恢复后会自动重载学期
+      setBanwebStatusText("读取学期失败："+(r.error||"")+"，正在自动重试…","err");
+      startBanwebPoll();
+    }
+    return;
+  }
+  const sel=$("selTerm"); sel.innerHTML="";
+  (r.terms||[]).forEach(t=>{ const o=document.createElement("option"); o.value=t.value; o.textContent=t.label; sel.appendChild(o); });
+  if(banwebSchedule.term){
+    const match=[...sel.options].find(o=>o.value===banwebSchedule.term);
+    if(match) sel.value=match.value;
+  }
+}
+function schedBadge(res){
+  // res 可能是字符串（旧版保存）或 {s:状态, old:旧时间}
+  const st=(res&&res.s)?res.s:res;
+  const old=(res&&res.old)?res.old:"";
+  if(st==="created") return `<span class="sched-badge ok">已新建</span>`;
+  if(st==="updated") return `<span class="sched-badge ok"${old?` title="旧 ${old}"`:""}>已更新${old?`（${old}）`:""}</span>`;
+  if(st==="exists") return `<span class="sched-badge exists">已存在 · 跳过</span>`;
+  if(st==="error") return `<span class="sched-badge err">写入失败</span>`;
+  return "";
+}
+function renderSchedule(){
+  const el=$("schedulePreview");
+  const data=banwebSchedule;
+  if(!data.courses.length){
+    el.innerHTML=`<div class="empty"><span class="big">🗓</span>还没有课表。选好学期后点「抓取课表」。</div>`;
+    $("btnWriteSchedule").disabled=true;
+    return;
+  }
+  $("btnWriteSchedule").disabled=false;
+  const writableBlocks = new Set(data.courses.filter(c=>(c.meetings||[]).length>0).map(c=>c.code+":"+c.section));
+  el.innerHTML = data.courses.map(c=>renderCourseBlock(c, writableBlocks)).join("");
+}
+function renderCourseBlock(c, writableBlocks){
+  const key=c.code+":"+c.section;
+  const hasMeetings=(c.meetings||[]).length>0;
+  const disabled = !hasMeetings;
+  const checked = !disabled && (banwebSchedule.selected.includes(key));
+  const res = banwebSchedule.results[key];
+  const meetings=(c.meetings||[]).map(m=>
+    `<div class="file-path">${esc(m.type||"")} · ${esc(m.days||"")} ${esc(m.time||"")}${m.room?` · ${esc(m.room)}`:""}${m.range?`<br>${esc(m.range)}`:""}${m.instr?` · ${esc(m.instr)}`:""}</div>`).join("");
+  return `
+  <div class="course-card" style="${disabled?'opacity:.6':''}">
+    <div class="course-name">
+      <label class="check" style="border:none;padding:0;background:transparent">
+        <input type="checkbox" data-key="${esc(key)}" ${checked?"checked":""} ${disabled?"disabled":""}> ${esc(c.code)} ${esc(c.section)} · ${esc(c.course)}
+      </label>
+      ${!hasMeetings?`<span class="sched-badge muted">无固定上课时间</span>`:schedBadge(res)}
+    </div>
+    ${meetings?`<div style="margin-top:4px">${meetings}</div>`:""}
+  </div>`;
+}
+function updateSelected(){
+  banwebSchedule.selected=[...document.querySelectorAll("#schedulePreview .check input:checked")].map(i=>i.dataset.key);
+  saveBanweb();
+}
+$("btnFetchSchedule").onclick = async () => {
+  const term=$("selTerm").value;
+  if(!term){ setStatus("请先选择学期","err"); return; }
+  await withBusy("正在抓取课表…", $("btnFetchSchedule"), async ()=>{
+    const r=await api("banweb/schedule",{ term });
+    if(r.ok!==true){ setStatus("抓取失败："+(r.error||""),"err"); return; }
+    banwebSchedule={ term, fetchedAt:new Date().toISOString(), courses:r.courses, selected:[], results:{} };
+    banwebSchedule.selected = r.courses.filter(c=>(c.meetings||[]).length>0).map(c=>c.code+":"+c.section);
+    saveBanweb();
+    renderSchedule();
+    setStatus(`课表已抓取：${r.courses.length} 个课程块`,"ok");
+  });
+};
+$("schedulePreview").addEventListener("change", (e)=>{ if(e.target.matches("input[type=checkbox]")) updateSelected(); });
+$("btnWriteSchedule").onclick = async () => {
+  const cal=$("selSchedCalendar").value;
+  if(!cal){ setStatus("请先刷新并选择要写入的日历","err"); return; }
+  const selected=[...document.querySelectorAll("#schedulePreview .check input:checked")].map(i=>i.dataset.key);
+  if(!selected.length){ setStatus("没有选中要写入的课程","err"); return; }
+  const amVal = $("selSchedAlert").value ? Number($("selSchedAlert").value) : null;
+  await withBusy(`正在同步 ${selected.length} 个课程块…`, $("btnWriteSchedule"), async ()=>{
+    const r=await api("banweb/write_calendar",{ calendar_name:cal, courses:banwebSchedule.courses,
+      selected, alert_minutes:amVal });
+    if(r.ok!==true){ setStatus("写入失败："+(r.error||""),"err"); return; }
+    const newRes={}; (r.items||[]).forEach(it=>{
+      const block=it.key.split(":").slice(0,2).join(":");
+      newRes[block]=it.old_time?{s:it.status,old:it.old_time}:it.status; });
+    banwebSchedule.results=newRes;
+    saveBanweb();
+    renderSchedule();
+    setStatus(`同步完成：新建 ${r.created} · 已存在 ${r.exists} · 更新 ${r.updated} · 删除 ${r.removed} · 失败 ${r.errors}`,
+      r.errors===0?"ok":"err");
+  });
+};
+$("btnClearSchedule").onclick = () => {
+  banwebSchedule={ term:"",fetchedAt:null,courses:[],selected:[],results:{} };
+  localStorage.removeItem(BANWEB_KEY);
+  renderSchedule();
+  setStatus("课表预览已清除","ok");
+};
+let schedTabInit=false;
+async function initScheduleTab(){
+  if(schedTabInit) return;
+  schedTabInit=true;
+  if(!$("selSchedCalendar").options.length){
+    const r=await api("calendars");
+    fillSelect("selSchedCalendar", r.calendars||[]);
+  }
+  if(!$("selSchedAlert").options.length) fillAlert("selSchedAlert");
+  renderSchedule();
+  checkBanwebStatus();
+}
+
 loadSettings();
+defaultRange();
 fillSelect("selCalendar", []); fillSelect("selList", []);
+fillAlert();
+renderSchedule();
+$("inpStart").addEventListener("change", refreshPill);
+$("inpEnd").addEventListener("change", refreshPill);
+refreshPill();
+$("filterStart").value=$("inpStart").value;
+$("filterEnd").value=$("inpEnd").value;
+refreshFilterState();
 </script>
 </body>
 </html>
