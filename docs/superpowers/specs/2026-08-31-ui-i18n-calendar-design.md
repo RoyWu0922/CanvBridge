@@ -93,7 +93,7 @@ const t = (key) => (I18N[LANG()] && I18N[LANG()][key]) ?? key;
 {
   "start_min": 720,        # 24 小时换算成分钟（12:00 pm → 720）
   "end_min": 890,          # 14:50 pm → 890
-  "days": ["F"],           # 由 "MWF" 拆成的单字母列表
+  "days_list": ["F"],      # 由 "MWF" 拆成的单字母列表；原 days 字符串保留
 }
 ```
 
