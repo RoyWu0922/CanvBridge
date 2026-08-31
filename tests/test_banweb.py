@@ -343,3 +343,79 @@ def test_retry_once_passes_other_errors():
     with pytest.raises(ValueError):
         banweb._retry_once(boom)
     assert calls["n"] == 1
+
+
+# ---------------- 周课表简称地点（room_short） ----------------
+
+WEEKLY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "banweb_weekly.html"
+WEEKLY_HTML = WEEKLY_FIXTURE.read_text(encoding="utf-8", errors="replace")
+
+
+def test_parse_weekly_schedule_html_entries():
+    """周课表矩阵解析：每格三行（CRN / 课程-分班 / 楼宇码 房间号），
+    行内 <br> 分隔的文本片段不会粘连（如 "C01MMW"）。"""
+    entries = banweb.parse_weekly_schedule_html(WEEKLY_HTML)
+    assert len(entries) == 9
+    by_crn = {e["crn"]: e for e in entries}
+    assert by_crn["13018"] == {"crn": "13018", "code": "CS1315", "section": "C01",
+                               "day": "F", "room_short": "MMW 2450"}
+    assert by_crn["12087"] == {"crn": "12087", "code": "DSC1001", "section": "C01",
+                               "day": "M", "room_short": "LI 3505"}
+    assert by_crn["11511"] == {"crn": "11511", "code": "MA1508", "section": "CA1",
+                               "day": "T", "room_short": "YEUNG LT-6"}
+    assert by_crn["11709"] == {"crn": "11709", "code": "MA1508", "section": "TA1",
+                               "day": "M", "room_short": "YEUNG LT-18"}
+    assert by_crn["12128"] == {"crn": "12128", "code": "GE2401", "section": "T01",
+                               "day": "F", "room_short": "YEUNG B5-207"}
+    assert by_crn["14467"] == {"crn": "14467", "code": "GE1362", "section": "C01",
+                               "day": "R", "room_short": "LI 1507"}
+
+
+def test_parse_weekly_schedule_html_blank_cells_ignored():
+    """空白格（&nbsp;）不产出条目，rowspan 时间槽也不重复计数。"""
+    entries = banweb.parse_weekly_schedule_html(WEEKLY_HTML)
+    assert len({e["crn"] for e in entries}) == len(entries)
+
+
+def test_merge_room_short_attaches_by_crn_and_day():
+    """周课表简称按 crn + 星期挂到详情页对应 meeting；完整地点仍保留。"""
+    courses = banweb.parse_schedule_html(HTML)
+    weekly = banweb.parse_weekly_schedule_html(WEEKLY_HTML)
+    banweb.merge_room_short(courses, weekly)
+    def mt(code, section, day):
+        c = [x for x in courses
+             if x["code"] == code and x["section"] == section][0]
+        return next(m for m in c["meetings"] if day in m.get("days", ""))
+    assert mt("CS1315", "C01", "F")["room_short"] == "MMW 2450"
+    assert mt("DSC1001", "C01", "M")["room_short"] == "LI 3505"
+    assert mt("MA1508", "CA1", "T")["room_short"] == "YEUNG LT-6"
+    assert mt("MA1508", "TA1", "M")["room_short"] == "YEUNG LT-18"
+    assert mt("CS1315", "L02", "T")["room_short"] == "LI 4208"
+    assert mt("GE1362", "T01", "R")["room_short"] == "LI 1507"
+    cs = [x for x in courses if x["code"] == "CS1315" and x["section"] == "C01"][0]
+    assert cs["meetings"][0]["room"] == "Mong Man Wai Building 2450"
+
+
+def test_merge_room_short_keeps_full_room_when_no_match():
+    """周课表里没有的课程（或 term 不同）→ 不加 room_short、不报错。"""
+    courses = banweb.parse_schedule_html(HTML)
+    banweb.merge_room_short(courses, [])  # 空周课表
+    for c in courses:
+        for m in c["meetings"]:
+            assert "room_short" not in m
+
+
+def test_enrich_meetings_preserves_room_short():
+    """room_short 经 enrich_meetings 逐层复制后仍在 meeting 上（get_schedule 路径）。"""
+    courses = [{"code": "CS1315", "section": "C01",
+                "meetings": [{"time": "12:00 pm - 2:50 pm", "days": "F",
+                              "room": "Mong Man Wai Building 2450",
+                              "room_short": "MMW 2450",
+                              "range": "Aug 31, 2026 - Nov 28, 2026",
+                              "instr": "Kenneth LEE (P)"}]}]
+    out = banweb.enrich_meetings(courses)
+    m = out[0]["meetings"][0]
+    assert m["room_short"] == "MMW 2450"
+    assert m["room"] == "Mong Man Wai Building 2450"
+    assert m["start_min"] == 720
+    assert m["days_list"] == ["F"]

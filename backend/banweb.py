@@ -24,6 +24,8 @@ except Exception:  # 未装 Playwright 时不影响其余功能
 LOGIN_HOST = "https://auth.cityu.edu.hk"
 BANWEB = "https://banweb.cityu.edu.hk"
 TERM_PAGE = BANWEB + "/pls/PROD/bwskfshd.P_CrseSchdDetl"
+# 周课表（Matrix Format）页：每格「楼宇码 房间号」，即前端课表块的简称地点来源
+WEEKLY_PAGE = BANWEB + "/pls/PROD/hwsstmtbl_matrix_cityu.Show"
 PROFILE_DIR = Path.home() / ".cityu_aims_profile"
 CDP_PORT = 9339
 
@@ -43,6 +45,11 @@ class BanwebError(RuntimeError):
 _CAP_RE = re.compile(r"^(.*?)\s*-\s*([A-Z]{2,4}\s*\d{4})\s*-\s*([A-Z0-9]+)$")
 _WEEKDAY = {"M": "Mon", "T": "Tue", "W": "Wed", "R": "Thu", "F": "Fri", "S": "Sat", "U": "Sun"}
 _WEEKDAY_0 = {"M": 0, "T": 1, "W": 2, "R": 3, "F": 4, "S": 5, "U": 6}
+_WEEKDAY_LETTER = {  # 周课表表头英文全名 → 单字母
+    "Monday": "M", "Tuesday": "T", "Wednesday": "W", "Thursday": "R",
+    "Friday": "F", "Saturday": "S", "Sunday": "U",
+}
+_WEEKLY_CELL_RE = re.compile(r"^(\d+)\s+([A-Z]{2,4}\d{4}-[A-Z0-9]+)\s+(.*)$")
 _MONTHS = {m: i for i, m in enumerate(
     ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1)}
@@ -131,6 +138,106 @@ def parse_schedule_html(html: str) -> list[dict]:
                         "room": r[3], "range": r[4], "instr": r[6],
                     })
     return results
+
+
+class _WeeklyMatrixParser(HTMLParser):
+    """解析周课表矩阵表（class=ctt-matrix）：每行一个时间槽，7 列对应周一到周日。
+
+    与 _TableParser 不同：矩阵格内不同行（CRN / 课程-分班 / 楼宇 房间）由 <br>
+    分隔，相邻文本片段之间本无空格，需用空格 join 片段后再折叠空白，否则会
+    粘连成 "C01MMW"。空白格是 &nbsp;，HTMLParser 不产生文本 → 判为空串。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.rows: list[list[str]] = []
+        self._in_matrix = False
+        self._intd = False
+        self._cell: list[str] = []
+        self._row: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "table":
+            cls = dict(attrs).get("class", "").split()
+            if "ctt-matrix" in cls:
+                self._in_matrix = True
+            return
+        if not self._in_matrix:
+            return
+        if tag in ("td", "th"):
+            self._intd = True
+            self._cell = []
+        elif tag == "tr":
+            self._row = []
+
+    def handle_endtag(self, tag):
+        if not self._in_matrix:
+            return
+        if tag in ("td", "th") and self._intd:
+            self._intd = False
+            self._row.append(" ".join(" ".join(self._cell).split()))
+        elif tag == "tr" and self._row:
+            self.rows.append(self._row)
+        elif tag == "table":
+            self._in_matrix = False
+
+    def handle_data(self, data):
+        if self._intd:
+            self._cell.append(data)
+
+
+def parse_weekly_schedule_html(html: str) -> list[dict]:
+    """解析 AIMS 周课表（Matrix Format）页面，返回每个课程块的简称地点。
+
+    每块字段：crn/code/section/day/room_short；day 为星期字母（M=周一）。
+    矩阵格内容三行：CRN、COURSE-SEC、楼宇码 房间号（如 "MMW 2450"）——
+    「楼宇码 房间号」正是前端课表块要展示的简称地点，按 crn + 星期挂到
+    详情页对应 meeting 上。
+    """
+    p = _WeeklyMatrixParser()
+    p.feed(html)
+    out: list[dict] = []
+    if not p.rows:
+        return out
+    day_cols: list[tuple[int, str]] = []
+    for i, h in enumerate(p.rows[0]):
+        if h in _WEEKDAY_LETTER:
+            day_cols.append((i, _WEEKDAY_LETTER[h]))
+    for row in p.rows[1:]:
+        for ci, day in day_cols:
+            cell = row[ci] if ci < len(row) else ""
+            m = _WEEKLY_CELL_RE.match(cell)
+            if not m:
+                continue
+            crn, cs, short = m.group(1), m.group(2), m.group(3).strip()
+            code, section = cs.rsplit("-", 1)
+            out.append({
+                "crn": crn, "code": code, "section": section,
+                "day": day, "room_short": short,
+            })
+    return out
+
+
+def merge_room_short(courses: list[dict], weekly: list[dict]) -> list[dict]:
+    """把周课表的简称地点挂到详情页对应 meeting 上（按 crn + 星期匹配）。
+
+    找不到对应 meeting（周课表 term 与详情页不同、课程不在矩阵里）时跳过，
+    前端回退显示完整地点。原地修改入参——courses 是 parse_schedule_html 的
+    新产出，调用方随后 enrich_meetings 会逐层复制，无共享风险。
+    """
+    by_crn: dict[str, dict] = {}
+    for c in courses:
+        if c.get("crn"):
+            by_crn[c["crn"]] = c
+    for w in weekly:
+        c = by_crn.get(w["crn"])
+        if not c:
+            continue
+        for m in c.get("meetings", []):
+            if w["day"] in m.get("days", ""):
+                m["room_short"] = w["room_short"]
+                break
+    return courses
 
 
 def _to_24(h: str, mm: str, ap: str) -> tuple[int, int]:
@@ -648,7 +755,12 @@ def list_terms() -> list[dict]:
 
 
 def get_schedule(term: str) -> list[dict]:
-    """登录后选择学期并抓取课表，返回课程块列表。"""
+    """登录后选择学期并抓取课表，返回课程块列表。
+
+    详情页之后会再抓一次周课表（Matrix Format）拿每块的简称地点
+    （如 "MMW 2450"），按 crn + 星期挂到对应 meeting 的 room_short；
+    周课表抓取/解析失败时静默回退，不阻塞课表展示（前端回退完整地点）。
+    """
     def _run() -> list[dict]:
         with _lock:
             page = _ensure_browser()
@@ -662,5 +774,14 @@ def get_schedule(term: str) -> list[dict]:
                     raise  # 窗口被关：放行给 _retry_once 整体重试
                 raise BanwebError("抓取课表失败（可能登录已失效）：" + str(exc)) from exc
             _require_logged_in(page)
-            return enrich_meetings(parse_schedule_html(page.content()))
+            courses = parse_schedule_html(page.content())
+            try:
+                page.goto(WEEKLY_PAGE, timeout=60000, wait_until="domcontentloaded")
+                page.wait_for_load_state("load", timeout=30000)
+                _require_logged_in(page)
+                weekly = parse_weekly_schedule_html(page.content())
+                merge_room_short(courses, weekly)
+            except Exception:
+                pass  # 周课表简称抓取失败不阻塞主流程
+            return enrich_meetings(courses)
     return _on_browser_thread(lambda: _retry_once(_run))

@@ -1,0 +1,567 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/transitional.dtd"><html lang="en"><head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta name="referrer" content="no-referrer-when-downgrade">
+<link rel="stylesheet" href="/cityu2/css/web_defaultapp.css" type="text/css">
+<link rel="stylesheet" href="/css/web_defaultprint.css" type="text/css" media="print">
+<title>Student Schedule by Day and Time (Matrix Format)</title>
+<meta http-equiv="Content-Script-Type" name="Default_Script_Language" content="text/javascript">
+<script language="JavaScript" type="text/javascript">
+<!-- Hide JavaScript from older browsers 
+window.onunload = function() {submitcount=0;}
+var submitcount=0;
+function checkSubmit() {
+if (submitcount == 0)
+   {
+   submitcount++;
+   return true;
+   }
+else
+   {
+alert("Your changes have already been submitted.");
+   return false;
+   }
+}
+//  End script hiding -->
+</script>
+<script language="JavaScript" type="text/javascript">
+<!-- Hide JavaScript from older browsers 
+//  Function to open a window
+function windowOpen(window_url) {
+   helpWin = window.open(window_url,'','toolbar=yes,status=no,scrollbars=yes,menubar=yes,resizable=yes,directories=no,location=no,width=350,height=400');
+   if (document.images) { 
+       if (helpWin) helpWin.focus()
+   }
+}
+//  Function to open a window with location
+function JSWinOpen_cityu(window_url,wname) { 
+ if ( wname==undefined || wname==null || wname.length<=0 ) {
+   helpWin = window.open(window_url,'','toolbar=yes,scrollbars=yes,status=yes,location=yes,menubar=yes,resizable=yes,width=700,height=400');
+ } else {
+   helpWin = window.open(window_url,wname,'toolbar=yes,scrollbars=yes,status=yes,location=yes,menubar=yes,resizable=yes,width=700,height=400');
+ }
+ if (document.images) { 
+     if (helpWin) helpWin.focus()
+ }
+}
+//  End script hiding -->
+</script>
+</head>
+<body>
+<noscript><p><br><font color=red> Error: Your browser either does not support JavaScript, or you have JavaScript turned off.</font></noscript>
+<!-- CityU Bar --> <div class="cityubar_outer"> <div class="cityubar_inner"> <!-- CityU Logo --> <div style="float: left;"> <a href="http://www.cityu.edu.hk/" target="_blank"> <img src="https://template.cityu.edu.hk/template/img/logos/cityu_deptpage.png" alt="City University of Hong Kong"></a></div> <!-- Tool Bar --> <div style="float: right;" class="cityubar_tools"> 
+<a href="javascript:JSWinOpen_cityu('https://www.cityu.edu.hk/esu/AIMS_Menu_Help.pdf')" class="submenulinktext2">How to Navigate</a>
+|
+<a href="twgksimu_cityu.P_DispSiteMap" accesskey="2" class="submenulinktext2">Site Map</a>
+|
+<a href="/wtlhelp/twbhhelp.htm" accesskey="H" onclick="popup = window.open('/wtlhelp/twbhhelp.htm', 'PopupPage','height=450,width=500,scrollbars=yes,resizable=yes'); window.popup.focus(); return false" target="_blank" onmouseover="window.status='';  return true" onmouseout="window.status=''; return true" onfocus="window.status='';  return true" onblur="window.status=''; return true" class="submenulinktext2">Help</a>
+|
+<a href="twbkwbis.P_Logout" accesskey="3" class="submenulinktext2">Exit</a>
+</div> </div> </div>
+<!-- Header --> <div class="header_outer"> <img src="/cityu2/gifs/web_header.png" alt="AIMS (Version 8.33)"> </div>
+<div class="cityu_noprint">
+<table width="100%"><tbody><tr><td align="right"><font color="#ffffff"><b>AIMS (Version 8.33)</b></font></td><td align="right"><font size="-2"><form action="/pls/PROD/twgkutil_cityu.P_Search" method="post" name="cityu_search" style="margin:0"><b>Find a Page </b><input type="text" name="in_text" size="30" maxlength="65" id="keyword_in_id"> <input type="submit" value="Go"></form></font></td></tr></tbody></table>
+<span class="pageheaderlinks2">
+<map name="Module_Navigation_Links_H" title="Module Navigation Links">
+<p>
+<a href="#skip_Module_Navigation_Links_H" onmouseover="window.status='Skip Module Navigation Links'; return true" onmouseout="window.status=''; return true" onfocus="window.status='Skip Module Navigation Links'; return true" onblur="window.status=''; return true" class="skiplinks">Skip Module Navigation Links</a>
+</p><table class="plaintable" summary="This is main table for displaying Tab Items." width="100%" cellspacing="0" cellpadding="0" border="0">
+<tbody><tr>
+<td class="pldefault">
+<table class="plaintable" summary="This table displays Tab Items." cellspacing="0" cellpadding="0" border="0">
+<tbody><tr>
+<td class="taboff" height="22">
+<a href="/pls/PROD/twbkwbis.P_GenMenu?name=bmenu.P_MainMnu">Personal Information</a>
+</td>
+<td class="bgtaboff" height="22" valign="top" align="right">
+<img src="/wtlgifs/web_tab_corner_right.gif" alt="Tab Corner Right" class="headerImg" title="Tab Corner Right" name="web_tab_corner_right" hspace="0" vspace="0" border="0" height="20" width="8">
+</td>
+<td class="taboff" height="22">
+<a href="/pls/PROD/twbkwbis.P_GenMenu?name=amenu.P_AdminMnu">Student Record</a>
+</td>
+<td class="bgtaboff" height="22" valign="top" align="right">
+<img src="/wtlgifs/web_tab_corner_right.gif" alt="Tab Corner Right" class="headerImg" title="Tab Corner Right" name="web_tab_corner_right" hspace="0" vspace="0" border="0" height="20" width="8">
+</td>
+<td class="taboff" height="22">
+<a href="/pls/PROD/twbkwbis.P_GenMenu?name=amenu.P_RegMnu">Course Registration</a>
+</td>
+<td class="bgtaboff" height="22" valign="top" align="right">
+<img src="/wtlgifs/web_tab_corner_right.gif" alt="Tab Corner Right" class="headerImg" title="Tab Corner Right" name="web_tab_corner_right" hspace="0" vspace="0" border="0" height="20" width="8">
+</td>
+<td class="taboff" height="22">
+<a href="/pls/PROD/twbkwbis.P_GenMenu?name=amenu_cityu.P_StudServMnu">Student Services</a>
+</td>
+<td class="bgtaboff" height="22" valign="top" align="right">
+<img src="/wtlgifs/web_tab_corner_right.gif" alt="Tab Corner Right" class="headerImg" title="Tab Corner Right" name="web_tab_corner_right" hspace="0" vspace="0" border="0" height="20" width="8">
+</td>
+<td class="taboff" height="22">
+<a href="/pls/PROD/twbkwbis.P_GenMenu?name=amenu_cityu.P_StudyPlan">Study Plan</a>
+</td>
+<td class="bgtaboff" height="22" valign="top" align="right">
+<img src="/wtlgifs/web_tab_corner_right.gif" alt="Tab Corner Right" class="headerImg" title="Tab Corner Right" name="web_tab_corner_right" hspace="0" vspace="0" border="0" height="20" width="8">
+</td>
+<td class="taboff" height="22">
+<a href="/pls/PROD/twbkwbis.P_GenMenu?name=amenu_cityu.P_NewStudMnu">Services for New Student</a>
+</td>
+<td class="bgtaboff" height="22" valign="top" align="right">
+<img src="/wtlgifs/web_tab_corner_right.gif" alt="Tab Corner Right" class="headerImg" title="Tab Corner Right" name="web_tab_corner_right" hspace="0" vspace="0" border="0" height="20" width="8">
+</td>
+</tr>
+</tbody></table>
+</td>
+</tr>
+<tr>
+<td class="bgtabon" width="100%" colspan="2"><img src="/wtlgifs/web_transparent.gif" alt="Transparent Image" class="headerImg" title="Transparent Image" name="web_transparent" hspace="0" vspace="0" border="0" height="3" width="10"></td></tr></tbody></table>
+</map>
+</span>
+<a name="skip_Module_Navigation_Links_H"></a>
+<form name="twbktmlb_cityu_f1" style="margin:0">
+<input type="hidden" name="event_time" value="1788175990991">
+<input type="hidden" name="last_time" value="1788175990991">
+<input type="hidden" name="event_time_x" value="2026-08-31.19:33:10">
+<input type="hidden" name="last_time_x" value="2026-08-31.19:33:10">
+<input type="hidden" name="timer" value="2026-08-31.19:33:10">
+</form>
+<script language="JavaScript" type="text/javascript">
+<!--
+
+        var twbktmlb_cityu_xmlhttp;
+        var twbktmlb_cityu_timer;
+        var init_time;
+        var init_time_x;
+
+        function twbktmlb_cityu_curtime()
+        {
+           mysysdt = new Date();
+           return mysysdt;
+        }
+        function twbktmlb_cityu_curtime_x(pdate)
+        {
+	   cyy = pdate.getFullYear();
+           cmm = pdate.getMonth() + 1;
+           cdd = pdate.getDate();
+           chr = pdate.getHours();
+           cmn = pdate.getMinutes();
+           css = pdate.getSeconds();
+           if (cmm < 10){cmm = "0" + cmm};
+           if (cdd < 10){cdd = "0" + cdd};
+           if (chr < 10){chr = "0" + chr};
+           if (cmn < 10){cmn = "0" + cmn};
+           if (css < 10){css = "0" + css};
+           return cyy + "-" + cmm + "-" + cdd + "." + chr + ":" + cmn + ":" + css;
+        }
+
+        function twbktmlb_cityu_UpdateLastAccess(ptime) {
+           twbktmlb_cityu_xmlhttp=twbktmlb_cityu_GetXmlHttpObject();
+           if (twbktmlb_cityu_xmlhttp==null) {
+              alert ("Your browser does not support XMLHTTP!");
+              return;
+           }
+           var url="twbktmlb_cityu.P_Release_Timeout?in_pd=1667567&in_tm="+ptime+"&in_ran=215369444331911082631";
+
+           twbktmlb_cityu_xmlhttp.onreadystatechange=twbktmlb_cityu_stateChanged;
+           twbktmlb_cityu_xmlhttp.open("GET",url,true);
+           twbktmlb_cityu_xmlhttp.send(null);
+        }
+
+        function twbktmlb_cityu_GetXmlHttpObject() {
+           if (window.XMLHttpRequest) {
+              // code for IE7+, Firefox, Chrome, Opera, Safari
+              return new XMLHttpRequest();
+           }
+           if (window.ActiveXObject) {
+              // code for IE6, IE5
+              return new ActiveXObject("Microsoft.XMLHTTP");
+           }
+        }
+
+           function twbktmlb_cityu_stateChanged() {
+           if (twbktmlb_cityu_xmlhttp.readyState==4) {
+              if (twbktmlb_cityu_xmlhttp.responseText.substring(0,6) == "Failed") {
+                  window.clearTimeout(twbktmlb_cityu_timer);
+              }
+           }
+           }
+
+        function twbktmlb_cityu_init()
+        {
+          if (document.addEventListener)
+          {
+              document.addEventListener("click",twbktmlb_cityu_KeyMouseDown,false);
+              document.addEventListener("keydown",twbktmlb_cityu_KeyMouseDown,false);
+          }
+          else if (document.attachEvent)
+          {
+              document.attachEvent("onkeydown", twbktmlb_cityu_KeyMouseDown);
+              document.attachEvent("onmousedown", twbktmlb_cityu_KeyMouseDown);
+          }
+          else
+          {
+             document.onkeydown=twbktmlb_cityu_KeyMouseDown;
+             document.onmousedown=twbktmlb_cityu_KeyMouseDown;
+          }
+          var cur_date = twbktmlb_cityu_curtime();
+          var cur_date_str = twbktmlb_cityu_curtime_x(cur_date);
+          init_time = cur_date.valueOf();
+          init_time_x = cur_date_str;
+          if (document.twbktmlb_cityu_f1.last_time_x.value == "") {
+             document.twbktmlb_cityu_f1.last_time.value=cur_date.valueOf();
+             document.twbktmlb_cityu_f1.last_time_x.value=cur_date_str;
+          }
+          document.twbktmlb_cityu_f1.event_time.value=cur_date.valueOf();
+          document.twbktmlb_cityu_f1.event_time_x.value=cur_date_str;
+
+          window.setTimeout("twbktmlb_cityu_init_2();", 0.01 * 1000);
+          twbktmlb_cityu_timer=window.setTimeout("twbktmlb_cityu_ChkTimeOut();", 5 * 1000);
+          document.twbktmlb_cityu_f1.timer.value=cur_date_str;
+        }
+        function twbktmlb_cityu_init_2()
+        {
+	   document.twbktmlb_cityu_f1.event_time.value=init_time;
+           document.twbktmlb_cityu_f1.event_time_x.value=init_time_x;
+        }
+        function twbktmlb_cityu_UpdateEventTime()
+        {
+           var cur_date = twbktmlb_cityu_curtime();
+           var cur_date_str = twbktmlb_cityu_curtime_x(cur_date);
+	   document.twbktmlb_cityu_f1.event_time.value=cur_date.valueOf();
+           document.twbktmlb_cityu_f1.event_time_x.value=cur_date_str;
+        }
+
+        function twbktmlb_cityu_KeyMouseDown(e)
+        {
+           if (!e) e= event;
+               twbktmlb_cityu_UpdateEventTime();
+        }
+        function twbktmlb_cityu_ChkTimeOut()
+        {
+
+           var cur_date = twbktmlb_cityu_curtime();
+           var cur_date_str = twbktmlb_cityu_curtime_x(cur_date);
+           var t0 = document.twbktmlb_cityu_f1.last_time.value;
+           var t1 = document.twbktmlb_cityu_f1.event_time.value;
+           var t2 = cur_date.valueOf();
+           if ( ((t2 - t0) >= 13.5 * 60 * 1000) && (t1 > t0) )
+
+           {
+               twbktmlb_cityu_UpdateLastAccess(document.twbktmlb_cityu_f1.event_time_x.value);
+               document.twbktmlb_cityu_f1.last_time.value=t1;
+               document.twbktmlb_cityu_f1.last_time_x.value=document.twbktmlb_cityu_f1.event_time_x.value;
+           };
+           twbktmlb_cityu_timer=window.setTimeout("twbktmlb_cityu_ChkTimeOut();", 5 * 1000);
+           document.twbktmlb_cityu_f1.timer.value=cur_date_str;
+        };
+        twbktmlb_cityu_init();
+// end -->
+</script>
+<br>
+</div>
+<div class="pagetitlediv">
+<table class="plaintable" summary="This table displays title and static header displays." width="100%">
+<tbody><tr>
+<td class="pldefault">
+<h2>Student Schedule by Day and Time :  Semester A 2026/27</h2>
+</td>
+<td class="pldefault">
+&nbsp;
+</td>
+<td class="pldefault"><p class="rightaligntext" p="">
+</p><div class="staticheaders">
+</div>
+</td>
+</tr>
+<tr>
+<td class="bg3" width="100%" colspan="3"><img src="/wtlgifs/web_transparent.gif" alt="Transparent Image" class="headerImg" title="Transparent Image" name="web_transparent" hspace="0" vspace="0" border="0" height="3" width="10"></td>
+</tr>
+</tbody></table>
+<a name="main_content"></a>
+</div>
+<div class="body">
+<!--  ** END OF twbkwbis.P_OpenDoc **  -->
+
+   <style type="text/css">
+      .ctt-matrix-container {
+         margin-top: 15px;
+      }
+      .ctt-matrix-header {
+         border: 1px solid;
+         float: left;
+         padding: 2px 5px;
+      }
+      .ctt-matrix {
+         font-size: small;
+         margin: 5px 0;
+         width: 810px;
+      }
+      .ctt-matrix th, .ctt-matrix td {
+         padding: 2px;
+      }
+      .ctt-matrix-th-day {
+         font-weight: bold;
+         text-align: center;
+         vertical-align: top;
+         width: 100px;
+      }
+      .ctt-matrix-th-time {
+         font-weight: bold;
+         text-align: center;
+         vertical-align: top;
+         width: 60px;
+      }
+      .ctt-matrix-td-time {
+         text-align: left;
+         vertical-align: top;
+      }
+      .ctt-matrix-th-day, .ctt-matrix-th-time, .ctt-matrix-td-time {
+         background-color: #00FFFF;
+      }
+      .ctt-matrix-cell-blank {
+         background-color: #FFFFCC;
+      }
+      .ctt-matrix-cell-class {
+         background-color: #FFCC11;
+      }
+      .ctt-matrix-cell-event {
+         background-color: #AAFF00;
+      }
+      .ctt-matrix-cell-overlap {
+         background-color: #FFAA99;
+      }
+      .ctt-matrix-container {
+         margin-top: 0; /* temp style */
+      }
+      .ctt-matrix {
+         margin-top: 0; /* temp style */
+      }
+   </style>
+
+<div class="infotextdiv"><table class="infotexttable" summary="This layout table contains information that may be helpful in understanding the content and functionality of this page.  It could be a brief set of instructions, a description of error messages, or other special information."><tbody><tr><td class="indefault"><span class="infotext"> <font size="+1">
+<lh><b>Notes to Student</b></lh><br><br>
+</font>
+<font style="line-height:120%">
+
+<li>For students admitted to the Normative 4-year Degrees and Advanced Standing I/II in 2026/27, the timetable below may not include the English for Academic Purposes 1/ GE English courses.  The course will be registered for you on <font color="red"> 17 August 2026 (Monday) </font>the earliest.</li><br>
+<li>For Bachelor’s degree students admitted in 2026/27 who are required to take MA1200, MA1201 or MA1300, the course section assigned may be changed by the Department of Mathematics.</li>
+<br>
+ <li>As some courses do not meet every week, you are strongly advised to observe the date range of each course before attending the classes.</li><br>
+</font></span></td></tr></tbody></table><p></p></div>
+<b>Schedule for : WU Ji  (60567710)</b>
+<br>
+<b>AUG 31, 2026 - NOV 28, 2026</b>
+<br>
+<b>Total Credit Hours: 18.00</b>
+<form action="/pls/PROD/bwskfshd.P_CrseSchdDetl" method="post">
+<input type="hidden" name="term_in" value="202609">
+<input type="hidden" name="crn" value="">
+<input type="hidden" name="pidm_in" value="1649433">
+
+<table border="0" class="ctt-matrix-container">
+<tbody><tr>
+<td valign="top">
+<table border="1" class="ctt-matrix">
+<tbody><tr>
+<th class="ctt-matrix-th-time">Time</th>
+<th class="ctt-matrix-th-day">Monday</th>
+<th class="ctt-matrix-th-day">Tuesday</th>
+<th class="ctt-matrix-th-day">Wednesday</th>
+<th class="ctt-matrix-th-day">Thursday</th>
+<th class="ctt-matrix-th-day">Friday</th>
+<th class="ctt-matrix-th-day">Saturday</th>
+<th class="ctt-matrix-th-day">Sunday</th>
+</tr>
+<tr>
+<td class="ctt-matrix-td-time">08:00-08:50</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+</tr>
+<tr>
+<td class="ctt-matrix-td-time">09:00-09:50</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-class" rowspan="3" valign="top">12128 <br>GE2401-T01<br>YEUNG B5-207</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+</tr>
+<tr>
+<td class="ctt-matrix-td-time">10:00-10:50</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+</tr>
+<tr>
+<td class="ctt-matrix-td-time">11:00-11:50</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+</tr>
+<tr>
+<td class="ctt-matrix-td-time">12:00-12:50</td>
+<td class="ctt-matrix-cell-class" rowspan="3" valign="top">12087 <br>DSC1001-C01<br>LI 3505</td>
+<td class="ctt-matrix-cell-class" rowspan="3" valign="top">11511 <br>MA1508-CA1<br>YEUNG LT-6</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-class" rowspan="3" valign="top">13018 <br>CS1315-C01<br>MMW 2450</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+</tr>
+<tr>
+<td class="ctt-matrix-td-time">13:00-13:50</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+</tr>
+<tr>
+<td class="ctt-matrix-td-time">14:00-14:50</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+</tr>
+<tr>
+<td class="ctt-matrix-td-time">15:00-15:50</td>
+<td class="ctt-matrix-cell-class" rowspan="1" valign="top">11709 <br>MA1508-TA1<br>YEUNG LT-18</td>
+<td class="ctt-matrix-cell-class" rowspan="1" valign="top">13021 <br>CS1315-L02<br>LI 4208</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-class" rowspan="3" valign="top">11498 <br>GE1401-T83<br>LI 2413</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+</tr>
+<tr>
+<td class="ctt-matrix-td-time">16:00-16:50</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-class" rowspan="2" valign="top">14467 <br>GE1362-C01<br>LI 1507</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+</tr>
+<tr>
+<td class="ctt-matrix-td-time">17:00-17:50</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+</tr>
+<tr>
+<td class="ctt-matrix-td-time">18:00-18:50</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-class" rowspan="1" valign="top">14468 <br>GE1362-T01<br>LI 1507</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+</tr>
+<tr>
+<td class="ctt-matrix-td-time">19:00-19:50</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+</tr>
+<tr>
+<td class="ctt-matrix-td-time">20:00-20:50</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+</tr>
+<tr>
+<td class="ctt-matrix-td-time">21:00-21:50</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+</tr>
+<tr>
+<td class="ctt-matrix-td-time">22:00-22:50</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+<td class="ctt-matrix-cell-blank">&nbsp;</td>
+</tr>
+</tbody></table>
+<table border="0">
+<tbody><tr>
+<td><strong>Sections with no scheduled date and time : </strong></td>
+</tr>
+<tr>
+<td>GE1401 A01 GE2401 A02 </td>
+</tr>
+</tbody></table>
+<input type="submit" value="View Detail Schedule">
+</td>
+</tr>
+</tbody></table>
+</form>
+
+<!--  ** START OF twbkwbis.P_CloseDoc **  -->
+<table style="margin:0"></table>
+<a href="#top" onmouseover="window.status='Skip to top of page'; return true" onmouseout="window.status=''; return true" onfocus="window.status='Skip to top of page'; return true" onblur="window.status=''; return true" class="skiplinks">Skip to top of page</a>
+</div>
+<div class="footerbeforediv">
+
+</div>
+<div class="footer_outer"> <div class="footer_inner">
+<div class="poweredbydiv">
+<a href="https://apps.apple.com/hk/app/cityu-mobile/id750718911" target="_blank"> <img id="imgAppIOS" class="app-button" src="/cityu2/gifs/button_ios_apps.png" alt="Download iPhone/iPad app for AIMS" style="border-width:0px;" width="100px"></a> <a href="https://play.google.com/store/apps/details?id=hk.edu.cityu.mobile" target="_blank"> <img id="imgAppAndroid" class="app-button" src="/cityu2/gifs/button_android_apps.png" alt="Download Android app for AIMS" style="border-width:0px;" width="100px"></a> <a href="http://www6.cityu.edu.hk/web2.0/#apps" target="_blank"> <img id="ctl00_imgApp" class="app-button" src="/cityu2/gifs/button_cityu_apps.png" alt="CityU Apps" style="border-width:0px;" width="100px"></a>
+</div>
+<table class="plaintable" width="100%">
+<tbody><tr>
+<td class="pldefault">[ <a href="#" class="submenulinktext2" onclick="popup=window.open('/cityu/pics.htm','PopupPage','height=450,width=500,scrollbars=yes,resizable=yes'); window.popup.focus(); return false" target="_blank">Personal Information Collection Statement</a> | <a href="#" class="submenulinktext2" onclick="popup=window.open('/cityu/cityu_copyright.htm','PopupPage','height=450,width=500,scrollbars=yes,resizable=yes'); window.popup.focus(); return false" target="_blank">Copyright</a> | <a href="#" class="submenulinktext2" onclick="popup=window.open('/cityu/cityu_copyright.htm','PopupPage','height=450,width=500,scrollbars=yes,resizable=yes'); window.popup.focus(); return false" target="_blank">Disclaimer</a> ]<br>© 2026 City University of Hong Kong. All Rights Reserved.</td>
+<td class="pldefault" width="3%">&nbsp;</td>
+<td class="pldefault">IT Service Desk: +852 3442-8340<br>Email: <a href="mailto:it.servicedesk@cityu.edu.hk" class="submenulinktext2">it.servicedesk@cityu.edu.hk</a></td>
+</tr>
+</tbody></table>
+<div class="footerafterdiv">
+
+</div>
+<div class="globalafterdiv">
+
+</div>
+<div class="globalfooterdiv">
+
+</div>
+<div class="pagefooterdiv">
+<strong>Release: 8.5.3</strong></div>
+</div>
+<div class="poweredbydiv">
+</div>
+<div class="div1"></div>
+<div class="div2"></div>
+<div class="div3"></div>
+<div class="div4"></div>
+<div class="div5"></div>
+<div class="div6"></div>
+<div class="banner_copyright"></div>
+<!-- Google tag (gtag.js) --> <script async="" src="https://www.googletagmanager.com/gtag/js?id=G-LL0S5D6RMP"></script><script> window.dataLayer = window.dataLayer || []; function gtag(){dataLayer.push(arguments);} gtag('js', new Date()); gtag('config', 'G-LL0S5D6RMP'); </script>
+
+
+</div></body></html>

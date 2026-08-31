@@ -81,21 +81,6 @@ function fillCourseFilter(selId, names){
 }
 function esc(t){ const d=document.createElement("div"); d.textContent = t==null?"":String(t); return d.innerHTML; }
 function escAttr(t){ return esc(t).replace(/"/g, "&quot;"); }
-/* 地点简称：AIMS 里的楼宇代码 + 房间号（未收录的保持原样，显示完整名） */
-const BUILDING_SHORT = {
-  "Mong Man Wai Building": "MMW",
-  "Li Dak Sum Yip Yio Chin A Bldg": "AC1",
-  "Yeung Kin Man Acad Building": "AC3",
-};
-function shortRoom(room){
-  if (!room) return "";
-  const s = String(room).trim();
-  const lower = s.toLowerCase();
-  for (const [full, code] of Object.entries(BUILDING_SHORT)) {
-    if (lower.startsWith(full.toLowerCase())) return code + s.slice(full.length);
-  }
-  return s;
-}
 function fillProfessorFilter(){
   const sel = $("selProfessor");
   if (!sel) return;
@@ -626,7 +611,7 @@ function renderSchedule(){
           ${detailBtn}
           <div style="font-weight:600;color:#fff">${esc(c.code)} ${esc(c.section)}</div>
           <div style="color:rgba(255,255,255,.9)">${fmtTime(m.start_min)}–${fmtTime(m.end_min)}</div>
-          ${m.room ? `<div style="color:rgba(255,255,255,.8)">${esc(shortRoom(m.room))}</div>` : ""}
+          ${(m.room_short || m.room) ? `<div style="color:rgba(255,255,255,.8)">${esc(m.room_short || m.room)}</div>` : ""}
           ${badge}</div>`;
       }
     }
