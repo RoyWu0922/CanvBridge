@@ -189,3 +189,34 @@ def test_get_course_no_syllabus(monkeypatch):
     result = canvas_client.get_course("https://x.instructure.com", "tok", 42)
     assert result["syllabus_text"] == ""
     assert result["teachers"] == []
+
+
+def test_get_assignments_filters_and_builds(monkeypatch):
+    """已截止丢弃、未来/无截止保留；html_url 缺失拼兜底。"""
+    import datetime as _dt
+    future = (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=7)).isoformat()
+    past = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=7)).isoformat()
+    data = [
+        {"id": 1, "name": "Future HW", "due_at": future,
+         "points_possible": 10, "html_url": "http://x/a/1"},
+        {"id": 2, "name": "Past HW", "due_at": past,
+         "points_possible": 10, "html_url": "http://x/a/2"},
+        {"id": 3, "name": "No Due", "due_at": None,
+         "points_possible": 5, "html_url": "http://x/a/3"},
+        {"id": 4, "name": "No Url", "due_at": future,
+         "points_possible": 5, "html_url": None},
+    ]
+    monkeypatch.setattr(canvas_client, "_paginate", lambda s, u, p, t: data)
+    result = canvas_client.get_assignments("https://x.instructure.com", "tok", 42)
+    assert [a["id"] for a in result] == [1, 3, 4]      # 已截止的 2 被丢弃
+    assert result[2]["html_url"] == "https://x.instructure.com/courses/42/assignments/4"
+    assert result[2]["due_at"] == future
+
+
+def test_get_assignments_drops_unparseable_due(monkeypatch):
+    """due_at 无法解析 → 丢弃（宁可不上日历，不误展示）。"""
+    monkeypatch.setattr(canvas_client, "_paginate",
+                        lambda s, u, p, t: [{"id": 9, "name": "X",
+                                             "due_at": "not-a-date", "html_url": "http://x/9"}])
+    result = canvas_client.get_assignments("https://x", "tok", 42)
+    assert result == []

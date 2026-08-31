@@ -106,6 +106,40 @@ def get_course(canvas_url: str, token: str, course_id: int) -> dict:
     }
 
 
+def get_assignments(canvas_url: str, token: str, course_id: int) -> list[dict]:
+    """返回未截止作业 [{id, name, due_at, points_possible, html_url}]。
+
+    无截止日期（due_at 为空）保留（详情展示用，不上日历）；
+    due_at 在未来保留；已过或无法解析的丢弃。html_url 缺失时拼兜底 URL。
+    """
+    base = canvas_url.rstrip("/")
+    now = datetime.now(timezone.utc)
+    with requests.Session() as s:
+        data = _paginate(
+            s, f"{base}/api/v1/courses/{course_id}/assignments",
+            {"per_page": 100}, token,
+        )
+    out = []
+    for a in data:
+        due = a.get("due_at")
+        if due:
+            try:
+                due_dt = datetime.fromisoformat(due.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if due_dt <= now:
+                continue
+        out.append({
+            "id": a.get("id"),
+            "name": a.get("name", "(untitled)"),
+            "due_at": due or "",
+            "points_possible": a.get("points_possible"),
+            "html_url": a.get("html_url")
+                or f"{base}/courses/{course_id}/assignments/{a.get('id')}",
+        })
+    return out
+
+
 class _TextExtractor(HTMLParser):
     """抽取 HTML 文本，块级标签处换行。"""
 
