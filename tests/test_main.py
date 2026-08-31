@@ -31,34 +31,54 @@ def test_reminder_lists(monkeypatch):
     assert r.json() == {"ok": True, "lists": ["提醒", "任务"]}
 
 
-def test_sync_announcements(monkeypatch):
-    monkeypatch.setattr(canvas_client, "get_announcements", lambda u, t, ids, a, b: {5: [{"title": "T", "message": "M", "posted_at": ""}]})
+def test_sync_announcements_returns_raw_only(monkeypatch):
+    """同步只返回原始公告，不调用 LLM。"""
+    monkeypatch.setattr(canvas_client, "get_announcements",
+                        lambda u, t, ids, a, b: {5: [{"id": 1, "title": "T", "message": "M", "posted_at": "2026-08-01"}]})
     monkeypatch.setattr(canvas_client, "list_courses", lambda u, t: [{"id": 5, "name": "CS 101"}])
+    llm_called = []
     monkeypatch.setattr(llm_client, "extract_course_summary",
-                        lambda *a, **k: {"course_name": "CS 101", "summary": "要点", "calendar_events": [], "reminders": []})
-    body = {"canvas_url": "https://x", "canvas_token": "t", "llm_base_url": "https://llm/v1",
-            "llm_api_key": "k", "llm_model": "m", "course_ids": [5],
+                        lambda *a, **k: llm_called.append(1) or {})
+    body = {"canvas_url": "https://x", "canvas_token": "t", "course_ids": [5],
             "start_date": "2026-08-01", "end_date": "2026-08-31"}
     r = client.post("/api/sync_announcements", json=body)
+    courses = r.json()["courses"]
     assert r.json()["ok"] is True
-    assert r.json()["courses"][0]["summary"] == "要点"
+    assert llm_called == []                      # 不再生成总结
+    assert courses[0]["course_id"] == 5
+    assert courses[0]["course_name"] == "CS 101"
+    assert courses[0]["announcements"][0]["title"] == "T"
 
 
-def test_sync_announcements_passes_language(monkeypatch):
+def test_summarize_course(monkeypatch):
     captured = {}
-    monkeypatch.setattr(canvas_client, "get_announcements",
-                        lambda u, t, ids, a, b: {5: [{"title": "T", "message": "M", "posted_at": ""}]})
-    monkeypatch.setattr(canvas_client, "list_courses", lambda u, t: [{"id": 5, "name": "CS 101"}])
     def fake(base, key, model, name, anns, language="zh"):
-        captured["language"] = language
-        return {"course_name": name, "summary": "s", "calendar_events": [], "reminders": []}
+        captured.update(base=base, key=key, model=model, name=name, anns=anns, language=language)
+        return {"course_name": name, "summary": "要点", "calendar_events": [{"title": "E"}],
+                "reminders": [], "warning": ""}
     monkeypatch.setattr(llm_client, "extract_course_summary", fake)
     body = {"canvas_url": "https://x", "canvas_token": "t", "llm_base_url": "https://llm/v1",
-            "llm_api_key": "k", "llm_model": "m", "course_ids": [5],
-            "start_date": "2026-08-01", "end_date": "2026-08-31", "language": "en"}
-    r = client.post("/api/sync_announcements", json=body)
-    assert r.json()["ok"] is True
+            "llm_api_key": "k", "llm_model": "m", "course_id": 5, "course_name": "CS 101",
+            "announcements": [{"title": "T", "message": "M"}], "language": "en"}
+    r = client.post("/api/summarize_course", json=body)
+    data = r.json()
+    assert data["ok"] is True
+    assert data["summary"] == "要点"
+    assert data["course_id"] == 5
     assert captured["language"] == "en"
+    assert captured["anns"] == [{"title": "T", "message": "M"}]
+
+
+def test_summarize_course_error(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("llm down")
+    monkeypatch.setattr(llm_client, "extract_course_summary", boom)
+    r = client.post("/api/summarize_course", json={
+        "canvas_url": "https://x", "canvas_token": "t", "llm_base_url": "https://llm/v1",
+        "llm_api_key": "k", "llm_model": "m", "course_id": 5, "course_name": "CS 101",
+        "announcements": []})
+    assert r.json()["ok"] is False
+    assert "llm down" in r.json()["error"]
 
 
 def test_course_detail_ok(monkeypatch):
@@ -115,18 +135,6 @@ def test_summarize_syllabus_ok(monkeypatch):
     assert captured["language"] == "zh"
 
 
-def test_sync_announcements_includes_course_id(monkeypatch):
-    monkeypatch.setattr(canvas_client, "get_announcements",
-                        lambda u, t, ids, a, b: {5: [{"title": "T", "message": "M", "posted_at": ""}]})
-    monkeypatch.setattr(canvas_client, "list_courses", lambda u, t: [{"id": 5, "name": "CS 101"}])
-    monkeypatch.setattr(llm_client, "extract_course_summary",
-                        lambda *a, **k: {"course_name": "CS 101", "summary": "s",
-                                         "calendar_events": [], "reminders": []})
-    body = {"canvas_url": "https://x", "canvas_token": "t", "llm_base_url": "https://llm/v1",
-            "llm_api_key": "k", "llm_model": "m", "course_ids": [5],
-            "start_date": "2026-08-01", "end_date": "2026-08-31"}
-    r = client.post("/api/sync_announcements", json=body)
-    assert r.json()["courses"][0]["course_id"] == 5
 
 
 def test_add_calendar_event(monkeypatch):

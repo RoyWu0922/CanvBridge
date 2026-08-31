@@ -2,7 +2,7 @@
 const $ = (id) => document.getElementById(id);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
 const KEY = ["canvasUrl","canvasToken","llmBaseUrl","llmApiKey","llmModel","downloadDir"];
-const ALERTS = [[0,"alert.none"],[5,"alert.min5"],[10,"alert.min10"],[30,"alert.min30"],[60,"alert.hour1"],[1440,"alert.day1"]];
+const ALERTS = [[0,"alert.none"],[5,"alert.min5"],[10,"alert.min10"],[30,"alert.min30"],[60,"alert.hour1"],[120,"alert.hour2"],[360,"alert.hour6"],[720,"alert.hour12"],[1440,"alert.day1"]];
 
 function loadSettings(){ KEY.forEach(k=>{ const v=localStorage.getItem("sc_"+k); if(v) $(k).value=v; }); }
 function saveSettings(){ KEY.forEach(k=>localStorage.setItem("sc_"+k, $(k).value)); }
@@ -410,24 +410,57 @@ $("btnLoadCourses").onclick = async () => {
       `<label class="chip"><input type="checkbox" checked data-id="${c.id}"> ${esc(c.name)}</label>`).join("");
     setStatus(t("status.courses_loaded", {n: courseList.length}),"ok");
   });
+  // 测试连接 → 顺带同步公告（只拉原文，不调 AI）
+  if(await syncAnnouncements()) switchTab("tabAnnounce");
 };
 function selectedCourses(){ return [...document.querySelectorAll("#courseCheckboxes input:checked")].map(i=>Number(i.dataset.id)); }
 
-$("btnSync").onclick = async () => {
+/* 同步公告：只拉原始公告，不做 AI 总结 */
+async function syncAnnouncements(){
   const s=settings(), ids=selectedCourses();
-  const rng=range(); if(!rng) return;
-  if(!ids.length){ setStatus(t("status.need_select_course"),"err"); return; }
+  const rng=range(); if(!rng) return false;
+  if(!ids.length){ setStatus(t("status.need_select_course"),"err"); return false; }
+  const r=await api("sync_announcements", {
+    canvas_url:s.canvas_url, canvas_token:s.canvas_token, course_ids:ids,
+    start_date:rng.start_date, end_date:rng.end_date });
+  if(!r.ok){ setStatus(t("status.sync_fail")+r.error,"err"); return false; }
+  summaryResults=(r.courses||[]).map(c=>({
+    course_id:c.course_id, course_name:c.course_name, announcements:c.announcements||[],
+    _summarized:false, _showRaw:false, _summarizing:false,
+    summary:"", calendar_events:[], reminders:[], warning:"", error:"" }));
+  if(!$("filterStart").value) $("filterStart").value=rng.start_date;
+  if(!$("filterEnd").value) $("filterEnd").value=rng.end_date;
+  renderSummaries();
+  setStatus(t("status.sync_done", {n: summaryResults.length}),"ok");
+  return true;
+}
+$("btnSync").onclick = async () => {
   await withBusy(t("status.syncing"), $("btnSync"), async ()=>{
-    const r=await api("sync_announcements", { ...s, course_ids:ids, ...rng, language:LANG() });
-    if(!r.ok){ setStatus(t("status.sync_fail")+r.error,"err"); return; }
-    summaryResults=r.courses;
-    if(!$("filterStart").value) $("filterStart").value=rng.start_date;
-    if(!$("filterEnd").value) $("filterEnd").value=rng.end_date;
-    renderSummaries();
-    setStatus(t("status.sync_done", {n: summaryResults.length}),"ok");
-    switchTab("tabAnnounce");
+    if(await syncAnnouncements()) switchTab("tabAnnounce");
   });
 };
+
+/* 单门课程 AI 总结（手点） */
+async function summarizeAnnouncement(orig){
+  const c=summaryResults[orig];
+  if(!c || c._summarizing) return;
+  c._summarizing=true; c.error=""; renderSummaries();
+  const s=settings();
+  const r=await api("summarize_course", {
+    canvas_url:s.canvas_url, canvas_token:s.canvas_token,
+    llm_base_url:s.llm_base_url, llm_api_key:s.llm_api_key, llm_model:s.llm_model,
+    course_id:c.course_id, course_name:c.course_name,
+    announcements:c.announcements||[], language:LANG() });
+  if(summaryResults[orig]!==c) return;            // 已重新同步 → 丢弃陈旧响应
+  c._summarizing=false;
+  if(r.ok!==true){ c.error=r.error||""; renderSummaries(); setStatus(t("status.summarize_fail")+(r.error||""),"err"); return; }
+  c._summarized=true; c._showRaw=false;
+  c.summary=r.summary||""; c.calendar_events=r.calendar_events||[];
+  c.reminders=r.reminders||[]; c.warning=r.warning||"";
+  renderSummaries();
+  setStatus(t("status.summarized", {n:c.course_name}),"ok");
+}
+
 function renderSummaries(){
   const f = filterVisible();
   fillCourseFilter("selAnnounceCourse", summaryResults.map(c => c.course_name));
@@ -446,16 +479,20 @@ function renderSummaries(){
   }
   const evCount = (shown,total) => (f && total>0) ? `${shown}<span class="count"> / ${total}</span>` : `${shown}`;
   $("summaries").innerHTML = displayResults.map((c,ci)=>{
+    const orig=c._orig, st=summaryResults[orig];
     const evs=c.calendar_events, rms=c.reminders;
-    const evTotal=(summaryResults[c._orig].calendar_events||[]).length;
-    const rmTotal=(summaryResults[c._orig].reminders||[]).length;
-    return `
-    <div class="course-card">
-      <div class="course-name">${c.course_id
-          ? `<a href="#" class="course-detail-link" data-cid="${c.course_id}">${esc(c.course_name)}</a>`
-          : esc(c.course_name)}</div>
-      ${c.warning?`<div style="color:var(--err);font-size:12.5px;margin-bottom:6px">${esc(c.warning)}</div>`:""}
-      <div class="summary">${esc(c.summary)}</div>
+    const evTotal=(st.calendar_events||[]).length;
+    const rmTotal=(st.reminders||[]).length;
+    // 原始公告块
+    const rawHtml = (st.announcements&&st.announcements.length)
+      ? st.announcements.map(a=>`
+        <div class="item"><div><div class="item-title">${esc(a.title)} <span class="muted">${esc((a.posted_at||"").slice(0,10))}</span></div>
+        <div class="file-path">${esc((a.message||"").slice(0,300))}</div></div></div>`).join("")
+      : `<div class="muted" style="padding:4px 0 8px">${t("announce.no_announce")}</div>`;
+    // AI 总结块（总结后展示）
+    const summaryHtml = `
+      ${st.warning?`<div style="color:var(--err);font-size:12.5px;margin-bottom:6px">${esc(st.warning)}</div>`:""}
+      <div class="summary">${esc(st.summary)}</div>
       <div class="sub-label">${t("announce.calendar_events")}（${evCount(evs.length,evTotal)}）</div>
       ${evs.map((e,ei)=>`
         <div class="item"><input type="checkbox" class="ev" data-ci="${ci}" data-ei="${ei}">
@@ -464,7 +501,21 @@ function renderSummaries(){
       <div class="sub-label">${t("announce.reminders")}（${evCount(rms.length,rmTotal)}）</div>
       ${rms.map((e,ei)=>`
         <div class="item"><input type="checkbox" class="rm" data-ci="${ci}" data-ei="${ei}">
-          <div><div class="item-title">${esc(e.title)}</div><div class="file-path">${t("announce.due")} ${esc(e.due_date)}</div></div></div>`).join("")}
+          <div><div class="item-title">${esc(e.title)}</div><div class="file-path">${t("announce.due")} ${esc(e.due_date)}</div></div></div>`).join("")}`;
+    // 每课操作按钮
+    const actions = st._summarizing
+      ? `<span class="btn btn-ghost" disabled>${t("announce.summarizing")}</span>`
+      : st._summarized
+        ? `<button class="btn btn-ghost btn-summarize" data-orig="${orig}">${t("announce.resummarize")}</button>
+           <button class="btn btn-ghost btn-toggle-raw" data-orig="${orig}">${st._showRaw?t("announce.hide_raw"):t("announce.show_raw")}</button>`
+        : `<button class="btn btn-primary btn-summarize" data-orig="${orig}">${t("announce.summarize")}</button>`;
+    return `
+    <div class="course-card">
+      <div class="course-name">${c.course_id
+          ? `<a href="#" class="course-detail-link" data-cid="${c.course_id}">${esc(c.course_name)}</a>`
+          : esc(c.course_name)}
+        <span class="course-actions">${actions}</span></div>
+      ${st._summarized && !st._showRaw ? summaryHtml : rawHtml}
     </div>`;
   }).join("");
 }
@@ -474,6 +525,14 @@ $("filterEnd").addEventListener("change", refreshFilterState);
 $("selAnnounceCourse").addEventListener("change", renderSummaries);
 
 $("summaries").addEventListener("click", (e) => {
+  const sum = e.target.closest(".btn-summarize");
+  if (sum){ summarizeAnnouncement(Number(sum.dataset.orig)); return; }
+  const tog = e.target.closest(".btn-toggle-raw");
+  if (tog){
+    const c = summaryResults[Number(tog.dataset.orig)];
+    if (c){ c._showRaw = !c._showRaw; renderSummaries(); }
+    return;
+  }
   const link = e.target.closest(".course-detail-link");
   if (!link) return;
   e.preventDefault();
@@ -558,18 +617,65 @@ function renderFiles(){
       return (f.content_type||"").toLowerCase().includes(filter)
           || (f.display_name||"").toLowerCase().endsWith("."+filter);
     })}));
-  $("filesArea").innerHTML = shown.map((c)=>`
+  if(!shown.length){
+    $("filesArea").innerHTML = `<div class='muted' style='padding:12px 0'>${t("files.empty")}</div>`;
+    updateSelectAllBtn();
+    return;
+  }
+  $("filesArea").innerHTML = shown.map((c)=>{
+    const cfs=c.files||[];
+    const cAllOn = cfs.length>0 && cfs.every(f=>!f.saved);   // 默认勾选态 = 未保存
+    return `
     <div class="course-card">
-      <div class="course-name">${esc(c.name)} ${c.error?`<span style="color:var(--err);font-size:12px">（${esc(c.error)}）</span>`:""}</div>
-      ${(c.files||[]).map(f=>`
+      <div class="course-name">${esc(c.name)} ${c.error?`<span style="color:var(--err);font-size:12px">（${esc(c.error)}）</span>`:""}
+        <button class="btn btn-ghost btn-sel-course" data-orig="${c._orig}">${cAllOn?t("btn.unselect_course"):t("btn.select_course")}</button></div>
+      ${cfs.map(f=>`
         <div class="item"><input type="checkbox" class="fl" data-ci="${c._orig}" data-fi="${f.file_id}" ${f.saved?"":"checked"}>
           <div><div class="item-title">${esc(f.display_name)} <span class="muted">（${esc(f.content_type)}）</span>${f.saved?` <span class="file-saved">${esc(t("files.saved"))}</span>`:""}</div>
           <div class="file-path">${esc(f.path||"/")}</div></div></div>`).join("")}
-    </div>`).join("") || `<div class='muted' style='padding:12px 0'>${t("files.empty")}</div>`;
+    </div>`;
+  }).join("");
+  updateSelectAllBtn();
+}
+function updateSelectAllBtn(){
+  const boxes=[...document.querySelectorAll(".fl")];
+  const allOn = boxes.length>0 && boxes.every(b=>b.checked);
+  $("btnSelectAllFiles").textContent = allOn ? t("btn.unselect_all") : t("btn.select_all");
+}
+function refreshCourseBtns(){
+  document.querySelectorAll(".btn-sel-course").forEach(btn=>{
+    const bs=[...btn.closest(".course-card").querySelectorAll(".fl")];
+    btn.textContent = bs.length>0 && bs.every(b=>b.checked) ? t("btn.unselect_course") : t("btn.select_course");
+  });
 }
 $("inpTypeFilter").oninput = renderFiles;
 $("selFileCourse").addEventListener("change", renderFiles);
-$("btnSelectAllFiles").onclick = ()=>document.querySelectorAll(".fl").forEach(i=>i.checked=true);
+$("btnSelectAllFiles").onclick = () => {
+  const boxes=[...document.querySelectorAll(".fl")];
+  const allOn = boxes.length>0 && boxes.every(b=>b.checked);
+  boxes.forEach(b=>b.checked=!allOn);
+  refreshCourseBtns();
+  updateSelectAllBtn();
+};
+$("filesArea").addEventListener("click", (e)=>{
+  const btn=e.target.closest(".btn-sel-course");
+  if(!btn) return;
+  const boxes=[...btn.closest(".course-card").querySelectorAll(".fl")];
+  const allOn = boxes.length>0 && boxes.every(b=>b.checked);
+  boxes.forEach(b=>b.checked=!allOn);
+  btn.textContent = allOn ? t("btn.select_course") : t("btn.unselect_course");
+  updateSelectAllBtn();
+});
+$("filesArea").addEventListener("change", (e)=>{
+  if(!e.target.classList.contains("fl")) return;
+  const card=e.target.closest(".course-card");
+  const btn=card && card.querySelector(".btn-sel-course");
+  if(btn){
+    const bs=[...card.querySelectorAll(".fl")];
+    btn.textContent = bs.length>0 && bs.every(b=>b.checked) ? t("btn.unselect_course") : t("btn.select_course");
+  }
+  updateSelectAllBtn();
+});
 $("btnDownloadFiles").onclick = async () => {
   const s=settings();
   const items=[...document.querySelectorAll(".fl:checked")].map(i=>{
@@ -577,14 +683,30 @@ $("btnDownloadFiles").onclick = async () => {
     const f=c.files.find(x=>x.file_id===Number(i.dataset.fi));
     return { course_id:c.course_id, file_id:f.file_id, dest_path:f.dest_path }; });
   if(!items.length){ setStatus(t("status.no_file"),"err"); return; }
-  await withBusy(t("status.downloading", {n: items.length}), $("btnDownloadFiles"), async ()=>{
-    const r=await api("download_files",{ ...s, download_dir:downloadDir(), items });
-    if(!r.ok){ setStatus(t("status.download_fail")+r.error,"err"); return; }
-    const failed=(r.failed||[]).length;
-    const sk=(r.skipped||[]).length;
-    setStatus(t("status.download_done", {a:r.downloaded.length, b:failed, s:sk}), failed===0?"ok":"err");
+  const bar=$("downloadProgress"), fill=$("downloadProgressFill"), txt=$("downloadProgressText");
+  bar.hidden=false; fill.style.width="0%";
+  const downloaded=[], skipped=[], failed=[];
+  $("btnDownloadFiles").disabled=true;
+  try{
+    for(let i=0;i<items.length;i++){
+      const fname=items[i].dest_path.split("/").pop();
+      fill.style.width=Math.round(i/items.length*100)+"%";
+      txt.textContent=t("status.download_progress", {c:i+1, n:items.length, f:fname});
+      const r=await api("download_files",{ ...s, download_dir:downloadDir(), items:[items[i]] });
+      if(!r.ok){ failed.push({file_id:items[i].file_id, error:r.error||""}); continue; }
+      downloaded.push(...(r.downloaded||[]));
+      skipped.push(...(r.skipped||[]));
+      failed.push(...(r.failed||[]));
+    }
+    fill.style.width="100%";
+    const doneMsg=t("status.download_done", {a:downloaded.length, b:failed.length, s:skipped.length});
+    txt.textContent=doneMsg;
+    setStatus(doneMsg, failed.length===0?"ok":"err");
     renderFiles();
-  });
+  } finally {
+    $("btnDownloadFiles").disabled=false;
+    setTimeout(()=>{ bar.hidden=true; }, 1500);
+  }
 };
 
 /* ===== 课表（AIMS / Banweb）===== */
@@ -611,7 +733,7 @@ async function checkBanwebStatus(){
     setBanwebStatusText(t("status.banweb_ok"),"ok");
     loginBtn.hidden=true;
     stopBanwebPoll();
-    if(!$("selTerm").options.length) loadTerms();
+    if($("selTerm").options.length <= 1) loadTerms();
   } else if(r.status==="needs_login"){
     loginBtn.hidden=false;
     if(!aimsAutoTried){
@@ -647,6 +769,21 @@ $("btnBanwebLogin").onclick = async () => {
 };
 function startBanwebPoll(){ if(banwebPollTimer) return; banwebPollTimer=setInterval(checkBanwebStatus, 3000); }
 function stopBanwebPoll(){ if(banwebPollTimer){ clearInterval(banwebPollTimer); banwebPollTimer=null; } }
+/* 学期下拉：始终有占位项（避免空下拉在 macOS 上呈置灰不可选），聚焦空下拉时按需重载 */
+function ensureTermPlaceholder(){
+  const sel=$("selTerm");
+  if(!sel || sel.options.length) return;
+  const o=document.createElement("option");
+  o.value=""; o.textContent=t("schedule.term_placeholder");
+  sel.appendChild(o);
+}
+function refreshTermState(){
+  const sel=$("selTerm");
+  if(!$("btnFetchSchedule")) return;
+  $("btnFetchSchedule").disabled = !sel.value;
+}
+$("selTerm").addEventListener("focus", ()=>{ if($("selTerm").options.length <= 1) loadTerms(); });
+$("selTerm").addEventListener("change", refreshTermState);
 async function loadTerms(){
   const r=await api("banweb/terms");
   if(r.ok!==true){
@@ -660,12 +797,14 @@ async function loadTerms(){
     }
     return;
   }
-  const sel=$("selTerm"); sel.innerHTML="";
+  const sel=$("selTerm");
+  const prev = [...sel.options].some(o=>o.value===banwebSchedule.term) ? banwebSchedule.term : "";
+  sel.innerHTML="";
+  const ph=document.createElement("option"); ph.value=""; ph.textContent=t("schedule.term_placeholder");
+  sel.appendChild(ph);
   (r.terms||[]).forEach(t=>{ const o=document.createElement("option"); o.value=t.value; o.textContent=t.label; sel.appendChild(o); });
-  if(banwebSchedule.term){
-    const match=[...sel.options].find(o=>o.value===banwebSchedule.term);
-    if(match) sel.value=match.value;
-  }
+  if(prev) sel.value=prev;
+  refreshTermState();
 }
 function schedBadge(res){
   // res 可能是字符串（旧版保存）或 {s:状态, old:旧时间}
@@ -932,6 +1071,8 @@ async function initScheduleTab(){
     fillSelect("selSchedCalendar", r.calendars||[]);
   }
   if(!$("selSchedAlert").options.length) fillAlert("selSchedAlert");
+  ensureTermPlaceholder();
+  refreshTermState();
   renderSchedule();
   checkBanwebStatus();
 }
@@ -939,6 +1080,8 @@ async function initScheduleTab(){
 $("btnLang").onclick = () => {
   localStorage.setItem("sc_lang", LANG() === "zh" ? "en" : "zh");
   applyLang();
+  renderSummaries();                     // 重渲动态文案（AI 总结按钮等）
+  renderFiles();                         // 重渲文件全选按钮标签
 };
 applyLang();
 loadSettings();
@@ -952,3 +1095,16 @@ refreshPill();
 $("filterStart").value=$("inpStart").value;
 $("filterEnd").value=$("inpEnd").value;
 refreshFilterState();
+
+/* 页面打开：已保存 Canvas 配置 → 自动加载课程 + 同步公告（静默，不遮罩） */
+async function autoLoadOnOpen(){
+  const s=settings();
+  const r=await api("courses", s);
+  if(!r.ok) return;                                 // 静默失败，用户可点「加载课程」重试
+  courseList=r.courses;
+  $("courseCheckboxes").innerHTML = courseList.map(c=>
+    `<label class="chip"><input type="checkbox" checked data-id="${c.id}"> ${esc(c.name)}</label>`).join("");
+  await syncAnnouncements();
+  switchTab("tabAnnounce");
+}
+if($("canvasUrl").value && $("canvasToken").value) autoLoadOnOpen();

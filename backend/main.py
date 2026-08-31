@@ -33,10 +33,18 @@ class LLMConfig(BaseModel):
     llm_model: str
 
 
-class SyncRequest(CanvasConfig, LLMConfig):
+class SyncRequest(CanvasConfig):
     course_ids: list[int]
     start_date: str
     end_date: str
+
+
+class SummarizeAnnouncementsRequest(LLMConfig):
+    canvas_url: str
+    canvas_token: str
+    course_id: int
+    course_name: str
+    announcements: list[dict]
     language: str = "zh"
 
 
@@ -160,6 +168,7 @@ def pick_dir():
 
 @app.post("/api/sync_announcements")
 def sync(req: SyncRequest):
+    """只同步原始公告，不做 AI 总结（总结由前端逐课调 /api/summarize_course）。"""
     try:
         announcements = canvas_client.get_announcements(
             req.canvas_url, req.canvas_token, req.course_ids,
@@ -170,13 +179,25 @@ def sync(req: SyncRequest):
     name_by_id = {c["id"]: c["name"] for c in courses}
     results = []
     for cid in req.course_ids:
-        anns = announcements.get(cid, [])
+        results.append({
+            "course_id": cid,
+            "course_name": name_by_id.get(cid, f"Course {cid}"),
+            "announcements": announcements.get(cid, []),
+        })
+    return {"ok": True, "courses": results}
+
+
+@app.post("/api/summarize_course")
+def summarize_course(req: SummarizeAnnouncementsRequest):
+    """对单门课程做 AI 总结（前端把已同步的原始公告传回）。"""
+    try:
         r = llm_client.extract_course_summary(
             req.llm_base_url, req.llm_api_key, req.llm_model,
-            name_by_id.get(cid, f"Course {cid}"), anns, language=req.language)
-        r["course_id"] = cid
-        results.append(r)
-    return {"ok": True, "courses": results}
+            req.course_name, req.announcements, language=req.language)
+        r["course_id"] = req.course_id
+        return {"ok": True, **r}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @app.post("/api/course_detail")
