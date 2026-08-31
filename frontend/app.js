@@ -491,11 +491,15 @@ function renderSummaries(){
     const evs=c.calendar_events, rms=c.reminders;
     const evTotal=(st.calendar_events||[]).length;
     const rmTotal=(st.reminders||[]).length;
-    // 原始公告块
+    // 原始公告块（标题可跳转 Canvas，消息默认折叠可展开）
+    const cvUrl=(settings().canvas_url||"").replace(/\/+$/,"");
     const rawHtml = (st.announcements&&st.announcements.length)
       ? st.announcements.map(a=>`
-        <div class="item"><div><div class="item-title">${esc(a.title)} <span class="muted">${esc((a.posted_at||"").slice(0,10))}</span></div>
-        <div class="file-path">${esc((a.message||"").slice(0,300))}</div></div></div>`).join("")
+        <div class="item"><div><div class="item-title">${(cvUrl&&a.id)
+            ? `<a class="announce-link" href="${escAttr(cvUrl)}/courses/${escAttr(c.course_id)}/announcements/${escAttr(a.id)}" target="_blank" rel="noopener">${esc(a.title)}</a>`
+            : esc(a.title)} <span class="muted">${esc((a.posted_at||"").slice(0,10))}</span></div>
+        <div class="announce-msg-wrap"><div class="announce-msg"><div class="announce-msg-inner">${esc(a.message)}</div></div>
+          <button class="btn-announce-expand" hidden>${t("announce.expand")}</button></div></div></div>`).join("")
       : `<div class="muted" style="padding:4px 0 8px">${t("announce.no_announce")}</div>`;
     // AI 总结块（总结后展示）
     const summaryHtml = `
@@ -526,6 +530,24 @@ function renderSummaries(){
       ${st._summarized && !st._showRaw ? summaryHtml : rawHtml}
     </div>`;
   }).join("");
+  wireAnnounceExpands();
+}
+/* 公告消息超出折叠高度才显示「展开」按钮（line-clamp 会钳住内部高度，用脱离文档的探针量真实高度） */
+function wireAnnounceExpands(){
+  document.querySelectorAll("#summaries .announce-msg").forEach(msg=>{
+    const btn=msg.parentElement.querySelector(".btn-announce-expand");
+    if(!btn) return;
+    const cs=getComputedStyle(msg);
+    const probe=document.createElement("div");
+    probe.style.cssText="position:absolute;visibility:hidden;pointer-events:none;left:-9999px;top:0;"
+      +`white-space:pre-wrap;width:${msg.clientWidth}px;font:${cs.font};line-height:${cs.lineHeight};`
+      +`word-break:${cs.wordBreak};letter-spacing:${cs.letterSpacing};`;
+    probe.textContent=msg.textContent;
+    document.body.appendChild(probe);
+    const full=probe.offsetHeight;
+    probe.remove();
+    if(full > msg.clientHeight + 2) btn.hidden=false;
+  });
 }
 $("chkShowAll").addEventListener("change", refreshFilterState);
 $("filterStart").addEventListener("change", refreshFilterState);
@@ -539,6 +561,13 @@ $("summaries").addEventListener("click", (e) => {
   if (tog){
     const c = summaryResults[Number(tog.dataset.orig)];
     if (c){ c._showRaw = !c._showRaw; renderSummaries(); }
+    return;
+  }
+  const exp = e.target.closest(".btn-announce-expand");
+  if (exp){
+    const msg = exp.closest(".announce-msg-wrap").querySelector(".announce-msg");
+    const expanded = msg.classList.toggle("expanded");
+    exp.textContent = expanded ? t("announce.collapse") : t("announce.expand");
     return;
   }
   const link = e.target.closest(".course-detail-link");

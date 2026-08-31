@@ -119,6 +119,16 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 .file-saved { font-size:11px; color:var(--ok, #2e7d32); border:1px solid var(--ok, #2e7d32);
   border-radius:4px; padding:0 5px; margin-left:4px; vertical-align:1px; }
 .file-path { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+.announce-link { color:var(--accent); text-decoration:none; }
+.announce-link:hover { text-decoration:underline; }
+.announce-msg-wrap { margin-top:2px; }
+.announce-msg { color:var(--text); font-size:12.5px; line-height:1.6;
+  display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
+.announce-msg.expanded { -webkit-line-clamp:unset; }
+.announce-msg-inner { white-space:pre-wrap; }
+.btn-announce-expand { display:block; background:none; border:none; color:var(--accent);
+  font-size:12px; padding:2px 0 0; cursor:pointer; }
+.btn-announce-expand:hover { text-decoration:underline; }
 .write-bar { display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-top:16px;
   padding-top:14px; border-top:1px solid var(--border); }
 .empty { padding:30px 0; text-align:center; color:var(--muted); font-size:13.5px; }
