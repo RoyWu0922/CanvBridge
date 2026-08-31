@@ -179,6 +179,7 @@ let detailCourse = null;         // {id, name, syllabus_text, teachers}
 let detailAssignments = [];      // 当前打开课程的作业列表
 let detailMeetings = [];         // 从课表打开的详情：该课程的 Banweb meetings（含完整地点）
 let detailSummary = "";          // 已生成的 AI 总结（切语言后仍显示）
+let detailBanweb = null;         // 从课表打开的详情：Banweb 课程块（code/section/crn/credits/course）
 
 function fmtDue(iso) {
   const d = new Date(iso);
@@ -207,45 +208,111 @@ $("btnCloseDetail").onclick = closeDetail;
 $("detailModal").querySelector(".modal-backdrop").addEventListener("click", closeDetail);
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("detailModal").hidden) closeDetail(); });
 
-async function openCourseDetail(courseId, banwebMeetings){
-  const s = settings();
-  const r = await api("course_detail", { canvas_url:s.canvas_url, canvas_token:s.canvas_token,
-                                         course_id:courseId });
-  if (r.ok !== true){ setStatus(t("detail.load_fail") + (r.error || ""), "err"); return; }
-  detailCourse = r.course;
+async function openCourseDetail(canvasId, banwebCourse){
+  detailBanweb = banwebCourse || null;
+  detailMeetings = detailBanweb ? (detailBanweb.meetings || []) : [];
   detailSummary = "";
-  detailMeetings = Array.isArray(banwebMeetings) ? banwebMeetings : [];
-  try { await ensureAssignments([courseId]); }            // 详情作业区数据
-  catch (e) { /* 详情仍展示，作业区留空 */ }
-  detailAssignments = Array.isArray(assignmentMarks[courseId]) ? assignmentMarks[courseId] : [];
+  detailCourse = null;
+  detailAssignments = [];
+  const s = settings();
+  if (canvasId && s.canvas_url && s.canvas_token) {
+    const r = await api("course_detail", { canvas_url:s.canvas_url, canvas_token:s.canvas_token,
+                                           course_id:canvasId });
+    if (r.ok === true) detailCourse = r.course;   // 失败则退化为仅 Banweb 数据
+    try { await ensureAssignments([canvasId]); }  // 详情作业区数据
+    catch (e) { /* 详情仍展示，作业区留空 */ }
+    detailAssignments = Array.isArray(assignmentMarks[canvasId]) ? assignmentMarks[canvasId] : [];
+  }
   renderDetail();
   $("detailModal").hidden = false;
 }
+function parseDateLine(s){
+  const m = String(s).match(/([A-Za-z]{3})\s+(\d{1,2}),\s+(\d{4})/);
+  if (!m) return null;
+  const MON = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+  if (MON[m[1]] == null) return null;
+  return new Date(+m[3], MON[m[1]], +m[2]);
+}
+function coursePace(meetings){
+  /* 由各 meeting 的 range（如 "Sep 1, 2026 - Nov 28, 2026"）取最小起 / 最大止，估算持续周数与剩余周数。 */
+  let min = null, max = null;
+  for (const m of meetings) {
+    const parts = String(m.range || "").split(" - ");
+    if (parts.length !== 2) continue;
+    const a = parseDateLine(parts[0]), b = parseDateLine(parts[1]);
+    if (!a || !b) continue;
+    if (!min || a < min) min = a;
+    if (!max || b > max) max = b;
+  }
+  if (!min || !max) return null;
+  const WEEK = 7 * 86400000;
+  const total = Math.max(1, Math.round((max - min) / WEEK));
+  const today = new Date(); today.setHours(0,0,0,0);
+  const left = Math.max(0, Math.ceil((max - today) / WEEK));
+  return { start: min, end: max, total, left };
+}
 function renderDetail(){
-  if (!detailCourse) return;
-  const c = detailCourse;
-  const profs = (c.teachers || []).map(x => `<span class="chip">${esc(x)}</span>`).join("");
+  if (!detailCourse && !detailBanweb) return;
+  const c = detailCourse, bw = detailBanweb;
+  const head = esc((c && c.name) || (bw && (bw.course || (bw.code + " " + bw.section))) || "");
+  // ① 课程信息补全：code/section · CRN · 学分
+  const bwMeta = bw
+    ? [esc(bw.code + " " + bw.section),
+       bw.crn ? "CRN " + esc(bw.crn) : "",
+       bw.credits ? esc(bw.credits) + " " + t("detail.credits") : ""].filter(Boolean).join(" · ")
+    : "";
+  // ② 学期节奏：起止日期 · 共 N 周 · 还剩 N 周
+  const pace = detailMeetings.length ? coursePace(detailMeetings) : null;
+  const paceHtml = pace
+    ? `<div class="detail-pace">${fmtMD(pace.start)} → ${fmtMD(pace.end)} · ${esc(t("detail.pace_weeks", {total: pace.total, left: pace.left}))}</div>`
+    : "";
+  // ④ 课程快捷入口：Canvas 首页 / 文件 / 作业
+  const s = settings();
+  const links = c && s.canvas_url
+    ? (() => {
+        const base = s.canvas_url.replace(/\/+$/, "");
+        const list = [
+          {label: t("detail.link_home"), href: `${base}/courses/${c.id}`},
+          {label: t("detail.link_files"), href: `${base}/courses/${c.id}/files`},
+          {label: t("detail.link_assignments"), href: `${base}/courses/${c.id}/assignments`},
+        ];
+        return `<div class="detail-links">` +
+          list.map(x => `<a href="${escAttr(x.href)}" target="_blank" rel="noopener">${esc(x.label)}</a>`).join("") +
+          `</div>`;
+      })()
+    : "";
+  const profs = (c && c.teachers ? c.teachers : []).map(x => `<span class="chip">${esc(x)}</span>`).join("");
   const profLine = profs ? `<div class="detail-prof">${t("detail.teachers")}: ${profs}</div>` : "";
+  // ③ 每节谁上课：instr 带 (P) 标记为「主讲」
   const loc = detailMeetings.length
     ? `<div class="detail-section"><div class="sub-label">${t("detail.location")}</div>` +
-      detailMeetings.map(m => `
-        <div class="detail-loc">
+      detailMeetings.map(m => {
+        const isP = /\(P\)/.test(m.instr || "");
+        const instr = (m.instr || "").replace(/\s*\(P\)\s*$/, "").trim();
+        const instrHtml = instr
+          ? `<span class="detail-instr">${isP ? ` · ${esc(t("detail.primary"))} ` : " · "}${esc(instr)}</span>`
+          : "";
+        return `<div class="detail-loc">
           <div class="item-title">${esc(m.room || "")}</div>
-          <div class="file-path">${esc([m.type, m.days, m.time, m.range].filter(Boolean).join(" · "))}</div>
-        </div>`).join("") + `</div>`
+          <div class="file-path">${esc([m.type, m.days, m.time, m.range].filter(Boolean).join(" · "))}${instrHtml}</div>
+        </div>`;
+      }).join("") + `</div>`
     : "";
   const summaryHtml = detailSummary
     ? `<div class="detail-summary"><div class="sub-label">${t("detail.summary_label")}</div>
          ${esc(detailSummary)}</div>`
     : "";
-  const syl = c.syllabus_text
-    ? `<div class="detail-section"><div class="sub-label">${t("detail.syllabus")}</div>
+  let syl = "";
+  if (c && c.syllabus_text) {
+    syl = `<div class="detail-section"><div class="sub-label">${t("detail.syllabus")}</div>
          <div class="detail-syllabus">${esc(c.syllabus_text)}</div>
          <button id="btnSummarize" class="btn btn-ghost">${t("detail.summarize")}</button>
-         ${summaryHtml}</div>`
-    : `<div class="detail-section"><div class="sub-label">${t("detail.syllabus")}</div>
+         ${summaryHtml}</div>`;
+  } else if (c) {
+    syl = `<div class="detail-section"><div class="sub-label">${t("detail.syllabus")}</div>
          <div class="muted">${t("detail.no_syllabus")}</div></div>`;
-  const asg = detailAssignments.length
+  }
+  const asg = c && detailAssignments.length
     ? detailAssignments.map(a => `
         <a class="assignment-row" href="${escAttr(a.html_url || "")}" target="_blank" rel="noopener">
           <div class="item-title">${esc(a.name)}</div>
@@ -253,13 +320,19 @@ function renderDetail(){
               ? t("announce.due") + " " + esc(fmtDue(a.due_at))
               : t("detail.no_due")}${a.points_possible != null ? ` · ${esc(String(a.points_possible))} pts` : ""}</div>
         </a>`).join("")
-    : `<div class="muted">${t("detail.no_assignments")}</div>`;
+    : c ? `<div class="muted">${t("detail.no_assignments")}</div>`
+        : "";
+  const banwebOnly = c ? "" : `<div class="detail-banweb-only">${t("detail.banweb_only")}</div>`;
   $("detailBody").innerHTML = `
-    <div class="detail-head">${esc(c.name)}</div>
+    <div class="detail-head">${head}</div>
+    ${bwMeta ? `<div class="detail-meta">${bwMeta}</div>` : ""}
+    ${paceHtml}
+    ${links}
     ${profLine}
+    ${banwebOnly}
     ${loc}
     ${syl}
-    <div class="detail-section"><div class="sub-label">${t("detail.assignments")}</div>${asg}</div>`;
+    ${c ? `<div class="detail-section"><div class="sub-label">${t("detail.assignments")}</div>${asg}</div>` : ""}`;
 }
 
 /* 标签页 */
@@ -663,10 +736,9 @@ function renderSchedule(){
     const selected = banwebSchedule.selected.includes(key);
     const res = banwebSchedule.results[key];
     const canvas = matchCourseByCode(c.code);
-    const detailBtn = canvas
-      ? `<button class="cal-detail" data-cid="${canvas.id}" data-code="${escAttr(c.code)}"
-           aria-label="${esc(t("detail.open"))}" title="${esc(t("detail.open"))}">ⓘ</button>`
-      : "";
+    // ⓘ 详情始终可点：匹配到 Canvas 传其 id（详情带大纲/作业/链接），否则仅 Banweb 数据
+    const detailBtn = `<button class="cal-detail" data-cid="${canvas ? canvas.id : ""}" data-code="${escAttr(c.code)}"
+         aria-label="${esc(t("detail.open"))}" title="${esc(t("detail.open"))}">ⓘ</button>`;
     let placed = false;
     for (const m of (c.meetings || [])) {
       if (m.start_min == null || m.end_min == null) continue;
@@ -795,8 +867,9 @@ $("schedulePreview").addEventListener("click", (e) => {
   if (detailBtn) {
     e.preventDefault(); e.stopPropagation();
     const code = detailBtn.dataset.code;
+    const cid = detailBtn.dataset.cid;
     const bc = code ? banwebSchedule.courses.find(c => c.code === code) : null;
-    openCourseDetail(Number(detailBtn.dataset.cid), bc ? (bc.meetings || []) : []);
+    openCourseDetail(cid ? Number(cid) : null, bc);
     return;
   }
   const blk = e.target.closest(".cal-block");

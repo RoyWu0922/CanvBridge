@@ -151,6 +151,15 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
   background:var(--ok-bg); color:var(--ink); border-radius:var(--radius-sm);
   font-size:13px; line-height:1.7; white-space:pre-wrap; }
 .detail-summary .sub-label { color:var(--ok); }
+.detail-meta { font-size:12px; color:var(--muted); margin-bottom:6px; }
+.detail-pace { font-size:12px; color:var(--muted); margin-bottom:6px; }
+.detail-links { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0 4px; }
+.detail-links a { font-size:12px; color:var(--accent); text-decoration:none;
+  border:1px solid var(--border); border-radius:999px; padding:3px 10px; background:var(--surface-2); }
+.detail-links a:hover { border-color:var(--accent); }
+.detail-instr { color:var(--ink); }
+.detail-banweb-only { margin-top:10px; font-size:12px; color:var(--muted);
+  border:1px dashed var(--border); border-radius:var(--radius-sm); padding:8px 10px; }
 
 /* 课表课程块内的详情按钮（右上角 ⓘ，不干扰块勾选） */
 .cal-detail { position:absolute; top:2px; right:2px; z-index:2; width:18px; height:18px;
