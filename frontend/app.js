@@ -93,6 +93,7 @@ document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("settingsMod
 let assignmentMarks = {};        // {course_id: [未截止作业]}，周视图标注与详情共用
 let detailCourse = null;         // {id, name, syllabus_text, teachers}
 let detailAssignments = [];      // 当前打开课程的作业列表
+let detailSummary = "";          // 已生成的 AI 总结（切语言后仍显示）
 
 function fmtDue(iso) {
   const d = new Date(iso);
@@ -127,6 +128,7 @@ async function openCourseDetail(courseId){
                                          course_id:courseId });
   if (r.ok !== true){ setStatus(t("detail.load_fail") + (r.error || ""), "err"); return; }
   detailCourse = r.course;
+  detailSummary = "";
   try { await ensureAssignments([courseId]); }            // 详情作业区数据
   catch (e) { /* 详情仍展示，作业区留空 */ }
   detailAssignments = Array.isArray(assignmentMarks[courseId]) ? assignmentMarks[courseId] : [];
@@ -138,10 +140,15 @@ function renderDetail(){
   const c = detailCourse;
   const profs = (c.teachers || []).map(x => `<span class="chip">${esc(x)}</span>`).join("");
   const profLine = profs ? `<div class="detail-prof">${t("detail.teachers")}: ${profs}</div>` : "";
+  const summaryHtml = detailSummary
+    ? `<div class="detail-summary"><div class="sub-label">${t("detail.summary_label")}</div>
+         ${esc(detailSummary)}</div>`
+    : "";
   const syl = c.syllabus_text
     ? `<div class="detail-section"><div class="sub-label">${t("detail.syllabus")}</div>
          <div class="detail-syllabus">${esc(c.syllabus_text)}</div>
-         <button id="btnSummarize" class="btn btn-ghost">${t("detail.summarize")}</button></div>`
+         <button id="btnSummarize" class="btn btn-ghost">${t("detail.summarize")}</button>
+         ${summaryHtml}</div>`
     : `<div class="detail-section"><div class="sub-label">${t("detail.syllabus")}</div>
          <div class="muted">${t("detail.no_syllabus")}</div></div>`;
   const asg = detailAssignments.length
@@ -292,6 +299,26 @@ $("summaries").addEventListener("click", (e) => {
   if (!link) return;
   e.preventDefault();
   openCourseDetail(Number(link.dataset.cid));
+});
+$("detailBody").addEventListener("click", async (e) => {
+  const btn = e.target.closest("#btnSummarize");
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = t("detail.summarizing");
+  const s = settings();
+  try {
+    const r = await api("summarize_syllabus", {
+      canvas_url:s.canvas_url, canvas_token:s.canvas_token,
+      llm_base_url:s.llm_base_url, llm_api_key:s.llm_api_key, llm_model:s.llm_model,
+      course_id:detailCourse.id, language:LANG() });
+    if (r.ok !== true) setStatus(t("detail.summarize_fail") + (r.error || ""), "err");
+    else { detailSummary = r.summary; renderDetail(); }
+  } catch (err) {
+    setStatus(t("detail.summarize_fail") + (err.message || ""), "err");
+  } finally {
+    const b2 = $("btnSummarize");                       // 成功后已重渲，按钮是新元素
+    if (b2) { b2.disabled = false; b2.textContent = t("detail.summarize"); }
+  }
 });
 $("btnWriteCalendar").onclick = async () => {
   const cal=$("selCalendar").value;
