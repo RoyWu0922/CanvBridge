@@ -198,10 +198,21 @@ async function ensureAssignments(courseIds){
   return r;                                               // 含 errors，供调用方提示
 }
 function matchCourseByCode(code){
+  // 只看「字母简称 + 4 位数字」，忽略 a/c 等后缀：CS1315A 与 CS1315 视为同一课程。
+  // 两侧都抽取该模式再等值比较，避免 includes 被后缀字母卡死。
+  const m = String(code||"").toUpperCase().match(/([A-Z]+\d{4})/);
+  const target = m ? m[1] : "";
+  if (target){
+    return courseList.find(c => {
+      const srcs = [c.course_code, c.name].filter(Boolean).join(" ");
+      return (String(srcs).toUpperCase().match(/[A-Z]+\d{4}/g) || []).includes(target);
+    }) || null;
+  }
+  // 课程号不含「字母+4位数字」模式时退回旧的子串匹配，行为不退化
   const norm = s => String(s).toUpperCase().replace(/\s+/g, "");
-  const target = norm(code);
-  if (!target) return null;
-  return courseList.find(c => norm(c.name).includes(target)) || null;
+  const t2 = norm(code);
+  if (!t2) return null;
+  return courseList.find(c => norm(c.name).includes(t2)) || null;
 }
 function closeDetail(){ $("detailModal").hidden = true; }
 $("btnCloseDetail").onclick = closeDetail;

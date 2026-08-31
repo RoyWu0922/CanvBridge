@@ -55,8 +55,10 @@ def _paginate(session: requests.Session, url: str, params: dict[str, Any],
 
 
 def list_courses(canvas_url: str, token: str) -> list[dict]:
-    """返回用户当前在修的课程 [{"id": int, "name": str}]。
+    """返回用户当前在修的课程 [{"id": int, "name": str, "course_code": str}]。
 
+    course_code 是 Canvas/SIS 里的课程代码（如 "CS1315A"），前端用它把
+    Banweb 课表与 Canvas 课程按「字母简称 + 4 位数字」对齐（忽略 a/c 后缀）。
     enrollment_state 用 current_and_invited 而不是 active：新加入的课程在
     学生接受邀请前 enrollment 状态是 invited/invitation_pending，只查 active
     会把这类课程静默漏掉（Canvas 页面上能看到 7 门、这里只返回 6 门）。
@@ -69,7 +71,11 @@ def list_courses(canvas_url: str, token: str) -> list[dict]:
             {"enrollment_state": "current_and_invited", "per_page": 100}, token,
         )
     return [
-        {"id": c["id"], "name": c.get("name", f"Course {c['id']}")}
+        {
+            "id": c["id"],
+            "name": c.get("name", f"Course {c['id']}"),
+            "course_code": c.get("course_code", "") or "",
+        }
         for c in data
     ]
 

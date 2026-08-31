@@ -66,13 +66,13 @@ def test_list_courses_maps_fields(monkeypatch):
     def _fake_paginate(*args):
         captured["url"] = args[1]
         captured["params"] = args[2]
-        return [{"id": 42, "name": "CS 101"}, {"id": 43}]
+        return [{"id": 42, "name": "CS 101", "course_code": "CS101A"}, {"id": 43}]
 
     monkeypatch.setattr(canvas_client, "_paginate", _fake_paginate)
     courses = canvas_client.list_courses("https://x.instructure.com", "tok")
     assert courses == [
-        {"id": 42, "name": "CS 101"},
-        {"id": 43, "name": "Course 43"},
+        {"id": 42, "name": "CS 101", "course_code": "CS101A"},
+        {"id": 43, "name": "Course 43", "course_code": ""},
     ]
     assert captured["url"] == "https://x.instructure.com/api/v1/courses"
     assert captured["params"]["per_page"] == 100
