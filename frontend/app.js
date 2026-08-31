@@ -140,12 +140,20 @@ async function runAutoLogin(showBusy){
   aimsAutoTried = true;
   const attempt = async () => {
     const r = await api("banweb/auto_login");
+    const loginBtn=$("btnBanwebLogin");
     if(r.ok !== true){
       setStatus(t("status.aims_login_fail") + (r.error||""), "err", 8000);
       setBanwebStatusText(t("status.aims_need_login_after_fail"), "err");
+      if(loginBtn) loginBtn.hidden=false;   // 立即给出手动登录入口
+      startBanwebPoll();
       return false;
     }
-    await checkBanwebStatus();
+    // 自动登录成功 → 直接加载学期，不再慢速重查 status（省一次抓取）
+    aimsAutoTried = false;
+    if(loginBtn) loginBtn.hidden=true;
+    setBanwebStatusText(t("status.banweb_ok"),"ok");
+    stopBanwebPoll();
+    if($("selTerm").options.length <= 1) loadTerms();
     return true;
   };
   return showBusy ? withBusy(t("status.aims_logging_in"), $("btnSaveAims"), attempt) : attempt();
@@ -624,11 +632,9 @@ function renderFiles(){
   }
   $("filesArea").innerHTML = shown.map((c)=>{
     const cfs=c.files||[];
-    const cAllOn = cfs.length>0 && cfs.every(f=>!f.saved);   // 默认勾选态 = 未保存
     return `
     <div class="course-card">
-      <div class="course-name">${esc(c.name)} ${c.error?`<span style="color:var(--err);font-size:12px">（${esc(c.error)}）</span>`:""}
-        <button class="btn btn-ghost btn-sel-course" data-orig="${c._orig}">${cAllOn?t("btn.unselect_course"):t("btn.select_course")}</button></div>
+      <div class="course-name"><label class="course-sel" title="${escAttr(t("files.course_sel"))}"><input type="checkbox" class="cs" data-orig="${c._orig}"></label>${esc(c.name)} ${c.error?`<span style="color:var(--err);font-size:12px">（${esc(c.error)}）</span>`:""}</div>
       ${cfs.map(f=>`
         <div class="item"><input type="checkbox" class="fl" data-ci="${c._orig}" data-fi="${f.file_id}" ${f.saved?"":"checked"}>
           <div><div class="item-title">${esc(f.display_name)} <span class="muted">（${esc(f.content_type)}）</span>${f.saved?` <span class="file-saved">${esc(t("files.saved"))}</span>`:""}</div>
@@ -636,16 +642,21 @@ function renderFiles(){
     </div>`;
   }).join("");
   updateSelectAllBtn();
+  refreshCourseChecks();
 }
 function updateSelectAllBtn(){
   const boxes=[...document.querySelectorAll(".fl")];
   const allOn = boxes.length>0 && boxes.every(b=>b.checked);
   $("btnSelectAllFiles").textContent = allOn ? t("btn.unselect_all") : t("btn.select_all");
 }
-function refreshCourseBtns(){
-  document.querySelectorAll(".btn-sel-course").forEach(btn=>{
-    const bs=[...btn.closest(".course-card").querySelectorAll(".fl")];
-    btn.textContent = bs.length>0 && bs.every(b=>b.checked) ? t("btn.unselect_course") : t("btn.select_course");
+/* 每课左侧勾选框：全选→checked，部分→indeterminate，无→unchecked */
+function refreshCourseChecks(){
+  document.querySelectorAll(".course-card").forEach(card=>{
+    const cb=card.querySelector(".cs"); if(!cb) return;
+    const boxes=[...card.querySelectorAll(".fl")];
+    const on=boxes.filter(b=>b.checked).length;
+    cb.checked = boxes.length>0 && on===boxes.length;
+    cb.indeterminate = on>0 && on<boxes.length;
   });
 }
 $("inpTypeFilter").oninput = renderFiles;
@@ -654,26 +665,21 @@ $("btnSelectAllFiles").onclick = () => {
   const boxes=[...document.querySelectorAll(".fl")];
   const allOn = boxes.length>0 && boxes.every(b=>b.checked);
   boxes.forEach(b=>b.checked=!allOn);
-  refreshCourseBtns();
+  refreshCourseChecks();
   updateSelectAllBtn();
 };
 $("filesArea").addEventListener("click", (e)=>{
-  const btn=e.target.closest(".btn-sel-course");
-  if(!btn) return;
-  const boxes=[...btn.closest(".course-card").querySelectorAll(".fl")];
-  const allOn = boxes.length>0 && boxes.every(b=>b.checked);
-  boxes.forEach(b=>b.checked=!allOn);
-  btn.textContent = allOn ? t("btn.select_course") : t("btn.unselect_course");
+  const cb=e.target.closest(".cs");
+  if(!cb) return;
+  // 浏览器已翻转勾选态：点 indeterminate → 全选；点已全选 → 取消全选
+  const on=cb.checked;
+  [...cb.closest(".course-card").querySelectorAll(".fl")].forEach(b=>b.checked=on);
+  refreshCourseChecks();
   updateSelectAllBtn();
 });
 $("filesArea").addEventListener("change", (e)=>{
   if(!e.target.classList.contains("fl")) return;
-  const card=e.target.closest(".course-card");
-  const btn=card && card.querySelector(".btn-sel-course");
-  if(btn){
-    const bs=[...card.querySelectorAll(".fl")];
-    btn.textContent = bs.length>0 && bs.every(b=>b.checked) ? t("btn.unselect_course") : t("btn.select_course");
-  }
+  refreshCourseChecks();
   updateSelectAllBtn();
 });
 $("btnDownloadFiles").onclick = async () => {
@@ -743,7 +749,7 @@ async function checkBanwebStatus(){
         aimsAutoTried = true;
         setBanwebStatusText(t("status.aims_logging_in"), "muted");
         await runAutoLogin(false);
-        return;   // runAutoLogin 成功时已重查状态
+        return;   // runAutoLogin 成功时会直接加载学期
       }
       aimsAutoTried = true;
     }
@@ -784,9 +790,15 @@ function refreshTermState(){
 }
 $("selTerm").addEventListener("focus", ()=>{ if($("selTerm").options.length <= 1) loadTerms(); });
 $("selTerm").addEventListener("change", refreshTermState);
+let termsLoading=false;
 async function loadTerms(){
+  if(termsLoading) return;   // 防止聚焦重载与状态轮询并发发起多次抓取
+  termsLoading=true;
   const r=await api("banweb/terms");
+  const sel=$("selTerm");
+  termsLoading=false;
   if(r.ok!==true){
+    ensureTermPlaceholder();   // 失败也保证占位项在，避免空下拉在 macOS 置灰
     if((r.error||"").includes("尚未登录")){
       setBanwebStatusText(t("status.banweb_need_login_manual"),"err");
       startBanwebPoll();
@@ -797,8 +809,7 @@ async function loadTerms(){
     }
     return;
   }
-  const sel=$("selTerm");
-  const prev = [...sel.options].some(o=>o.value===banwebSchedule.term) ? banwebSchedule.term : "";
+  const prev = sel && [...sel.options].some(o=>o.value===banwebSchedule.term) ? banwebSchedule.term : "";
   sel.innerHTML="";
   const ph=document.createElement("option"); ph.value=""; ph.textContent=t("schedule.term_placeholder");
   sel.appendChild(ph);
@@ -1074,7 +1085,13 @@ async function initScheduleTab(){
   ensureTermPlaceholder();
   refreshTermState();
   renderSchedule();
-  checkBanwebStatus();
+  // 已存凭据 → 直接自动登录并加载学期（跳过慢速 status 探测）；未存 → 状态检查提示登录
+  const cr = await api("banweb/credentials/status", undefined, "GET");
+  if(cr.ok===true && cr.has_credentials){
+    await runAutoLogin(false);
+  } else {
+    await checkBanwebStatus();
+  }
 }
 
 $("btnLang").onclick = () => {

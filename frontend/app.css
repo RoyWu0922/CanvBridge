@@ -107,7 +107,8 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 .sub-label .count { color:var(--accent); font-variant-numeric:tabular-nums; }
 .course-actions { float:right; display:inline-flex; gap:6px; }
 .course-actions .btn { padding:3px 10px; font-size:12px; }
-.btn-sel-course { float:right; padding:3px 10px; font-size:12px; margin-top:-2px; }
+.course-sel { display:inline-flex; align-items:center; margin-right:8px; vertical-align:-2px; }
+.course-sel input { width:15px; height:15px; margin:0; cursor:pointer; }
 .download-progress { margin:12px 0 2px; }
 .progress-track { height:8px; background:var(--surface-2); border-radius:999px; overflow:hidden; }
 .progress-fill { height:100%; width:0%; background:var(--accent); border-radius:999px; transition:width .2s ease; }
