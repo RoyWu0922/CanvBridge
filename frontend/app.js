@@ -80,6 +80,7 @@ function fillCourseFilter(selId, names){
   sel.disabled = uniq.length === 0;
 }
 function esc(t){ const d=document.createElement("div"); d.textContent = t==null?"":String(t); return d.innerHTML; }
+function escAttr(t){ return esc(t).replace(/"/g, "&quot;"); }
 function fillProfessorFilter(){
   const sel = $("selProfessor");
   if (!sel) return;
@@ -167,7 +168,7 @@ function renderDetail(){
          <div class="muted">${t("detail.no_syllabus")}</div></div>`;
   const asg = detailAssignments.length
     ? detailAssignments.map(a => `
-        <a class="assignment-row" href="${esc(a.html_url || "")}" target="_blank" rel="noopener">
+        <a class="assignment-row" href="${escAttr(a.html_url || "")}" target="_blank" rel="noopener">
           <div class="item-title">${esc(a.name)}</div>
           <div class="file-path">${a.due_at
               ? t("announce.due") + " " + esc(fmtDue(a.due_at))
@@ -320,18 +321,21 @@ $("detailBody").addEventListener("click", async (e) => {
   btn.disabled = true;
   btn.textContent = t("detail.summarizing");
   const s = settings();
+  const cid = detailCourse.id;                     // 快照发起请求时的课程
   try {
     const r = await api("summarize_syllabus", {
       canvas_url:s.canvas_url, canvas_token:s.canvas_token,
       llm_base_url:s.llm_base_url, llm_api_key:s.llm_api_key, llm_model:s.llm_model,
-      course_id:detailCourse.id, language:LANG() });
+      course_id:cid, language:LANG() });
+    if (!detailCourse || detailCourse.id !== cid) return;   // 已切课/关弹层 → 丢弃陈旧响应
     if (r.ok !== true) setStatus(t("detail.summarize_fail") + (r.error || ""), "err");
     else { detailSummary = r.summary; renderDetail(); }
   } catch (err) {
+    if (!detailCourse || detailCourse.id !== cid) return;
     setStatus(t("detail.summarize_fail") + (err.message || ""), "err");
   } finally {
     const b2 = $("btnSummarize");                       // 成功后已重渲，按钮是新元素
-    if (b2) { b2.disabled = false; b2.textContent = t("detail.summarize"); }
+    if (b2 && detailCourse && detailCourse.id === cid) { b2.disabled = false; b2.textContent = t("detail.summarize"); }
   }
 });
 $("btnWriteCalendar").onclick = async () => {
@@ -522,6 +526,7 @@ function renderSchedule(){
     gridEl.innerHTML = `<div class="empty">${esc(t("schedule.empty"))}</div>`;
     noFixedEl.innerHTML = "";
     $("btnWriteSchedule").disabled = true;
+    fillProfessorFilter();
     return;
   }
   $("btnWriteSchedule").disabled = false;
@@ -584,9 +589,9 @@ function renderSchedule(){
       const due = new Date(a.due_at);
       if (isNaN(due)) return;
       const idx = (due.getDay() + 6) % 7;    // JS 周日=0 → 转 周一=0
-      assignBlocks[idx] += `<a class="assignment-mark" href="${esc(a.html_url || "")}"
+      assignBlocks[idx] += `<a class="assignment-mark" href="${escAttr(a.html_url || "")}"
         target="_blank" rel="noopener"
-        title="${esc(a.name)} — ${t("announce.due")} ${fmtDue(a.due_at)}">
+        title="${escAttr(a.name)} — ${t("announce.due")} ${fmtDue(a.due_at)}">
         <span class="mark-course">${esc(cname)}</span> · <span class="mark-name">${esc(a.name)}</span>
         <span class="mark-due">${esc(fmtDue(a.due_at))}</span></a>`;
       markCount[idx]++;
@@ -594,7 +599,7 @@ function renderSchedule(){
   });
   // 统一琥珀条高度：任一列有标注时，7 列 + 时间轴都预留同高，保证时间轴对齐
   const maxMarks = Math.max(...markCount);
-  const stripH = maxMarks ? Math.round(1 + 21.175 * maxMarks) : 0;
+  const stripH = maxMarks ? Math.round(6 + 21.175 * maxMarks) : 0;
   // 时间轴
   let axis = `<div class="time-axis"><div class="corner"></div>`;
   if (stripH > 0) axis += `<div class="axis-strip" style="height:${stripH}px"></div>`;
