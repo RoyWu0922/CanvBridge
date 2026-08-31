@@ -61,15 +61,34 @@ def test_paginate_raises_canvas_error_on_401():
 
 
 def test_list_courses_maps_fields(monkeypatch):
-    monkeypatch.setattr(
-        canvas_client, "_paginate",
-        lambda s, url, params, token: [{"id": 42, "name": "CS 101"}, {"id": 43}],
-    )
+    captured = {}
+
+    def _fake_paginate(*args):
+        captured["url"] = args[1]
+        captured["params"] = args[2]
+        return [{"id": 42, "name": "CS 101"}, {"id": 43}]
+
+    monkeypatch.setattr(canvas_client, "_paginate", _fake_paginate)
     courses = canvas_client.list_courses("https://x.instructure.com", "tok")
     assert courses == [
         {"id": 42, "name": "CS 101"},
         {"id": 43, "name": "Course 43"},
     ]
+    assert captured["url"] == "https://x.instructure.com/api/v1/courses"
+    assert captured["params"]["per_page"] == 100
+
+
+def test_list_courses_includes_invited_enrollments(monkeypatch):
+    """enrollment_state 须含 invited，否则未接受邀请的新课程会被 Canvas 静默漏掉。"""
+    captured = {}
+
+    def _fake_paginate(*args):
+        captured.update(args[2])
+        return []
+
+    monkeypatch.setattr(canvas_client, "_paginate", _fake_paginate)
+    canvas_client.list_courses("https://x.instructure.com", "tok")
+    assert captured["enrollment_state"] == "current_and_invited"
 
 
 def test_strip_html():

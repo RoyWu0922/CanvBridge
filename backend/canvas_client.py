@@ -54,12 +54,18 @@ def _paginate(session: requests.Session, url: str, params: dict[str, Any],
 
 
 def list_courses(canvas_url: str, token: str) -> list[dict]:
-    """返回用户当前在修的课程 [{"id": int, "name": str}]。"""
+    """返回用户当前在修的课程 [{"id": int, "name": str}]。
+
+    enrollment_state 用 current_and_invited 而不是 active：新加入的课程在
+    学生接受邀请前 enrollment 状态是 invited/invitation_pending，只查 active
+    会把这类课程静默漏掉（Canvas 页面上能看到 7 门、这里只返回 6 门）。
+    current_and_invited = 当前学期 active + invited 的选课，不含已结业课程。
+    """
     base = canvas_url.rstrip("/")
     with requests.Session() as s:
         data = _paginate(
             s, f"{base}/api/v1/courses",
-            {"enrollment_state": "active", "per_page": 100}, token,
+            {"enrollment_state": "current_and_invited", "per_page": 100}, token,
         )
     return [
         {"id": c["id"], "name": c.get("name", f"Course {c['id']}")}
