@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from backend import canvas_client, files_downloader
 
 
@@ -34,6 +36,14 @@ def test_plan_downloads_path_and_rename(tmp_path):
     assert planned[1]["dest_path"] == str(tmp_path / "CS 101" / "Slides" / "Week 3" / "a_2.pdf")
     assert planned[2]["dest_path"] == str(tmp_path / "CS 101" / "b.pdf")
     assert planned[3]["dest_path"] == str(tmp_path / "CS 101" / "Slides" / "Week 3" / "a_3.pdf")
+    # 磁盘上已存在的目标文件应标记 saved=True，其余 False
+    assert planned[0]["saved"] is False  # 规划时该文件还不存在
+    dest0 = Path(planned[0]["dest_path"])
+    dest0.parent.mkdir(parents=True, exist_ok=True)
+    dest0.write_bytes(b"x")
+    planned2 = files_downloader.plan_downloads(str(tmp_path), "CS 101", files, folders)
+    assert planned2[0]["saved"] is True
+    assert planned2[1]["saved"] is False
 
 
 def test_download_items_reports_failure(monkeypatch):
@@ -58,3 +68,23 @@ def test_download_items_success(monkeypatch, tmp_path):
     result = files_downloader.download_items("https://x", "tok", files_by_id, planned)
     assert result["ok"] is True
     assert result["downloaded"] == [str(tmp_path / "a.pdf")]
+
+
+def test_download_items_skips_existing(monkeypatch, tmp_path):
+    calls = []
+    def ok(canvas_url, token, url, dest):
+        calls.append(dest)
+    monkeypatch.setattr(canvas_client, "download_file", ok)
+    existing = tmp_path / "a.pdf"
+    existing.write_bytes(b"old")
+    files_by_id = {1: {"url": "http://x/f/1"}, 2: {"url": "http://x/f/2"}}
+    planned = [
+        {"file_id": 1, "dest_path": str(existing)},
+        {"file_id": 2, "dest_path": str(tmp_path / "b.pdf")},
+    ]
+    result = files_downloader.download_items("https://x", "tok", files_by_id, planned)
+    assert result["ok"] is True
+    assert result["skipped"] == [str(existing)]  # 已存在 → 跳过不覆盖
+    assert result["downloaded"] == [str(tmp_path / "b.pdf")]
+    assert calls == [str(tmp_path / "b.pdf")]    # download_file 只被调用一次
+    assert existing.read_bytes() == b"old"       # 原文件未被覆盖

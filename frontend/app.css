@@ -108,6 +108,8 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 .item { display:flex; gap:10px; align-items:flex-start; padding:7px 0; border-top:1px dashed var(--border); }
 .item input { margin-top:3px; accent-color:var(--accent); }
 .item-title { font-size:13.5px; font-weight:500; }
+.file-saved { font-size:11px; color:var(--ok, #2e7d32); border:1px solid var(--ok, #2e7d32);
+  border-radius:4px; padding:0 5px; margin-left:4px; vertical-align:1px; }
 .file-path { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
 .write-bar { display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-top:16px;
   padding-top:14px; border-top:1px solid var(--border); }

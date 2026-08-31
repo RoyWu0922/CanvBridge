@@ -248,14 +248,15 @@ def list_files(req: ListFilesRequest):
         try:
             files, folders = canvas_client.get_course_files(req.canvas_url, req.canvas_token, cid)
             planned = files_downloader.plan_downloads(req.download_dir, name, files, folders)
-            dest_by_id = {p["file_id"]: p["dest_path"] for p in planned}
+            by_id = {p["file_id"]: p for p in planned}
             results.append({
                 "course_id": cid, "name": name,
                 "files": [{
                     "file_id": f["id"], "display_name": f["display_name"],
                     "path": files_downloader.build_folder_path(f.get("folder_id"), folders),
                     "content_type": f["content_type"], "size": f["size"],
-                    "dest_path": dest_by_id.get(f["id"], ""),
+                    "dest_path": by_id.get(f["id"], {}).get("dest_path", ""),
+                    "saved": bool(by_id.get(f["id"], {}).get("saved")),
                 } for f in files],
             })
         except Exception as exc:

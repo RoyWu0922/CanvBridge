@@ -562,8 +562,8 @@ function renderFiles(){
     <div class="course-card">
       <div class="course-name">${esc(c.name)} ${c.error?`<span style="color:var(--err);font-size:12px">（${esc(c.error)}）</span>`:""}</div>
       ${(c.files||[]).map(f=>`
-        <div class="item"><input type="checkbox" class="fl" data-ci="${c._orig}" data-fi="${f.file_id}">
-          <div><div class="item-title">${esc(f.display_name)} <span class="muted">（${esc(f.content_type)}）</span></div>
+        <div class="item"><input type="checkbox" class="fl" data-ci="${c._orig}" data-fi="${f.file_id}" ${f.saved?"":"checked"}>
+          <div><div class="item-title">${esc(f.display_name)} <span class="muted">（${esc(f.content_type)}）</span>${f.saved?` <span class="file-saved">${esc(t("files.saved"))}</span>`:""}</div>
           <div class="file-path">${esc(f.path||"/")}</div></div></div>`).join("")}
     </div>`).join("") || `<div class='muted' style='padding:12px 0'>${t("files.empty")}</div>`;
 }
@@ -581,7 +581,9 @@ $("btnDownloadFiles").onclick = async () => {
     const r=await api("download_files",{ ...s, download_dir:downloadDir(), items });
     if(!r.ok){ setStatus(t("status.download_fail")+r.error,"err"); return; }
     const failed=(r.failed||[]).length;
-    setStatus(t("status.download_done", {a:r.downloaded.length, b:failed}), failed===0?"ok":"err");
+    const sk=(r.skipped||[]).length;
+    setStatus(t("status.download_done", {a:r.downloaded.length, b:failed, s:sk}), failed===0?"ok":"err");
+    renderFiles();
   });
 };
 

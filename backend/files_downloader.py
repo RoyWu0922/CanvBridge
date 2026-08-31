@@ -24,7 +24,10 @@ def build_folder_path(folder_id, folders: list[dict]) -> str:
 
 def plan_downloads(download_dir: str, course_name: str, files: list[dict],
                    folders: list[dict]) -> list[dict]:
-    """规划 dest_path = 下载目录/科目/原文件夹路径/文件名；同名加 _N 后缀。"""
+    """规划 dest_path = 下载目录/科目/原文件夹路径/文件名；同名加 _N 后缀。
+
+    saved 表示目标路径在磁盘上已存在（供前端显示「已保存」并默认不勾选）。
+    """
     root = Path(download_dir).expanduser() / _safe_name(course_name)
     planned: list[dict] = []
     used: set[str] = set()
@@ -40,14 +43,18 @@ def plan_downloads(download_dir: str, course_name: str, files: list[dict],
             dest = base / f"{stem}_{counter}{suffix}"
             counter += 1
         used.add(str(dest))
-        planned.append({"file_id": f["id"], "display_name": display, "dest_path": str(dest)})
+        planned.append({
+            "file_id": f["id"], "display_name": display, "dest_path": str(dest),
+            "saved": dest.exists(),
+        })
     return planned
 
 
 def download_items(canvas_url: str, token: str, files_by_id: dict[int, dict],
                    planned: list[dict]) -> dict:
-    """逐文件下载；单个失败不中断其余。"""
+    """逐文件下载；已存在的目标文件跳过，单个失败不中断其余。"""
     downloaded: list[str] = []
+    skipped: list[str] = []
     failed: list[dict] = []
     for item in planned:
         info = files_by_id.get(item["file_id"])
@@ -55,8 +62,12 @@ def download_items(canvas_url: str, token: str, files_by_id: dict[int, dict],
             failed.append({"file_id": item["file_id"], "error": "缺少下载地址"})
             continue
         try:
+            if Path(item["dest_path"]).exists():
+                skipped.append(item["dest_path"])
+                continue
             canvas_client.download_file(canvas_url, token, info["url"], item["dest_path"])
             downloaded.append(item["dest_path"])
         except Exception as exc:  # 单文件失败不影响整体
             failed.append({"file_id": item["file_id"], "error": str(exc)})
-    return {"ok": len(failed) == 0, "downloaded": downloaded, "failed": failed}
+    return {"ok": len(failed) == 0, "downloaded": downloaded, "skipped": skipped,
+            "failed": failed}
