@@ -138,6 +138,39 @@ def test_enrich_meetings_tba_days_has_no_days_list():
     assert m["end_min"] == 890
 
 
+# ---------------- primary_instructor（课表主教授） ----------------
+
+def test_primary_instructor_prefers_p_marker():
+    """多个 meeting 里优先取带 (P) 主讲师标记的那个，并剥掉标记。"""
+    course = {"meetings": [
+        {"instr": "TA Bob"},
+        {"instr": "Alice CHAN (P)"},
+        {"instr": "TA Carol"},
+    ]}
+    assert banweb.primary_instructor(course) == "Alice CHAN"
+
+
+def test_primary_instructor_falls_back_to_first_nonempty():
+    """没有 (P) 标记 → 取第一个非空 instr（原样返回）。"""
+    course = {"meetings": [{"instr": ""}, {"instr": "TA Bob"}, {"instr": "Dr. Eve"}]}
+    assert banweb.primary_instructor(course) == "TA Bob"
+
+
+def test_primary_instructor_empty_when_no_instructor():
+    assert banweb.primary_instructor({"meetings": [{"instr": ""}, {"instr": ""}]}) == ""
+    assert banweb.primary_instructor({"meetings": []}) == ""
+
+
+def test_enrich_meetings_attaches_primary_instructor():
+    """get_schedule 已调 enrich_meetings → 每个课程块带 primary_instructor，前端下拉直接取用。"""
+    courses = [{"code": "CS1315", "section": "C01",
+                "meetings": [{"time": "12:00 pm - 2:50 pm", "days": "F", "room": "MMW",
+                              "range": "Aug 31, 2026 - Nov 28, 2026",
+                              "instr": "Kenneth LEE (P)"}]}]
+    out = banweb.enrich_meetings(courses)
+    assert out[0]["primary_instructor"] == "Kenneth LEE"
+
+
 # ---------------- reconcile_block（课表变更同步） ----------------
 
 def _mc(code, section, course, meetings):

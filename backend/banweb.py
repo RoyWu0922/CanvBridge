@@ -209,6 +209,23 @@ def build_event_specs(courses: list[dict], selected: set[str]) -> list[dict]:
     return specs
 
 
+def primary_instructor(course: dict) -> str:
+    """取课程块的主讲师（显示用，前端筛选下拉直接取用）。
+
+    遍历 meetings 的 instr：优先取含 (P) 主讲师标记的第一个并剥掉标记；
+    无 (P) 则取第一个非空 instr。无则返回空串。
+    """
+    for m in course.get("meetings", []):
+        instr = (m.get("instr") or "").strip()
+        if instr and "(P)" in instr:
+            return re.sub(r"\s*\(P\)\s*$", "", instr).strip()
+    for m in course.get("meetings", []):
+        instr = (m.get("instr") or "").strip()
+        if instr:
+            return instr
+    return ""
+
+
 def enrich_meetings(courses: list[dict]) -> list[dict]:
     """为每个 meeting 追加 start_min/end_min/days_list 供前端日历落位。
 
@@ -232,6 +249,7 @@ def enrich_meetings(courses: list[dict]) -> list[dict]:
                 pass
             meetings.append(m2)
         c2["meetings"] = meetings
+        c2["primary_instructor"] = primary_instructor(c)
         out.append(c2)
     return out
 
