@@ -73,6 +73,28 @@ class BanwebWriteRequest(BaseModel):
     alert_minutes: int | None = None
 
 
+class CourseDetailRequest(BaseModel):
+    canvas_url: str
+    canvas_token: str
+    course_id: int
+
+
+class AssignmentsRequest(BaseModel):
+    canvas_url: str
+    canvas_token: str
+    course_ids: list[int]
+
+
+class SummarizeSyllabusRequest(BaseModel):
+    canvas_url: str
+    canvas_token: str
+    llm_base_url: str
+    llm_api_key: str
+    llm_model: str
+    course_id: int
+    language: str = "zh"
+
+
 @app.get("/")
 def index():
     return FileResponse(FRONTEND)
@@ -123,10 +145,48 @@ def sync(req: SyncRequest):
     results = []
     for cid in req.course_ids:
         anns = announcements.get(cid, [])
-        results.append(llm_client.extract_course_summary(
+        r = llm_client.extract_course_summary(
             req.llm_base_url, req.llm_api_key, req.llm_model,
-            name_by_id.get(cid, f"Course {cid}"), anns, language=req.language))
+            name_by_id.get(cid, f"Course {cid}"), anns, language=req.language)
+        r["course_id"] = cid
+        results.append(r)
     return {"ok": True, "courses": results}
+
+
+@app.post("/api/course_detail")
+def course_detail(req: CourseDetailRequest):
+    try:
+        course = canvas_client.get_course(req.canvas_url, req.canvas_token, req.course_id)
+        return {"ok": True, "course": course}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/assignments")
+def assignments(req: AssignmentsRequest):
+    """逐课程拉未截止作业；单门失败进 errors（by_course 里该门为 []），不拖垮整批。"""
+    by_course: dict[int, list] = {}
+    errors: dict[int, str] = {}
+    for cid in req.course_ids:
+        try:
+            by_course[cid] = canvas_client.get_assignments(
+                req.canvas_url, req.canvas_token, cid)
+        except Exception as exc:
+            by_course[cid] = []
+            errors[cid] = str(exc)
+    return {"ok": True, "by_course": by_course, "errors": errors}
+
+
+@app.post("/api/summarize_syllabus")
+def summarize_syllabus(req: SummarizeSyllabusRequest):
+    try:
+        course = canvas_client.get_course(req.canvas_url, req.canvas_token, req.course_id)
+        summary = llm_client.summarize_syllabus(
+            req.llm_base_url, req.llm_api_key, req.llm_model,
+            course["name"], course["syllabus_text"], language=req.language)
+        return {"ok": True, "summary": summary}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @app.post("/api/add_calendar_event")

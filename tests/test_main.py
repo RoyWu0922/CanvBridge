@@ -61,6 +61,74 @@ def test_sync_announcements_passes_language(monkeypatch):
     assert captured["language"] == "en"
 
 
+def test_course_detail_ok(monkeypatch):
+    monkeypatch.setattr(canvas_client, "get_course",
+                        lambda u, t, cid: {"id": cid, "name": "CS 101",
+                                           "syllabus_text": "s", "teachers": ["A"]})
+    r = client.post("/api/course_detail",
+                    json={"canvas_url": "https://x", "canvas_token": "t", "course_id": 5})
+    assert r.json() == {"ok": True, "course": {"id": 5, "name": "CS 101",
+                                               "syllabus_text": "s", "teachers": ["A"]}}
+
+
+def test_course_detail_error(monkeypatch):
+    def boom(u, t, cid):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(canvas_client, "get_course", boom)
+    r = client.post("/api/course_detail",
+                    json={"canvas_url": "https://x", "canvas_token": "t", "course_id": 5})
+    assert r.json()["ok"] is False
+    assert "boom" in r.json()["error"]
+
+
+def test_assignments_batch_per_course(monkeypatch):
+    """单门失败只进 errors，不拖垮整批。"""
+    real = {5: [{"id": 1, "name": "HW"}], 6: [{"id": 2, "name": "Proj"}]}
+    def fake(u, t, cid):
+        if cid == 7:
+            raise canvas_client.CanvasError("403 无权限")
+        return real.get(cid, [])
+    monkeypatch.setattr(canvas_client, "get_assignments", fake)
+    r = client.post("/api/assignments", json={"canvas_url": "https://x", "canvas_token": "t",
+                                              "course_ids": [5, 7]})
+    body = r.json()
+    assert body["ok"] is True
+    assert body["by_course"]["5"] == real[5]
+    assert body["by_course"]["7"] == []
+    assert "403" in body["errors"]["7"]
+
+
+def test_summarize_syllabus_ok(monkeypatch):
+    monkeypatch.setattr(canvas_client, "get_course",
+                        lambda u, t, cid: {"id": cid, "name": "CS 101",
+                                           "syllabus_text": "syllabus text"})
+    captured = {}
+    def fake(base, key, model, name, text, language="zh"):
+        captured.update(name=name, language=language)
+        return "要点"
+    monkeypatch.setattr(llm_client, "summarize_syllabus", fake)
+    r = client.post("/api/summarize_syllabus", json={
+        "canvas_url": "https://x", "canvas_token": "t", "llm_base_url": "https://llm/v1",
+        "llm_api_key": "k", "llm_model": "m", "course_id": 5, "language": "zh"})
+    assert r.json() == {"ok": True, "summary": "要点"}
+    assert captured["name"] == "CS 101"
+    assert captured["language"] == "zh"
+
+
+def test_sync_announcements_includes_course_id(monkeypatch):
+    monkeypatch.setattr(canvas_client, "get_announcements",
+                        lambda u, t, ids, a, b: {5: [{"title": "T", "message": "M", "posted_at": ""}]})
+    monkeypatch.setattr(canvas_client, "list_courses", lambda u, t: [{"id": 5, "name": "CS 101"}])
+    monkeypatch.setattr(llm_client, "extract_course_summary",
+                        lambda *a, **k: {"course_name": "CS 101", "summary": "s",
+                                         "calendar_events": [], "reminders": []})
+    body = {"canvas_url": "https://x", "canvas_token": "t", "llm_base_url": "https://llm/v1",
+            "llm_api_key": "k", "llm_model": "m", "course_ids": [5],
+            "start_date": "2026-08-01", "end_date": "2026-08-31"}
+    r = client.post("/api/sync_announcements", json=body)
+    assert r.json()["courses"][0]["course_id"] == 5
+
+
 def test_add_calendar_event(monkeypatch):
     called = {}
     def add(calendar_name, title, start, end, location, notes, alert_minutes=None):
