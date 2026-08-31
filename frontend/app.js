@@ -80,6 +80,20 @@ function fillCourseFilter(selId, names){
   sel.disabled = uniq.length === 0;
 }
 function esc(t){ const d=document.createElement("div"); d.textContent = t==null?"":String(t); return d.innerHTML; }
+function fillProfessorFilter(){
+  const sel = $("selProfessor");
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = "";
+  const all = document.createElement("option");
+  all.value = ""; all.textContent = t("schedule.prof_all"); sel.appendChild(all);
+  const profs = [...new Set((banwebSchedule.courses || [])
+    .map(c => (c.primary_instructor || "").trim()).filter(Boolean))];
+  profs.forEach(p => { const o = document.createElement("option"); o.value = o.textContent = p; sel.appendChild(o); });
+  const un = document.createElement("option");
+  un.value = "__none__"; un.textContent = t("schedule.prof_unspecified"); sel.appendChild(un);
+  sel.value = prev && [...sel.options].some(o => o.value === prev) ? prev : "";
+}
 
 /* 设置弹窗 */
 function openSettings(){ $("settingsModal").hidden=false; setTimeout(()=>$("canvasUrl").focus(), 60); }
@@ -512,6 +526,14 @@ function renderSchedule(){
   }
   $("btnWriteSchedule").disabled = false;
   const { lo, hi } = gridMinutes();
+  fillProfessorFilter();
+  const profFilter = $("selProfessor") ? $("selProfessor").value : "";
+  const visible = profFilter
+    ? data.courses.filter(c => {
+        const p = (c.primary_instructor || "").trim();
+        return profFilter === "__none__" ? p === "" : p === profFilter;
+      })
+    : data.courses;
   const HOUR_PX = 56, PX_PER_MIN = HOUR_PX / 60;
   const rows = Math.round((hi - lo) / 60);
   // 每列的块 HTML
@@ -519,7 +541,7 @@ function renderSchedule(){
   const assignBlocks = Array.from({length:7}, () => "");
   const markCount = Array.from({length:7}, () => 0);
   const noFixed = [];
-  for (const c of data.courses) {
+  for (const c of visible) {
     const key = c.code + ":" + c.section;
     const color = scheduleColor(c.code);
     const selected = banwebSchedule.selected.includes(key);
@@ -601,6 +623,7 @@ function renderSchedule(){
       }).join("")
     : "";
 }
+$("selProfessor").addEventListener("change", renderSchedule);
 $("btnFetchSchedule").onclick = async () => {
   const term=$("selTerm").value;
   if(!term){ setStatus(t("status.need_term"),"err"); return; }
