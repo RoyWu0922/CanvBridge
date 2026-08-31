@@ -1,6 +1,7 @@
 """FastAPI 应用：Canvas 课程助手后端。"""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,9 +11,12 @@ from pydantic import BaseModel
 
 from . import apple_script, banweb, canvas_client, credentials, files_downloader, llm_client
 
-app = FastAPI(title="Canvas 课程助手")
+app = FastAPI(title="CanvBridge")
 
-FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
+# 前端目录定位：PyInstaller 打包后 __file__ 指向解压目录，须用 _MEIPASS；
+# 源码运行时（_MEIPASS 不存在）回退到仓库内的 frontend。
+_BUNDLE_BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+FRONTEND_DIR = _BUNDLE_BASE / "frontend"
 FRONTEND = FRONTEND_DIR / "index.html"
 
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")

@@ -17,3 +17,8 @@ downloads/
 
 # SDD 工作区（进度/简报/审查包）
 .superpowers/
+
+# PyInstaller 产物
+build/
+dist/
+*.spec
