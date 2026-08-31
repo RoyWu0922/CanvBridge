@@ -66,6 +66,19 @@ function fillAlert(id){
   sel.innerHTML="";
   ALERTS.forEach(([v,key])=>{ const o=document.createElement("option"); o.value=v; o.textContent=t(key); sel.appendChild(o); });
 }
+function fillCourseFilter(selId, names){
+  const sel = $(selId); const prev = sel.value;
+  sel.innerHTML = "";
+  const all = document.createElement("option");
+  all.value = ""; all.textContent = t(selId === "selAnnounceCourse" ? "announce.filter.all" : "files.filter.all");
+  sel.appendChild(all);
+  const uniq = [...new Set(names.filter(Boolean))];
+  uniq.forEach(n => {
+    const o = document.createElement("option"); o.value = o.textContent = n; sel.appendChild(o);
+  });
+  sel.value = prev && [...sel.options].some(o => o.value === prev) ? prev : "";
+  sel.disabled = uniq.length === 0;
+}
 function esc(t){ const d=document.createElement("div"); d.textContent = t==null?"":String(t); return d.innerHTML; }
 
 /* 设置弹窗 */
@@ -160,11 +173,16 @@ $("btnSync").onclick = async () => {
 };
 function renderSummaries(){
   const f = filterVisible();
-  displayResults = summaryResults.map(c=>({
-    ...c,
-    calendar_events:(c.calendar_events||[]).filter(e=>dayWithin(e.start,f)),
-    reminders:(c.reminders||[]).filter(e=>dayWithin(e.due_date,f)),
-  }));
+  const courseSel = $("selAnnounceCourse").value;
+  fillCourseFilter("selAnnounceCourse", summaryResults.map(c => c.course_name));
+  let src = summaryResults;
+  if (courseSel) src = summaryResults.filter(c => c.course_name === courseSel);
+  displayResults = src.map((c) => {
+    const orig = summaryResults.indexOf(c);
+    return { ...c, _orig: orig,
+      calendar_events:(c.calendar_events||[]).filter(e=>dayWithin(e.start,f)),
+      reminders:(c.reminders||[]).filter(e=>dayWithin(e.due_date,f)) };
+  });
   if(!displayResults.length){
     $("summaries").innerHTML = `<div class="empty">${t("announce.empty")}</div>`;
     return;
@@ -172,8 +190,8 @@ function renderSummaries(){
   const evCount = (shown,total) => (f && total>0) ? `${shown}<span class="count"> / ${total}</span>` : `${shown}`;
   $("summaries").innerHTML = displayResults.map((c,ci)=>{
     const evs=c.calendar_events, rms=c.reminders;
-    const evTotal=(summaryResults[ci].calendar_events||[]).length;
-    const rmTotal=(summaryResults[ci].reminders||[]).length;
+    const evTotal=(summaryResults[c._orig].calendar_events||[]).length;
+    const rmTotal=(summaryResults[c._orig].reminders||[]).length;
     return `
     <div class="course-card">
       <div class="course-name">${esc(c.course_name)}</div>
@@ -194,6 +212,7 @@ function renderSummaries(){
 $("chkShowAll").addEventListener("change", refreshFilterState);
 $("filterStart").addEventListener("change", refreshFilterState);
 $("filterEnd").addEventListener("change", refreshFilterState);
+$("selAnnounceCourse").addEventListener("change", renderSummaries);
 
 $("btnWriteCalendar").onclick = async () => {
   const cal=$("selCalendar").value;
@@ -242,21 +261,26 @@ $("btnListFiles").onclick = async () => {
 };
 function renderFiles(){
   const filter=$("inpTypeFilter").value.toLowerCase().trim().replace(/^\./,"");
-  const shown=fileCourses.map(c=>({...c, files:(c.files||[]).filter(f=>{
-    if(!filter) return true;
-    return (f.content_type||"").toLowerCase().includes(filter)
-        || (f.display_name||"").toLowerCase().endsWith("."+filter);
-  })}));
-  $("filesArea").innerHTML = shown.map((c,ci)=>`
+  const courseSel = $("selFileCourse").value;
+  fillCourseFilter("selFileCourse", fileCourses.map(c => c.name));
+  const shown = fileCourses
+    .filter(c => !courseSel || c.name === courseSel)
+    .map(c => ({ ...c, _orig: fileCourses.indexOf(c), files:(c.files||[]).filter(f=>{
+      if(!filter) return true;
+      return (f.content_type||"").toLowerCase().includes(filter)
+          || (f.display_name||"").toLowerCase().endsWith("."+filter);
+    })}));
+  $("filesArea").innerHTML = shown.map((c)=>`
     <div class="course-card">
       <div class="course-name">${esc(c.name)} ${c.error?`<span style="color:var(--err);font-size:12px">（${esc(c.error)}）</span>`:""}</div>
       ${(c.files||[]).map(f=>`
-        <div class="item"><input type="checkbox" class="fl" data-ci="${ci}" data-fi="${f.file_id}">
+        <div class="item"><input type="checkbox" class="fl" data-ci="${c._orig}" data-fi="${f.file_id}">
           <div><div class="item-title">${esc(f.display_name)} <span class="muted">（${esc(f.content_type)}）</span></div>
           <div class="file-path">${esc(f.path||"/")}</div></div></div>`).join("")}
     </div>`).join("") || `<div class='muted' style='padding:12px 0'>${t("files.empty")}</div>`;
 }
 $("inpTypeFilter").oninput = renderFiles;
+$("selFileCourse").addEventListener("change", renderFiles);
 $("btnSelectAllFiles").onclick = ()=>document.querySelectorAll(".fl").forEach(i=>i.checked=true);
 $("btnDownloadFiles").onclick = async () => {
   const s=settings();
