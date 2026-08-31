@@ -157,10 +157,11 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
   font-size:11px; line-height:18px; text-align:center; cursor:pointer; }
 .cal-detail:hover { background:rgba(255,255,255,.55); }
 
-/* 周视图作业 due 琥珀标注条 */
+/* 周视图作业 due 琥珀标注条（统一预留高度，保证与时间轴对齐） */
 .assign-strip { display:flex; flex-direction:column; gap:3px; padding:4px;
+  box-sizing:border-box; overflow-y:auto;
   background:var(--warn-bg); border-bottom:1px solid var(--warn-border); }
-.assign-strip:empty { display:none; }
+.axis-strip { flex:none; }
 .assignment-mark { display:block; padding:2px 6px; border-left:3px solid var(--warn);
   background:var(--surface); border-radius:4px; font-size:10.5px; line-height:1.35;
   color:var(--warn); text-decoration:none; white-space:nowrap; overflow:hidden;

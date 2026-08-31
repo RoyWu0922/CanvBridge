@@ -517,6 +517,7 @@ function renderSchedule(){
   // 每列的块 HTML
   const colBlocks = Array.from({length:7}, () => "");
   const assignBlocks = Array.from({length:7}, () => "");
+  const markCount = Array.from({length:7}, () => 0);
   const noFixed = [];
   for (const c of data.courses) {
     const key = c.code + ":" + c.section;
@@ -566,17 +567,25 @@ function renderSchedule(){
         title="${esc(a.name)} — ${t("announce.due")} ${fmtDue(a.due_at)}">
         <span class="mark-course">${esc(cname)}</span> · <span class="mark-name">${esc(a.name)}</span>
         <span class="mark-due">${esc(fmtDue(a.due_at))}</span></a>`;
+      markCount[idx]++;
     });
   });
+  // 统一琥珀条高度：任一列有标注时，7 列 + 时间轴都预留同高，保证时间轴对齐
+  const maxMarks = Math.max(...markCount);
+  const stripH = maxMarks ? Math.round(1 + 21.175 * maxMarks) : 0;
   // 时间轴
   let axis = `<div class="time-axis"><div class="corner"></div>`;
+  if (stripH > 0) axis += `<div class="axis-strip" style="height:${stripH}px"></div>`;
   for (let r = 0; r < rows; r++) axis += `<div class="time-label">${fmtTime(lo + r * 60)}</div>`;
   axis += `</div>`;
   // 7 个列容器（day-body 相对定位，块绝对定位叠在其上）
   let cols = "";
   for (let d = 0; d < 7; d++) {
+    const strip = stripH > 0
+      ? `<div class="assign-strip" style="height:${stripH}px">${assignBlocks[d]}</div>`
+      : "";
     cols += `<div class="day-col"><div class="day-head">${t("wd."+d)}</div>
-      <div class="assign-strip">${assignBlocks[d]}</div>
+      ${strip}
       <div class="day-body" style="height:${rows * HOUR_PX}px">${colBlocks[d]}</div></div>`;
   }
   gridEl.innerHTML = `<div class="schedule-grid">${axis}${cols}</div>`;
