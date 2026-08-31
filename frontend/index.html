@@ -112,6 +112,18 @@
       <label class="field"><span data-i18n="settings.llm_model"></span><input id="llmModel" type="text" placeholder="deepseek-chat"></label>
       <label class="field"><span data-i18n="settings.download_dir"></span><input id="downloadDir" type="text" placeholder="~/Downloads/Canvas课程文件"></label>
     </div>
+    <div style="margin-top:20px">
+      <span class="eyebrow" data-i18n="settings.aims_heading"></span>
+      <div class="grid">
+        <label class="field"><span data-i18n="settings.aims_user"></span><input id="aimsUsername" type="text" autocomplete="username" placeholder="CityUHK EID"></label>
+        <label class="field"><span data-i18n="settings.aims_pass"></span><input id="aimsPassword" type="password" autocomplete="current-password" placeholder="••••••••"></label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="btnSaveAims" class="btn btn-primary" data-i18n="btn.save_auto_login"></button>
+        <button id="btnClearAims" class="btn btn-ghost" data-i18n="btn.clear_aims" hidden></button>
+        <span id="aimsSavedHint" class="muted"></span>
+      </div>
+    </div>
     <div class="row" style="margin-top:16px">
       <button id="btnTest" class="btn btn-primary" data-i18n="btn.test"></button>
       <label class="field"><span data-i18n="settings.calendar"></span><select id="selCalendar"></select></label>

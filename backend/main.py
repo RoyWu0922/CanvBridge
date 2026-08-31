@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import apple_script, banweb, canvas_client, files_downloader, llm_client
+from . import apple_script, banweb, canvas_client, credentials, files_downloader, llm_client
 
 app = FastAPI(title="Canvas 课程助手")
 
@@ -71,6 +71,11 @@ class BanwebWriteRequest(BaseModel):
     courses: list[dict]   # 前端预览的课程块（原样传回，由后端转事件规格）
     selected: list[str]   # 勾选的 "code:section" 键
     alert_minutes: int | None = None
+
+
+class AimsCredentials(BaseModel):
+    username: str
+    password: str
 
 
 class CourseDetailRequest(BaseModel):
@@ -267,10 +272,50 @@ def banweb_terms():
 
 @app.post("/api/banweb/open_login")
 def banweb_open_login():
-    """重新打开 AIMS 登录窗口并置前，供用户手动登录。"""
+    """重新打开 AIMS 登录窗口并置前，供用户手动登录（自动登录失败的兜底）。"""
     try:
         banweb.open_login()
         return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/banweb/credentials")
+def banweb_save_credentials(req: AimsCredentials):
+    """把 AIMS 账号密码存入本机钥匙串（只存本地，不返回密码）。"""
+    try:
+        credentials.save_credentials(req.username.strip(), req.password)
+        return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/api/banweb/credentials/status")
+def banweb_credentials_status():
+    """返回是否已存 AIMS 凭据 + 账号（永不返回密码）。"""
+    try:
+        username = credentials.get_username()
+        return {"ok": True, "has_credentials": bool(username), "username": username}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.delete("/api/banweb/credentials")
+def banweb_delete_credentials():
+    """清除已存的 AIMS 账号密码。"""
+    try:
+        credentials.delete_credentials()
+        return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/banweb/auto_login")
+def banweb_auto_login():
+    """用钥匙串里已存的账号密码自动登录 AIMS（全程无窗口）。"""
+    try:
+        status = banweb.auto_login_from_stored()
+        return {"ok": True, "status": status}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 

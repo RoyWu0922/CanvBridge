@@ -1,9 +1,12 @@
 """CityU AIMS (Banweb) 课表自动抓取。
 
-会话策略（用户已确认）：
-- 程序绝不代用户登录、不接触任何凭证。
-- 后端用系统 Chrome 打开一个常驻有头窗口（独立 profile + CDP 端口）；
-  退登时用户在该窗口手动登录一次，watchdog 检测到回到 banweb 后自动继续。
+会话策略（用户 2026-08-31 确认）：
+- 账号密码存在本机钥匙串（backend/credentials.py），只存本地、不上传。
+- 后端用系统 Chrome 打开一个常驻 **无头** 浏览器（独立 profile + CDP 端口）；
+  检测到退登时用钥匙串里的账密自动填 Okta 表单登录，全程不弹窗口。
+- 仅在自动登录失败（密码错/验证码等）或用户主动点「重新登录」时才临时
+  以有头窗口打开，供手动完成。这反转了早期「程序绝不代登录、不接触凭证」
+  的决策，属用户明确批准。
 """
 from __future__ import annotations
 
@@ -16,6 +19,8 @@ from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 
+from . import credentials
+
 try:
     from playwright.sync_api import sync_playwright
 except Exception:  # 未装 Playwright 时不影响其余功能
@@ -24,15 +29,25 @@ except Exception:  # 未装 Playwright 时不影响其余功能
 LOGIN_HOST = "https://auth.cityu.edu.hk"
 BANWEB = "https://banweb.cityu.edu.hk"
 TERM_PAGE = BANWEB + "/pls/PROD/bwskfshd.P_CrseSchdDetl"
+# 真实登录页：登出后 TERM_PAGE 只给「User Login」中转页（无表单），
+# 真正的 Okta 登录表单在 P_WWWLogin（2026-08-31 实测标题 "City University of Hong Kong - Sign In"）
+P_WWWLOGIN = BANWEB + "/pls/PROD/twgkpswd_cityu.P_WWWLogin"
 # 周课表（Matrix Format）页：每格「楼宇码 房间号」，即前端课表块的简称地点来源
 WEEKLY_PAGE = BANWEB + "/pls/PROD/hwsstmtbl_matrix_cityu.Show"
 PROFILE_DIR = Path.home() / ".cityu_aims_profile"
 CDP_PORT = 9339
+# Okta Sign-In Widget v2（auth.cityu.edu.hk，2026-08-31 实测）：两步登录
+# 第一步输 EID（name=identifier）点 Next，第二步输密码（name=credentials.passcode）
+_OKTA_IDENTIFIER = 'input[name="identifier"]'
+_OKTA_PASSCODE = 'input[name="credentials.passcode"]'
+_OKTA_SUBMIT = 'input[type="submit"], button[type="submit"], button[data-type="save"]'
+_OKTA_ERROR = '[data-se="o-form-error-container"]'
 
 _lock = threading.RLock()
 _pw = None
 _ctx = None
 _page = None
+_browser_headless: bool | None = None   # 当前浏览器是否无头（None=附着到外部实例）
 _browser_executor: concurrent.futures.ThreadPoolExecutor | None = None
 
 
@@ -577,14 +592,16 @@ def _kill_zombie_chrome() -> None:
         time.sleep(0.1)
 
 
-def _ensure_browser(launch: bool = True):
+def _ensure_browser(launch: bool = True, headless: bool = True):
     """返回一个可用的浏览器页面。
 
     launch=False 供状态轮询用：**绝不自己弹窗**。浏览器已关时抛 BanwebError，
-    由调用方判为 needs_login，等用户点「重新登录」再开窗。
-    launch=True 供用户主动操作（重新登录/抓课表）用：确保窗口真的打开。
+    由调用方判为 needs_login，等自动登录或用户点「重新登录」再开。
+    launch=True 供主动操作（自动登录/抓课表/手动登录）用：确保浏览器真的打开。
+    headless=False 供手动登录用：若当前是无头浏览器，先关掉换有头窗口，
+    让用户能看见登录页。
     """
-    global _pw, _ctx, _page
+    global _pw, _ctx, _page, _browser_headless
     with _lock:
         if sync_playwright is None:
             raise BanwebError("未安装 Playwright，无法抓取课表（pip install playwright）")
@@ -593,7 +610,11 @@ def _ensure_browser(launch: bool = True):
                 # 真存活探测：做一次 CDP 往返。is_closed() 对已断开的连接可能仍返回
                 # False，导致拿旧对象当活窗口用（open_login 因此"成功"却没开窗）。
                 _page.evaluate("1")
-                return _page
+                if headless or _browser_headless is not True:
+                    # 请求无头（默认）或当前已是有头窗口 → 直接用
+                    return _page
+                # 请求有头但当前是无头 → 关掉无头，走下方重建有头窗口
+                _reset_browser()
             except Exception:
                 _reset_browser()
         if _pw is None:
@@ -632,16 +653,16 @@ def _ensure_browser(launch: bool = True):
             raise BanwebError("AIMS 登录窗口未打开，请点「重新登录」打开后再试")
         # 2) 可能残留占住端口的僵死 Chrome（macOS 关窗后进程常驻）→ 清掉再开
         _kill_zombie_chrome()
-        # 3) 启动常驻有头 Chrome（独立 profile，避免碰系统主 profile）
+        # 3) 启动常驻 Chrome（独立 profile，避免碰系统主 profile）；默认无头
         try:
-            _ctx = _launch_persistent()
+            _ctx = _launch_persistent(headless=headless)
         except Exception as exc:
             if _is_driver_error(exc):
                 # driver 被残留连接打崩 → 重启驱动后再试一次
                 _reset_browser()
                 _restart_driver()
                 try:
-                    _ctx = _launch_persistent()
+                    _ctx = _launch_persistent(headless=headless)
                 except Exception as exc2:
                     raise BanwebError(
                         "无法打开浏览器。若旧窗口还在运行，请先关闭它再重试。") from exc2
@@ -649,6 +670,7 @@ def _ensure_browser(launch: bool = True):
                 raise BanwebError(
                     "无法打开浏览器。若旧窗口还在运行，请先关闭它再重试。") from exc
         _page = _ctx.pages[0] if _ctx.pages else _ctx.new_page()
+        _browser_headless = headless
         try:
             _page.goto(TERM_PAGE, timeout=60000, wait_until="domcontentloaded")
         except Exception:
@@ -656,10 +678,10 @@ def _ensure_browser(launch: bool = True):
         return _page
 
 
-def _launch_persistent():
-    """用当前 driver 启动常驻有头 Chrome（独立 profile）。"""
+def _launch_persistent(headless: bool = True):
+    """用当前 driver 启动常驻 Chrome（默认无头，独立 profile）。"""
     return _pw.chromium.launch_persistent_context(
-        str(PROFILE_DIR), channel="chrome", headless=False,
+        str(PROFILE_DIR), channel="chrome", headless=headless,
         viewport={"width": 1280, "height": 900},
         args=[f"--remote-debugging-port={CDP_PORT}"])
 
@@ -712,13 +734,14 @@ def get_status() -> dict:
 
 
 def open_login() -> None:
-    """确保登录窗口打开并置前，让用户手动登录（程序不代登、不接触凭证）。
+    """确保登录窗口打开并置前，让用户手动登录（自动登录失败时的兜底）。
 
-    若退登，导航课表页会自动落到 Okta 登录页（或 Banner 内嵌登录页）。
+    无头浏览器在运行时会临时换有头窗口；若退登，导航课表页会自动落到
+    Okta 登录页（或 Banner 内嵌登录页）。
     """
     def _run() -> None:
         with _lock:
-            page = _ensure_browser(launch=True)
+            page = _ensure_browser(launch=True, headless=False)
             try:
                 page.goto(TERM_PAGE, timeout=30000, wait_until="domcontentloaded")
             except Exception:
@@ -731,6 +754,104 @@ def open_login() -> None:
             # 交给 _retry_once 整体重建后重试，而不是"成功"却没开窗。
             page.evaluate("1")
     _on_browser_thread(lambda: _retry_once(_run))
+
+
+# ---------------- 自动登录（填 Okta 表单） ----------------
+
+def _wait_for_any(page, selectors: list[str], timeout: float = 15000) -> str | None:
+    """轮询 page.wait_for_selector，任一选择器命中即返回它；超时返回 None。
+
+    用 wait_for_selector（自带超时）而不是 query_selector：Banner 的「User Login」
+    中转页 frame 可能永远停在加载态，query_selector 会无限阻塞（实测卡 120s+），
+    而 wait_for_selector 每次最多等 3s，整体预算 = timeout，绝不可能挂死。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for s in selectors:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            try:
+                page.wait_for_selector(s, timeout=min(remaining, 3000),
+                                       state="visible")
+                return s
+            except Exception:
+                pass
+    return None
+
+
+def _extract_okta_error(page) -> str:
+    """从 Okta 错误容器 [data-se=o-form-error-container] 提取可见错误文本。"""
+    try:
+        parts = page.eval_on_selector_all(
+            _OKTA_ERROR,
+            "els => els.map(e => e.textContent.trim()).filter(Boolean)")
+    except Exception:
+        return ""
+    return " ".join(" ".join(p.split()) for p in parts)
+
+
+def _raise_login_error(page, prefix: str = "AIMS 自动登录失败") -> None:
+    """抛出带 Okta 错误信息的 BanwebError；无错误信息时给通用提示。"""
+    msg = _extract_okta_error(page)
+    detail = f"：{msg}" if msg else "（页面未跳回课表，可能有验证码或账号问题）"
+    raise BanwebError(prefix + detail)
+
+
+def auto_login(username: str, password: str) -> str:
+    """用账号密码自动登录 AIMS（Okta 两步表单：EID → Next → 密码）。
+
+    全程无头、不 bring_to_front。已是登录态直接返回；成功返回 'logged_in'；
+    失败抛 BanwebError（带 Okta 错误信息）。
+    """
+    def _run() -> str:
+        with _lock:
+            page = _ensure_browser(launch=True, headless=True)
+            try:
+                page.goto(TERM_PAGE, timeout=60000, wait_until="domcontentloaded")
+                page.wait_for_load_state("load", timeout=30000)
+            except Exception:
+                pass  # 未登录会跳到 Okta / 中转页，属正常
+            if not (_is_login_page(page.url) or _is_embedded_login(page)):
+                return "logged_in"  # 已是登录态（附着了有会话的浏览器/外部实例）
+            # 中转页：TERM_PAGE 上只有标题 "User Login"、无表单。真正的 Okta
+            # 登录页在 P_WWWLogin，先导航过去再走两步表单。
+            if page.url.startswith(BANWEB) and not page.url.startswith(LOGIN_HOST):
+                try:
+                    page.goto(P_WWWLOGIN, timeout=30000, wait_until="domcontentloaded")
+                    # 等 Okta widget 真正加载完，否则 fill 的值会被初始化清掉
+                    page.wait_for_load_state("load", timeout=30000)
+                except Exception:
+                    pass
+            # 第一步：填 EID → Next
+            if _wait_for_any(page, [_OKTA_IDENTIFIER, _OKTA_ERROR], 15000) != _OKTA_IDENTIFIER:
+                _raise_login_error(page)
+            page.fill(_OKTA_IDENTIFIER, username)
+            page.click(_OKTA_SUBMIT, timeout=10000)
+            # 第二步：等密码框出现；出现错误（用户名无效/验证码）则报错
+            if _wait_for_any(page, [_OKTA_PASSCODE, _OKTA_ERROR], 15000) != _OKTA_PASSCODE:
+                _raise_login_error(page)
+            page.fill(_OKTA_PASSCODE, password)
+            page.click(_OKTA_SUBMIT, timeout=10000)
+            # 提交后：等待跳出 Okta 域（成功会重定向回 banweb）
+            try:
+                page.wait_for_url(lambda u: not _is_login_page(u),
+                                  timeout=20000, wait_until="domcontentloaded")
+                page.wait_for_load_state("load", timeout=30000)
+            except Exception:
+                _raise_login_error(page)  # 密码错误等：Okta 页面上的错误
+            _require_logged_in(page)
+            return "logged_in"
+    return _on_browser_thread(lambda: _retry_once(_run))
+
+
+def auto_login_from_stored() -> str:
+    """从钥匙串读账号密码并自动登录。返回状态串；无凭据时抛 BanwebError。"""
+    creds = credentials.get_credentials()
+    if not creds:
+        raise BanwebError("尚未保存 AIMS 账号密码，请先在设置中填写")
+    username, password = creds
+    return auto_login(username, password)
 
 
 def _goto_term_page(page) -> None:

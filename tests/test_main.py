@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from backend import apple_script, banweb, canvas_client, files_downloader, llm_client, main
+from backend import apple_script, banweb, canvas_client, credentials, files_downloader, llm_client, main
 
 client = TestClient(main.app)
 
@@ -324,3 +324,67 @@ def test_index_and_static(monkeypatch):
     assert "text/html" in r.headers["content-type"]
     for path in ["/static/app.css", "/static/app.js", "/static/i18n.js"]:
         assert client.get(path).status_code == 200
+
+
+# ---------------- AIMS 自动登录凭据端点 ----------------
+
+def test_banweb_save_credentials(monkeypatch):
+    called = {}
+    monkeypatch.setattr(credentials, "save_credentials",
+                        lambda u, p: called.update(u=u, p=p))
+    r = client.post("/api/banweb/credentials",
+                    json={"username": "sc123456", "password": "s3cret"})
+    assert r.json() == {"ok": True}
+    assert called == {"u": "sc123456", "p": "s3cret"}
+
+
+def test_banweb_save_credentials_strips_username(monkeypatch):
+    called = {}
+    monkeypatch.setattr(credentials, "save_credentials",
+                        lambda u, p: called.update(u=u))
+    client.post("/api/banweb/credentials",
+                json={"username": "  sc123456  ", "password": "s3cret"})
+    assert called["u"] == "sc123456"
+
+
+def test_banweb_save_credentials_error(monkeypatch):
+    def boom(u, p):
+        raise credentials.CredentialsError("钥匙串不可用")
+    monkeypatch.setattr(credentials, "save_credentials", boom)
+    r = client.post("/api/banweb/credentials",
+                    json={"username": "u", "password": "p"})
+    assert r.json()["ok"] is False
+    assert "钥匙串" in r.json()["error"]
+
+
+def test_banweb_credentials_status(monkeypatch):
+    monkeypatch.setattr(credentials, "get_username", lambda: "sc123456")
+    r = client.get("/api/banweb/credentials/status")
+    assert r.json() == {"ok": True, "has_credentials": True, "username": "sc123456"}
+
+
+def test_banweb_credentials_status_empty(monkeypatch):
+    monkeypatch.setattr(credentials, "get_username", lambda: "")
+    r = client.get("/api/banweb/credentials/status")
+    assert r.json() == {"ok": True, "has_credentials": False, "username": ""}
+
+
+def test_banweb_delete_credentials(monkeypatch):
+    monkeypatch.setattr(credentials, "delete_credentials", lambda: True)
+    r = client.delete("/api/banweb/credentials")
+    assert r.json() == {"ok": True}
+
+
+def test_banweb_auto_login(monkeypatch):
+    monkeypatch.setattr(banweb, "auto_login_from_stored", lambda: "logged_in")
+    r = client.post("/api/banweb/auto_login", json={})
+    assert r.json() == {"ok": True, "status": "logged_in"}
+
+
+def test_banweb_auto_login_no_credentials(monkeypatch):
+    def boom():
+        raise banweb.BanwebError("尚未保存 AIMS 账号密码，请先在设置中填写")
+    monkeypatch.setattr(banweb, "auto_login_from_stored", boom)
+    r = client.post("/api/banweb/auto_login", json={})
+    assert r.json()["ok"] is False
+    assert "尚未保存" in r.json()["error"]

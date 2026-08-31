@@ -419,3 +419,74 @@ def test_enrich_meetings_preserves_room_short():
     assert m["room"] == "Mong Man Wai Building 2450"
     assert m["start_min"] == 720
     assert m["days_list"] == ["F"]
+
+
+# ---------------- 自动登录（Okta 表单辅助） ----------------
+
+class _FakeWaitPage:
+    """模拟 page.wait_for_selector：present 集合里的选择器命中即返回，否则抛超时。"""
+    def __init__(self, present):
+        self.present = present
+    def wait_for_selector(self, sel, timeout=3000, state="visible"):
+        if sel in self.present:
+            return object()
+        raise TimeoutError(f"waiting for selector {sel}")
+
+
+class _BoomWaitPage:
+    def wait_for_selector(self, sel, timeout=3000, state="visible"):
+        raise RuntimeError("Target page, context or browser has been closed")
+
+
+def test_wait_for_any_returns_first_match():
+    p = _FakeWaitPage({"a", "b"})
+    assert banweb._wait_for_any(p, ["a", "b"], timeout=1) == "a"
+
+
+def test_wait_for_any_timeout_returns_none():
+    p = _FakeWaitPage(set())
+    assert banweb._wait_for_any(p, ["a"], timeout=0.05) is None
+
+
+def test_wait_for_any_swallows_navigation_errors():
+    """导航中 wait_for_selector 抛错（目标关闭/页面切换）→ 吞掉继续轮询，超时返回 None。"""
+    assert banweb._wait_for_any(_BoomWaitPage(), ["a"], timeout=0.05) is None
+
+
+class _FakeEvalPage:
+    def __init__(self, parts):
+        self.parts = parts
+        self.sel = None
+    def eval_on_selector_all(self, sel, js):
+        self.sel = sel
+        return self.parts
+
+
+def test_extract_okta_error_joins_and_collapses_whitespace():
+    p = _FakeEvalPage([" Invalid  credentials ", " Try again "])
+    assert banweb._extract_okta_error(p) == "Invalid credentials Try again"
+    assert p.sel == banweb._OKTA_ERROR   # 用的是错误容器选择器
+
+
+def test_extract_okta_error_empty_list():
+    assert banweb._extract_okta_error(_FakeEvalPage([])) == ""
+
+
+def test_extract_okta_error_on_js_exception():
+    class Boom:
+        def eval_on_selector_all(self, *a):
+            raise RuntimeError("closed")
+    assert banweb._extract_okta_error(Boom()) == ""
+
+
+def test_raise_login_error_includes_okta_message():
+    p = _FakeEvalPage(["We couldn't verify that email and password."])
+    with pytest.raises(banweb.BanwebError) as ei:
+        banweb._raise_login_error(p)
+    assert "We couldn't verify" in str(ei.value)
+
+
+def test_raise_login_error_no_message_gives_generic_hint():
+    with pytest.raises(banweb.BanwebError) as ei:
+        banweb._raise_login_error(_FakeEvalPage([]))
+    assert "未跳回课表" in str(ei.value)

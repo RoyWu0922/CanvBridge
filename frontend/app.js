@@ -42,10 +42,10 @@ function setStatus(msg, kind, ms){
   s.className="banner show banner-"+(kind==="err"?"err":kind==="ok"?"ok":"info");
   clearTimeout(s._t); s._t=setTimeout(()=>s.classList.remove("show"), ms||4500);
 }
-async function api(path, body){
+async function api(path, body, method){
   let r;
-  try { r = await fetch("/api/"+path, { method:"POST",
-    headers:{"Content-Type":"application/json"}, body: JSON.stringify(body||{}) }); }
+  try { r = await fetch("/api/"+path, { method: method||"POST",
+    headers:{"Content-Type":"application/json"}, body: body===undefined?undefined:JSON.stringify(body) }); }
   catch(e){ return { ok:false, error:t("status.backend_fail") }; }
   try { return await r.json(); }
   catch(e){ return { ok:false, error:t("status.parse_fail", {s: r.status}) }; }
@@ -106,12 +106,64 @@ function fillProfessorFilter(){
 }
 
 /* 设置弹窗 */
-function openSettings(){ $("settingsModal").hidden=false; setTimeout(()=>$("canvasUrl").focus(), 60); }
+function openSettings(){ $("settingsModal").hidden=false; setTimeout(()=>$("canvasUrl").focus(), 60); refreshAimsUi(); }
 function closeSettings(){ $("settingsModal").hidden=true; }
 $("btnSettings").onclick = openSettings;
 $("btnCloseSettings").onclick = closeSettings;
 $("settingsModal").querySelector(".modal-backdrop").addEventListener("click", closeSettings);
 document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("settingsModal").hidden) closeSettings(); });
+
+/* AIMS 自动登录（账号密码存本机钥匙串，由后端代为登录） */
+let aimsAutoTried = false;   // 本次会话是否已尝试过自动登录（防 3s 轮询重复触发）
+async function refreshAimsUi(){
+  const el = $("aimsSavedHint"); if(!el) return;
+  const r = await api("banweb/credentials/status", undefined, "GET");
+  if(r.ok!==true){ el.textContent = t("status.aims_status_fail"); return; }
+  if(r.has_credentials){
+    $("aimsUsername").value = r.username;
+    $("aimsPassword").value = "";
+    $("btnClearAims").hidden = false;
+    el.textContent = t("status.aims_saved", {u: r.username});
+  } else {
+    $("btnClearAims").hidden = true;
+    el.textContent = t("status.aims_not_saved");
+  }
+}
+async function runAutoLogin(showBusy){
+  aimsAutoTried = true;
+  const attempt = async () => {
+    const r = await api("banweb/auto_login");
+    if(r.ok !== true){
+      setStatus(t("status.aims_login_fail") + (r.error||""), "err", 8000);
+      setBanwebStatusText(t("status.aims_need_login_after_fail"), "err");
+      return false;
+    }
+    await checkBanwebStatus();
+    return true;
+  };
+  return showBusy ? withBusy(t("status.aims_logging_in"), $("btnSaveAims"), attempt) : attempt();
+}
+$("btnSaveAims").onclick = async () => {
+  const username = $("aimsUsername").value.trim();
+  const password = $("aimsPassword").value;
+  if(!username || !password){ setStatus(t("status.aims_need_both"), "err"); return; }
+  await withBusy(t("status.aims_saving"), $("btnSaveAims"), async ()=>{
+    const r = await api("banweb/credentials", { username, password });
+    if(r.ok !== true){ setStatus(t("status.aims_save_fail") + (r.error||""), "err"); return; }
+    setStatus(t("status.aims_saved_ok"), "ok", 4000);
+    await refreshAimsUi();
+    await runAutoLogin(true);   // 保存后立即自动登录
+  });
+};
+$("btnClearAims").onclick = async () => {
+  await withBusy(t("status.aims_clearing"), $("btnClearAims"), async ()=>{
+    const r = await api("banweb/credentials", undefined, "DELETE");
+    if(r.ok !== true){ setStatus(t("status.aims_clear_fail") + (r.error||""), "err"); return; }
+    $("aimsUsername").value=""; $("aimsPassword").value="";
+    setStatus(t("status.aims_cleared"), "ok");
+    await refreshAimsUi();
+  });
+};
 
 /* 课程详情弹层 */
 let assignmentMarks = {};        // {course_id: [未截止作业]}，周视图标注与详情共用
@@ -462,13 +514,25 @@ async function checkBanwebStatus(){
   if(r.ok!==true){ setBanwebStatusText(t("status.banweb_gw"),"err"); return; }
   const loginBtn=$("btnBanwebLogin");
   if(r.status==="logged_in"){
+    aimsAutoTried = false;   // 登录成功后重置，下次退登还能自动登录
     setBanwebStatusText(t("status.banweb_ok"),"ok");
     loginBtn.hidden=true;
     stopBanwebPoll();
     if(!$("selTerm").options.length) loadTerms();
   } else if(r.status==="needs_login"){
-    setBanwebStatusText(t("status.banweb_need_login"),"err");
     loginBtn.hidden=false;
+    if(!aimsAutoTried){
+      // 已存凭据 → 静默自动登录一次（不弹窗）；未存 → 提示手动
+      const cr = await api("banweb/credentials/status", undefined, "GET");
+      if(cr.ok===true && cr.has_credentials){
+        aimsAutoTried = true;
+        setBanwebStatusText(t("status.aims_logging_in"), "muted");
+        await runAutoLogin(false);
+        return;   // runAutoLogin 成功时已重查状态
+      }
+      aimsAutoTried = true;
+    }
+    setBanwebStatusText(t("status.banweb_need_login"),"err");
     startBanwebPoll();
   } else if(r.status==="opening"){
     setBanwebStatusText(t("status.banweb_opening"),"muted");
