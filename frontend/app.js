@@ -351,40 +351,89 @@ function schedBadge(res){
   if(st==="error") return `<span class="sched-badge err">${t("badge.error")}</span>`;
   return "";
 }
+const PALETTE = ["#2563eb","#0891b2","#7c3aed","#db2777","#ea580c",
+                 "#16a34a","#ca8a04","#dc2626","#4f46e5","#0d9488"];
+function scheduleColor(code){
+  let h = 0; for (const ch of String(code)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return PALETTE[h % PALETTE.length];
+}
+function gridMinutes(){
+  let lo = 480, hi = 1320;   // 默认 8:00–22:00
+  for (const c of banwebSchedule.courses)
+    for (const m of (c.meetings || []))
+      if (m.start_min != null && m.end_min != null) {
+        lo = Math.min(lo, m.start_min); hi = Math.max(hi, m.end_min);
+      }
+  lo = Math.max(0, Math.floor((lo - 30) / 60) * 60);
+  hi = Math.min(1440, Math.ceil((hi + 30) / 60) * 60);
+  return { lo, hi };
+}
+function fmtTime(min){ const h = Math.floor(min/60), m = min%60;
+  return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`; }
+const DAY_INDEX = { M:0, T:1, W:2, R:3, F:4, S:5, U:6 };
 function renderSchedule(){
-  const el=$("schedulePreview");
-  const data=banwebSchedule;
-  if(!data.courses.length){
-    el.innerHTML=`<div class="empty">${t("schedule.empty")}</div>`;
-    $("btnWriteSchedule").disabled=true;
+  const gridEl = $("schedulePreview"), noFixedEl = $("scheduleNoFixed");
+  const data = banwebSchedule;
+  if (!data.courses.length) {
+    gridEl.innerHTML = `<div class="empty">${esc(t("schedule.empty"))}</div>`;
+    noFixedEl.innerHTML = "";
+    $("btnWriteSchedule").disabled = true;
     return;
   }
-  $("btnWriteSchedule").disabled=false;
-  const writableBlocks = new Set(data.courses.filter(c=>(c.meetings||[]).length>0).map(c=>c.code+":"+c.section));
-  el.innerHTML = data.courses.map(c=>renderCourseBlock(c, writableBlocks)).join("");
-}
-function renderCourseBlock(c, writableBlocks){
-  const key=c.code+":"+c.section;
-  const hasMeetings=(c.meetings||[]).length>0;
-  const disabled = !hasMeetings;
-  const checked = !disabled && (banwebSchedule.selected.includes(key));
-  const res = banwebSchedule.results[key];
-  const meetings=(c.meetings||[]).map(m=>
-    `<div class="file-path">${esc(m.type||"")} · ${esc(m.days||"")} ${esc(m.time||"")}${m.room?` · ${esc(m.room)}`:""}${m.range?`<br>${esc(m.range)}`:""}${m.instr?` · ${esc(m.instr)}`:""}</div>`).join("");
-  return `
-  <div class="course-card" style="${disabled?'opacity:.6':''}">
-    <div class="course-name">
-      <label class="check" style="border:none;padding:0;background:transparent">
-        <input type="checkbox" data-key="${esc(key)}" ${checked?"checked":""} ${disabled?"disabled":""}> ${esc(c.code)} ${esc(c.section)} · ${esc(c.course)}
-      </label>
-      ${!hasMeetings?`<span class="sched-badge muted">${t("badge.no_time")}</span>`:schedBadge(res)}
-    </div>
-    ${meetings?`<div style="margin-top:4px">${meetings}</div>`:""}
-  </div>`;
-}
-function updateSelected(){
-  banwebSchedule.selected=[...document.querySelectorAll("#schedulePreview .check input:checked")].map(i=>i.dataset.key);
-  saveBanweb();
+  $("btnWriteSchedule").disabled = false;
+  const { lo, hi } = gridMinutes();
+  const HOUR_PX = 56, PX_PER_MIN = HOUR_PX / 60;
+  const rows = Math.round((hi - lo) / 60);
+  // 每列的块 HTML
+  const colBlocks = Array.from({length:7}, () => "");
+  const noFixed = [];
+  for (const c of data.courses) {
+    const key = c.code + ":" + c.section;
+    const color = scheduleColor(c.code);
+    const selected = banwebSchedule.selected.includes(key);
+    const res = banwebSchedule.results[key];
+    let placed = false;
+    for (const m of (c.meetings || [])) {
+      if (m.start_min == null || m.end_min == null) continue;
+      placed = true;
+      for (const d of (m.days_list || [])) {
+        const idx = DAY_INDEX[d];
+        if (idx == null) continue;
+        const top = (m.start_min - lo) * PX_PER_MIN;
+        const hgt = Math.max(20, (m.end_min - m.start_min) * PX_PER_MIN);
+        const badge = res ? schedBadge(res) : "";
+        colBlocks[idx] += `<div class="cal-block${selected ? " sel" : ""}" data-key="${esc(key)}"
+          style="top:${top}px;height:${hgt}px;background:${color}">
+          <div style="font-weight:600;color:#fff">${esc(c.code)} ${esc(c.section)}</div>
+          <div style="color:rgba(255,255,255,.9)">${fmtTime(m.start_min)}–${fmtTime(m.end_min)}</div>
+          ${m.room ? `<div style="color:rgba(255,255,255,.8)">${esc(m.room)}</div>` : ""}
+          ${badge}</div>`;
+      }
+    }
+    if (!placed) noFixed.push(c);
+  }
+  // 时间轴
+  let axis = `<div class="time-axis"><div class="corner"></div>`;
+  for (let r = 0; r < rows; r++) axis += `<div class="time-label">${fmtTime(lo + r * 60)}</div>`;
+  axis += `</div>`;
+  // 7 个列容器（day-body 相对定位，块绝对定位叠在其上）
+  let cols = "";
+  for (let d = 0; d < 7; d++) {
+    cols += `<div class="day-col"><div class="day-head">${t("wd."+d)}</div>
+      <div class="day-body" style="height:${rows * HOUR_PX}px">${colBlocks[d]}</div></div>`;
+  }
+  gridEl.innerHTML = `<div class="schedule-grid">${axis}${cols}</div>`;
+  noFixedEl.innerHTML = noFixed.length
+    ? `<div class="sub-label">${t("schedule.no_fixed")}</div>` +
+      noFixed.map(c => {
+        const key = c.code + ":" + c.section;
+        return `<div class="course-card" style="opacity:.6">
+          <label class="check" style="border:none;padding:0;background:transparent">
+            <input type="checkbox" data-key="${esc(key)}" disabled> ${esc(c.code)} ${esc(c.section)} · ${esc(c.course)}
+          </label>
+          <span class="sched-badge muted">${t("badge.no_time")}</span></div>`;
+      }).join("")
+    : "";
 }
 $("btnFetchSchedule").onclick = async () => {
   const term=$("selTerm").value;
@@ -399,11 +448,19 @@ $("btnFetchSchedule").onclick = async () => {
     setStatus(t("status.fetched", {n: r.courses.length}),"ok");
   });
 };
-$("schedulePreview").addEventListener("change", (e)=>{ if(e.target.matches("input[type=checkbox]")) updateSelected(); });
+$("schedulePreview").addEventListener("click", (e) => {
+  const blk = e.target.closest(".cal-block");
+  if (!blk) return;
+  const key = blk.dataset.key;
+  const sel = new Set(banwebSchedule.selected);
+  if (sel.has(key)) sel.delete(key); else sel.add(key);
+  banwebSchedule.selected = [...sel];
+  saveBanweb(); renderSchedule();
+});
 $("btnWriteSchedule").onclick = async () => {
   const cal=$("selSchedCalendar").value;
   if(!cal){ setStatus(t("status.need_sched_calendar"),"err"); return; }
-  const selected=[...document.querySelectorAll("#schedulePreview .check input:checked")].map(i=>i.dataset.key);
+  const selected = banwebSchedule.selected;
   if(!selected.length){ setStatus(t("status.no_sched"),"err"); return; }
   const amVal = $("selSchedAlert").value ? Number($("selSchedAlert").value) : null;
   await withBusy(t("status.syncing_sched", {n: selected.length}), $("btnWriteSchedule"), async ()=>{
