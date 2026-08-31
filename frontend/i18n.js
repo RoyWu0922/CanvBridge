@@ -150,6 +150,9 @@ const I18N = {
     "detail.summary_label": "AI 总结",
     "detail.summarize_fail": "总结失败：",
     "status.assignments_fail": "加载作业失败：",
+    "btn.load_assignments": "加载作业 due",
+    "status.loading_assignments": "正在加载作业 due…",
+    "status.assignments_loaded": "已加载作业 due：{n} 门课程",
   },
   en: {
     "app.title": "Canvas Course Assistant",
@@ -302,6 +305,9 @@ const I18N = {
     "detail.summary_label": "AI summary",
     "detail.summarize_fail": "Summarize failed: ",
     "status.assignments_fail": "Failed to load assignments: ",
+    "btn.load_assignments": "Load due dates",
+    "status.loading_assignments": "Loading due dates…",
+    "status.assignments_loaded": "Loaded due dates for {n} courses",
   },
 };
 

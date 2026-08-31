@@ -516,6 +516,7 @@ function renderSchedule(){
   const rows = Math.round((hi - lo) / 60);
   // 每列的块 HTML
   const colBlocks = Array.from({length:7}, () => "");
+  const assignBlocks = Array.from({length:7}, () => "");
   const noFixed = [];
   for (const c of data.courses) {
     const key = c.code + ":" + c.section;
@@ -548,6 +549,25 @@ function renderSchedule(){
     }
     if (!placed) noFixed.push(c);
   }
+  // 作业 due 标注：按 due_at 的星期几落列，整块是 <a target="_blank"> 指向 Canvas 提交页
+  const courseNameById = {};
+  courseList.forEach(c => { courseNameById[c.id] = c.name; });
+  Object.entries(assignmentMarks).forEach(([cidStr, list]) => {
+    const cid = Number(cidStr);
+    if (!Array.isArray(list)) return;
+    const cname = courseNameById[cid] || `Course ${cid}`;
+    list.forEach(a => {
+      if (!a.due_at) return;                 // 无截止日期 → 不上日历
+      const due = new Date(a.due_at);
+      if (isNaN(due)) return;
+      const idx = (due.getDay() + 6) % 7;    // JS 周日=0 → 转 周一=0
+      assignBlocks[idx] += `<a class="assignment-mark" href="${esc(a.html_url || "")}"
+        target="_blank" rel="noopener"
+        title="${esc(a.name)} — ${t("announce.due")} ${fmtDue(a.due_at)}">
+        <span class="mark-course">${esc(cname)}</span> · <span class="mark-name">${esc(a.name)}</span>
+        <span class="mark-due">${esc(fmtDue(a.due_at))}</span></a>`;
+    });
+  });
   // 时间轴
   let axis = `<div class="time-axis"><div class="corner"></div>`;
   for (let r = 0; r < rows; r++) axis += `<div class="time-label">${fmtTime(lo + r * 60)}</div>`;
@@ -556,6 +576,7 @@ function renderSchedule(){
   let cols = "";
   for (let d = 0; d < 7; d++) {
     cols += `<div class="day-col"><div class="day-head">${t("wd."+d)}</div>
+      <div class="assign-strip">${assignBlocks[d]}</div>
       <div class="day-body" style="height:${rows * HOUR_PX}px">${colBlocks[d]}</div></div>`;
   }
   gridEl.innerHTML = `<div class="schedule-grid">${axis}${cols}</div>`;
@@ -582,6 +603,22 @@ $("btnFetchSchedule").onclick = async () => {
     saveBanweb();
     renderSchedule();
     setStatus(t("status.fetched", {n: r.courses.length}),"ok");
+  });
+};
+$("btnLoadAssignments").onclick = async () => {
+  const ids = selectedCourses();
+  if (!ids.length){ setStatus(t("status.need_course"), "err"); return; }
+  await withBusy(t("status.loading_assignments"), $("btnLoadAssignments"), async ()=>{
+    let r;
+    try { r = await ensureAssignments(ids); }
+    catch (err){ setStatus(t("status.assignments_fail") + (err.message || ""), "err"); return; }
+    renderSchedule();
+    const errCount = Object.keys((r && r.errors) || {}).length;
+    if (errCount)
+      setStatus(t("status.assignments_loaded", {n: ids.length - errCount}) +
+                " · " + t("status.assignments_fail") + errCount, "err");
+    else
+      setStatus(t("status.assignments_loaded", {n: ids.length}), "ok");
   });
 };
 $("schedulePreview").addEventListener("click", (e) => {
