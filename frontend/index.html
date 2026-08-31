@@ -110,7 +110,12 @@
       <label class="field"><span data-i18n="settings.llm_base"></span><input id="llmBaseUrl" type="text" placeholder="https://api.deepseek.com/v1"></label>
       <label class="field"><span data-i18n="settings.llm_key"></span><input id="llmApiKey" type="password" placeholder="sk-…"></label>
       <label class="field"><span data-i18n="settings.llm_model"></span><input id="llmModel" type="text" placeholder="deepseek-chat"></label>
-      <label class="field"><span data-i18n="settings.download_dir"></span><input id="downloadDir" type="text" placeholder="~/Downloads/Canvas课程文件"></label>
+      <div class="field"><span data-i18n="settings.download_dir"></span>
+        <div class="row" style="gap:8px">
+          <input id="downloadDir" type="text" placeholder="~/Downloads/Canvas课程文件" style="flex:1">
+          <button id="btnBrowseDir" type="button" class="btn btn-ghost" data-i18n="settings.browse_dir"></button>
+        </div>
+      </div>
     </div>
     <div style="margin-top:20px">
       <span class="eyebrow" data-i18n="settings.aims_heading"></span>

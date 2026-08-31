@@ -113,6 +113,13 @@ $("btnCloseSettings").onclick = closeSettings;
 $("settingsModal").querySelector(".modal-backdrop").addEventListener("click", closeSettings);
 document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("settingsModal").hidden) closeSettings(); });
 
+/* 下载目录：点「浏览」弹系统文件夹选择框，选中后直接填入（取消则无操作） */
+$("btnBrowseDir").onclick = async () => {
+  const r = await api("pick_dir");
+  if(r.ok && r.path){ $("downloadDir").value = r.path; saveSettings(); }
+  else if(!r.cancelled) setStatus(t("status.pick_dir_fail") + (r.error||""), "err");
+};
+
 /* AIMS 自动登录（账号密码存本机钥匙串，由后端代为登录） */
 let aimsAutoTried = false;   // 本次会话是否已尝试过自动登录（防 3s 轮询重复触发）
 async function refreshAimsUi(){

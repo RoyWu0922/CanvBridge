@@ -250,3 +250,11 @@ def add_reminder(list_name: str, title: str, due_iso: str, notes: str) -> None:
         "end tell"
     )
     _run(script)
+
+
+def pick_folder() -> str:
+    """弹 macOS 原生文件夹选择框，返回 POSIX 路径（无尾随斜杠）。
+
+    用户取消时 osascript 返回非 0（错误 -128），抛 AppleScriptError。
+    """
+    return _run("POSIX path of (choose folder)")

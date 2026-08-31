@@ -137,6 +137,23 @@ def reminder_lists():
         return {"ok": False, "error": str(exc)}
 
 
+@app.post("/api/pick_dir")
+def pick_dir():
+    """弹 macOS 原生文件夹选择框，返回所选 POSIX 路径。
+
+    用户取消 → {"ok": False, "cancelled": True}（前端当无事发生）。
+    """
+    try:
+        return {"ok": True, "path": apple_script.pick_folder()}
+    except apple_script.AppleScriptError as exc:
+        msg = str(exc).lower()
+        if "cancel" in msg or "-128" in msg:
+            return {"ok": False, "cancelled": True}
+        return {"ok": False, "error": str(exc)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 @app.post("/api/sync_announcements")
 def sync(req: SyncRequest):
     try:

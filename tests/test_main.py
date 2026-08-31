@@ -388,3 +388,27 @@ def test_banweb_auto_login_no_credentials(monkeypatch):
     r = client.post("/api/banweb/auto_login", json={})
     assert r.json()["ok"] is False
     assert "尚未保存" in r.json()["error"]
+
+
+def test_pick_dir_ok(monkeypatch):
+    monkeypatch.setattr(apple_script, "pick_folder", lambda: "/Users/me/Downloads")
+    r = client.post("/api/pick_dir", json={})
+    assert r.json() == {"ok": True, "path": "/Users/me/Downloads"}
+
+
+def test_pick_dir_cancelled(monkeypatch):
+    def cancel():
+        raise apple_script.AppleScriptError("execution error: User canceled. (-128)")
+    monkeypatch.setattr(apple_script, "pick_folder", cancel)
+    r = client.post("/api/pick_dir", json={})
+    assert r.json() == {"ok": False, "cancelled": True}
+
+
+def test_pick_dir_error(monkeypatch):
+    def boom():
+        raise apple_script.AppleScriptError("not authorized")
+    monkeypatch.setattr(apple_script, "pick_folder", boom)
+    r = client.post("/api/pick_dir", json={})
+    assert r.json()["ok"] is False
+    assert r.json().get("cancelled") is not True
+    assert "not authorized" in r.json()["error"]
