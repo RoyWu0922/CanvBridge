@@ -12,6 +12,11 @@ _SYSTEM = (
     "Respond only with the requested JSON object, never with markdown."
 )
 
+_SYSTEM_TEXT = (
+    "You are a helpful academic assistant. Respond with concise plain text, "
+    "never markdown, never JSON."
+)
+
 def _schema_instructions(language: str) -> str:
     lang = "Chinese" if language == "zh" else "English"
     return (
@@ -49,17 +54,19 @@ def _build_prompt(course_name: str, announcements: list[dict], language: str = "
     return "\n".join(lines)
 
 
-def _call_chat(base_url: str, api_key: str, model: str, prompt: str) -> str:
+def _call_chat(base_url: str, api_key: str, model: str, prompt: str,
+               json_mode: bool = True) -> str:
     url = base_url.rstrip("/") + "/chat/completions"
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": _SYSTEM},
+            {"role": "system", "content": _SYSTEM if json_mode else _SYSTEM_TEXT},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.2,
-        "response_format": {"type": "json_object"},
     }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
     resp = requests.post(
         url, json=payload,
         headers={"Authorization": f"Bearer {api_key}"}, timeout=120,
@@ -109,3 +116,32 @@ def extract_course_summary(base_url: str, api_key: str, model: str,
         except (requests.RequestException, ValueError, KeyError, TypeError, RuntimeError):
             continue
     return fallback
+
+
+_MAX_SYLLABUS = 20000
+
+
+def summarize_syllabus(base_url: str, api_key: str, model: str,
+                       course_name: str, syllabus_text: str,
+                       language: str = "zh") -> str:
+    """返回 syllabus 的中/英要点总结（纯文本）。
+
+    syllabus 过长截断防 token 超限；失败重试一次，仍失败抛异常
+    （由端点转 ok:false，不静默降级成原文）。
+    """
+    if len(syllabus_text) > _MAX_SYLLABUS:
+        syllabus_text = syllabus_text[:_MAX_SYLLABUS] + "\n…(已截断)"
+    lang = "Chinese" if language == "zh" else "English"
+    prompt = (
+        f'You are an academic assistant. Summarize the syllabus for "{course_name}" '
+        f"as concise bullet points in {lang}. Cover: course objectives, grading "
+        f"scheme, key deadlines and assessments, and anything a student must know.\n\n"
+        f"Syllabus:\n{syllabus_text}"
+    )
+    last_err: Exception | None = None
+    for _attempt in range(2):
+        try:
+            return _call_chat(base_url, api_key, model, prompt, json_mode=False).strip()
+        except Exception as exc:
+            last_err = exc
+    raise RuntimeError(f"Syllabus 总结失败: {last_err}") from last_err
