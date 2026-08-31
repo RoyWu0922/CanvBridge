@@ -89,6 +89,77 @@ $("btnCloseSettings").onclick = closeSettings;
 $("settingsModal").querySelector(".modal-backdrop").addEventListener("click", closeSettings);
 document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("settingsModal").hidden) closeSettings(); });
 
+/* 课程详情弹层 */
+let assignmentMarks = {};        // {course_id: [未截止作业]}，周视图标注与详情共用
+let detailCourse = null;         // {id, name, syllabus_text, teachers}
+let detailAssignments = [];      // 当前打开课程的作业列表
+
+function fmtDue(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  return `${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")} ` +
+         `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+}
+async function ensureAssignments(courseIds){
+  const missing = courseIds.filter(id => !(id in assignmentMarks));
+  if (!missing.length) return null;                       // 已加载 → 不动
+  const s = settings();
+  const r = await api("assignments", { canvas_url:s.canvas_url, canvas_token:s.canvas_token,
+                                       course_ids:missing });
+  if (r.ok !== true) throw new Error(r.error || t("status.assignments_fail"));
+  Object.keys(r.by_course || {}).forEach(k => { assignmentMarks[Number(k)] = r.by_course[k] || []; });
+  return r;                                               // 含 errors，供调用方提示
+}
+function matchCourseByCode(code){
+  const norm = s => String(s).toUpperCase().replace(/\s+/g, "");
+  const target = norm(code);
+  if (!target) return null;
+  return courseList.find(c => norm(c.name).includes(target)) || null;
+}
+function closeDetail(){ $("detailModal").hidden = true; }
+$("btnCloseDetail").onclick = closeDetail;
+$("detailModal").querySelector(".modal-backdrop").addEventListener("click", closeDetail);
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("detailModal").hidden) closeDetail(); });
+
+async function openCourseDetail(courseId){
+  const s = settings();
+  const r = await api("course_detail", { canvas_url:s.canvas_url, canvas_token:s.canvas_token,
+                                         course_id:courseId });
+  if (r.ok !== true){ setStatus(t("detail.load_fail") + (r.error || ""), "err"); return; }
+  detailCourse = r.course;
+  try { await ensureAssignments([courseId]); }            // 详情作业区数据
+  catch (e) { /* 详情仍展示，作业区留空 */ }
+  detailAssignments = Array.isArray(assignmentMarks[courseId]) ? assignmentMarks[courseId] : [];
+  renderDetail();
+  $("detailModal").hidden = false;
+}
+function renderDetail(){
+  if (!detailCourse) return;
+  const c = detailCourse;
+  const profs = (c.teachers || []).map(x => `<span class="chip">${esc(x)}</span>`).join("");
+  const profLine = profs ? `<div class="detail-prof">${t("detail.teachers")}: ${profs}</div>` : "";
+  const syl = c.syllabus_text
+    ? `<div class="detail-section"><div class="sub-label">${t("detail.syllabus")}</div>
+         <div class="detail-syllabus">${esc(c.syllabus_text)}</div>
+         <button id="btnSummarize" class="btn btn-ghost">${t("detail.summarize")}</button></div>`
+    : `<div class="detail-section"><div class="sub-label">${t("detail.syllabus")}</div>
+         <div class="muted">${t("detail.no_syllabus")}</div></div>`;
+  const asg = detailAssignments.length
+    ? detailAssignments.map(a => `
+        <a class="assignment-row" href="${esc(a.html_url || "")}" target="_blank" rel="noopener">
+          <div class="item-title">${esc(a.name)}</div>
+          <div class="file-path">${a.due_at
+              ? t("announce.due") + " " + esc(fmtDue(a.due_at))
+              : t("detail.no_due")}${a.points_possible != null ? ` · ${esc(String(a.points_possible))} pts` : ""}</div>
+        </a>`).join("")
+    : `<div class="muted">${t("detail.no_assignments")}</div>`;
+  $("detailBody").innerHTML = `
+    <div class="detail-head">${esc(c.name)}</div>
+    ${profLine}
+    ${syl}
+    <div class="detail-section"><div class="sub-label">${t("detail.assignments")}</div>${asg}</div>`;
+}
+
 /* 标签页 */
 function switchTab(target){
   $$(".tab").forEach(x=>{ const on=x.dataset.target===target; x.classList.toggle("active",on); x.setAttribute("aria-selected",on); });
@@ -194,7 +265,9 @@ function renderSummaries(){
     const rmTotal=(summaryResults[c._orig].reminders||[]).length;
     return `
     <div class="course-card">
-      <div class="course-name">${esc(c.course_name)}</div>
+      <div class="course-name">${c.course_id
+          ? `<a href="#" class="course-detail-link" data-cid="${c.course_id}">${esc(c.course_name)}</a>`
+          : esc(c.course_name)}</div>
       ${c.warning?`<div style="color:var(--err);font-size:12.5px;margin-bottom:6px">${esc(c.warning)}</div>`:""}
       <div class="summary">${esc(c.summary)}</div>
       <div class="sub-label">${t("announce.calendar_events")}（${evCount(evs.length,evTotal)}）</div>
@@ -214,6 +287,12 @@ $("filterStart").addEventListener("change", refreshFilterState);
 $("filterEnd").addEventListener("change", refreshFilterState);
 $("selAnnounceCourse").addEventListener("change", renderSummaries);
 
+$("summaries").addEventListener("click", (e) => {
+  const link = e.target.closest(".course-detail-link");
+  if (!link) return;
+  e.preventDefault();
+  openCourseDetail(Number(link.dataset.cid));
+});
 $("btnWriteCalendar").onclick = async () => {
   const cal=$("selCalendar").value;
   const amVal = $("selAlert").value ? Number($("selAlert").value) : null;
@@ -416,6 +495,11 @@ function renderSchedule(){
     const color = scheduleColor(c.code);
     const selected = banwebSchedule.selected.includes(key);
     const res = banwebSchedule.results[key];
+    const canvas = matchCourseByCode(c.code);
+    const detailBtn = canvas
+      ? `<button class="cal-detail" data-cid="${canvas.id}"
+           aria-label="${esc(t("detail.open"))}" title="${esc(t("detail.open"))}">ⓘ</button>`
+      : "";
     let placed = false;
     for (const m of (c.meetings || [])) {
       if (m.start_min == null || m.end_min == null) continue;
@@ -428,6 +512,7 @@ function renderSchedule(){
         const badge = res ? schedBadge(res) : "";
         colBlocks[idx] += `<div class="cal-block${selected ? " sel" : ""}" data-key="${esc(key)}"
           style="top:${top}px;height:${hgt}px;background:${color}">
+          ${detailBtn}
           <div style="font-weight:600;color:#fff">${esc(c.code)} ${esc(c.section)}</div>
           <div style="color:rgba(255,255,255,.9)">${fmtTime(m.start_min)}–${fmtTime(m.end_min)}</div>
           ${m.room ? `<div style="color:rgba(255,255,255,.8)">${esc(m.room)}</div>` : ""}
@@ -473,6 +558,12 @@ $("btnFetchSchedule").onclick = async () => {
   });
 };
 $("schedulePreview").addEventListener("click", (e) => {
+  const detailBtn = e.target.closest(".cal-detail");
+  if (detailBtn) {
+    e.preventDefault(); e.stopPropagation();
+    openCourseDetail(Number(detailBtn.dataset.cid));
+    return;
+  }
   const blk = e.target.closest(".cal-block");
   if (!blk) return;
   const key = blk.dataset.key;

@@ -135,6 +135,21 @@ const I18N = {
     "status.need_course": "请先勾选课程",
     "status.no_file": "没有选中要下载的文件",
     "status.banweb_need_login_manual": "已退登：请在弹出的 Chrome 窗口登录一次，登录后自动继续…",
+    "detail.title": "课程详情",
+    "detail.close": "关闭",
+    "detail.teachers": "教授",
+    "detail.syllabus": "Syllabus",
+    "detail.no_syllabus": "该课程暂无 syllabus",
+    "detail.assignments": "作业",
+    "detail.no_assignments": "暂无未截止作业",
+    "detail.no_due": "无截止日期",
+    "detail.open": "查看详情",
+    "detail.load_fail": "加载课程详情失败：",
+    "detail.summarize": "AI 总结",
+    "detail.summarizing": "总结中…",
+    "detail.summary_label": "AI 总结",
+    "detail.summarize_fail": "总结失败：",
+    "status.assignments_fail": "加载作业失败：",
   },
   en: {
     "app.title": "Canvas Course Assistant",
@@ -272,6 +287,21 @@ const I18N = {
     "status.need_course": "Please select courses first",
     "status.no_file": "No files selected",
     "status.banweb_need_login_manual": "Signed out: sign in once in the Chrome window that opened, then it resumes automatically…",
+    "detail.title": "Course details",
+    "detail.close": "Close",
+    "detail.teachers": "Instructors",
+    "detail.syllabus": "Syllabus",
+    "detail.no_syllabus": "No syllabus for this course",
+    "detail.assignments": "Assignments",
+    "detail.no_assignments": "No upcoming assignments",
+    "detail.no_due": "No due date",
+    "detail.open": "View details",
+    "detail.load_fail": "Failed to load course details: ",
+    "detail.summarize": "AI summary",
+    "detail.summarizing": "Summarizing…",
+    "detail.summary_label": "AI summary",
+    "detail.summarize_fail": "Summarize failed: ",
+    "status.assignments_fail": "Failed to load assignments: ",
   },
 };
 
@@ -297,5 +327,6 @@ function applyLang() {
     }
   }
   renderSummaries(); renderFiles(); renderSchedule();
+  if (typeof renderDetail === "function") renderDetail();   // 详情弹层语言切换后重渲
   refreshPill();
 }
