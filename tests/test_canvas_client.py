@@ -153,3 +153,39 @@ def test_download_file_writes(tmp_path, monkeypatch):
     dest = tmp_path / "out" / "a.pdf"
     canvas_client.download_file("https://x", "tok", "http://x/files/9/download", str(dest))
     assert dest.read_bytes() == b"abcdef"
+
+
+def test_get_course_maps_fields(monkeypatch):
+    """单课程 GET 返回 dict（非列表），须直接取 resp.json()，teachers 走 users 端点。"""
+    course = {"id": 42, "name": "CS 101",
+              "syllabus_body": "<p>Welcome to <b>CS 101</b></p>"}
+
+    class _CtxSession:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, url, params=None, headers=None, **kwargs):
+            return _Resp(course)
+
+    monkeypatch.setattr(requests, "Session", lambda: _CtxSession())
+    monkeypatch.setattr(canvas_client, "_paginate",
+                        lambda s, u, p, t: [{"name": "Alice"}, {"name": "Bob"}])
+    result = canvas_client.get_course("https://x.instructure.com", "tok", 42)
+    assert result["id"] == 42
+    assert result["name"] == "CS 101"
+    assert result["syllabus_text"] == "Welcome to CS 101"   # strip_html 去标签
+    assert result["teachers"] == ["Alice", "Bob"]
+
+
+def test_get_course_no_syllabus(monkeypatch):
+    """syllabus_body 缺失（空课程）→ syllabus_text 空串，teachers 空列表。"""
+    class _CtxSession:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, url, params=None, headers=None, **kwargs):
+            return _Resp({"id": 42, "name": "CS 101"})
+
+    monkeypatch.setattr(requests, "Session", lambda: _CtxSession())
+    monkeypatch.setattr(canvas_client, "_paginate", lambda s, u, p, t: [])
+    result = canvas_client.get_course("https://x.instructure.com", "tok", 42)
+    assert result["syllabus_text"] == ""
+    assert result["teachers"] == []

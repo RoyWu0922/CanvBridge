@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone  # 放到文件顶部现有 import 区
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,38 @@ def list_courses(canvas_url: str, token: str) -> list[dict]:
         {"id": c["id"], "name": c.get("name", f"Course {c['id']}")}
         for c in data
     ]
+
+
+def get_course(canvas_url: str, token: str, course_id: int) -> dict:
+    """返回单课程详情 {id, name, syllabus_text, teachers}。
+
+    syllabus_body 用 strip_html 转纯文本（前端只渲染纯文本，不碰原始 HTML）。
+    teachers 取 TeacherEnrollment + TaEnrollment 的 user 名字。
+    syllabus 缺失（空课程）返回空串；认证错误抛 CanvasError。
+    """
+    base = canvas_url.rstrip("/")
+    with requests.Session() as s:
+        resp = s.get(
+            f"{base}/api/v1/courses/{course_id}",
+            params={"include[]": "syllabus_body"}, headers=_headers(token), timeout=30,
+        )
+        if resp.status_code == 401:
+            raise CanvasError("Canvas token 无效或已过期 (HTTP 401)")
+        if resp.status_code == 403:
+            raise CanvasError("没有权限访问该资源 (HTTP 403)")
+        resp.raise_for_status()
+        course = resp.json()
+        teachers = _paginate(
+            s, f"{base}/api/v1/courses/{course_id}/users",
+            {"enrollment_type[]": ["TeacherEnrollment", "TaEnrollment"], "per_page": 100},
+            token,
+        )
+    return {
+        "id": course.get("id", course_id),
+        "name": course.get("name", f"Course {course_id}"),
+        "syllabus_text": strip_html(course.get("syllabus_body", "")),
+        "teachers": [t.get("name", "") for t in teachers if t.get("name")],
+    }
 
 
 class _TextExtractor(HTMLParser):
