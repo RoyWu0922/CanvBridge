@@ -79,6 +79,12 @@
         <button id="btnLoadAssignments" class="btn btn-ghost" data-i18n="btn.load_assignments"></button>
         <label class="field"><span data-i18n="schedule.professor"></span><select id="selProfessor"></select></label>
       </div>
+      <div class="week-nav" id="weekNav">
+        <button id="btnWeekPrev" class="btn btn-ghost" data-i18n-aria="week.prev" aria-label="上一周">◀</button>
+        <span id="weekRange" class="week-range"></span>
+        <button id="btnWeekNext" class="btn btn-ghost" data-i18n-aria="week.next" aria-label="下一周">▶</button>
+        <button id="btnWeekToday" class="btn btn-ghost" data-i18n="week.today"></button>
+      </div>
       <div id="schedulePreview"></div>
       <div id="scheduleNoFixed"></div>
       <div class="write-bar">

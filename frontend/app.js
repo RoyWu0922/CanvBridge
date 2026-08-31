@@ -81,6 +81,21 @@ function fillCourseFilter(selId, names){
 }
 function esc(t){ const d=document.createElement("div"); d.textContent = t==null?"":String(t); return d.innerHTML; }
 function escAttr(t){ return esc(t).replace(/"/g, "&quot;"); }
+/* 地点简称：AIMS 里的楼宇代码 + 房间号（未收录的保持原样，显示完整名） */
+const BUILDING_SHORT = {
+  "Mong Man Wai Building": "MMW",
+  "Li Dak Sum Yip Yio Chin A Bldg": "AC1",
+  "Yeung Kin Man Acad Building": "AC3",
+};
+function shortRoom(room){
+  if (!room) return "";
+  const s = String(room).trim();
+  const lower = s.toLowerCase();
+  for (const [full, code] of Object.entries(BUILDING_SHORT)) {
+    if (lower.startsWith(full.toLowerCase())) return code + s.slice(full.length);
+  }
+  return s;
+}
 function fillProfessorFilter(){
   const sel = $("selProfessor");
   if (!sel) return;
@@ -88,9 +103,18 @@ function fillProfessorFilter(){
   sel.innerHTML = "";
   const all = document.createElement("option");
   all.value = ""; all.textContent = t("schedule.prof_all"); sel.appendChild(all);
-  const profs = [...new Set((banwebSchedule.courses || [])
-    .map(c => (c.primary_instructor || "").trim()).filter(Boolean))];
-  profs.forEach(p => { const o = document.createElement("option"); o.value = o.textContent = p; sel.appendChild(o); });
+  // 每个「课程代码 + 教授」一个选项（同教授教多门课则各一项），value 编码两者
+  const seen = new Set();
+  (banwebSchedule.courses || []).forEach(c => {
+    const p = (c.primary_instructor || "").trim();
+    if (!p) return;
+    const key = c.code + "" + p;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const o = document.createElement("option");
+    o.value = key; o.textContent = `${c.code} · ${p}`;
+    sel.appendChild(o);
+  });
   const un = document.createElement("option");
   un.value = "__none__"; un.textContent = t("schedule.prof_unspecified"); sel.appendChild(un);
   sel.value = prev && [...sel.options].some(o => o.value === prev) ? prev : "";
@@ -106,8 +130,10 @@ document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("settingsMod
 
 /* 课程详情弹层 */
 let assignmentMarks = {};        // {course_id: [未截止作业]}，周视图标注与详情共用
+let showAssignments = true;      // 周视图作业标注显隐开关（隐藏时数据保留）
 let detailCourse = null;         // {id, name, syllabus_text, teachers}
 let detailAssignments = [];      // 当前打开课程的作业列表
+let detailMeetings = [];         // 从课表打开的详情：该课程的 Banweb meetings（含完整地点）
 let detailSummary = "";          // 已生成的 AI 总结（切语言后仍显示）
 
 function fmtDue(iso) {
@@ -137,13 +163,14 @@ $("btnCloseDetail").onclick = closeDetail;
 $("detailModal").querySelector(".modal-backdrop").addEventListener("click", closeDetail);
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("detailModal").hidden) closeDetail(); });
 
-async function openCourseDetail(courseId){
+async function openCourseDetail(courseId, banwebMeetings){
   const s = settings();
   const r = await api("course_detail", { canvas_url:s.canvas_url, canvas_token:s.canvas_token,
                                          course_id:courseId });
   if (r.ok !== true){ setStatus(t("detail.load_fail") + (r.error || ""), "err"); return; }
   detailCourse = r.course;
   detailSummary = "";
+  detailMeetings = Array.isArray(banwebMeetings) ? banwebMeetings : [];
   try { await ensureAssignments([courseId]); }            // 详情作业区数据
   catch (e) { /* 详情仍展示，作业区留空 */ }
   detailAssignments = Array.isArray(assignmentMarks[courseId]) ? assignmentMarks[courseId] : [];
@@ -155,6 +182,14 @@ function renderDetail(){
   const c = detailCourse;
   const profs = (c.teachers || []).map(x => `<span class="chip">${esc(x)}</span>`).join("");
   const profLine = profs ? `<div class="detail-prof">${t("detail.teachers")}: ${profs}</div>` : "";
+  const loc = detailMeetings.length
+    ? `<div class="detail-section"><div class="sub-label">${t("detail.location")}</div>` +
+      detailMeetings.map(m => `
+        <div class="detail-loc">
+          <div class="item-title">${esc(m.room || "")}</div>
+          <div class="file-path">${esc([m.type, m.days, m.time, m.range].filter(Boolean).join(" · "))}</div>
+        </div>`).join("") + `</div>`
+    : "";
   const summaryHtml = detailSummary
     ? `<div class="detail-summary"><div class="sub-label">${t("detail.summary_label")}</div>
          ${esc(detailSummary)}</div>`
@@ -178,6 +213,7 @@ function renderDetail(){
   $("detailBody").innerHTML = `
     <div class="detail-head">${esc(c.name)}</div>
     ${profLine}
+    ${loc}
     ${syl}
     <div class="detail-section"><div class="sub-label">${t("detail.assignments")}</div>${asg}</div>`;
 }
@@ -519,6 +555,15 @@ function gridMinutes(){
 function fmtTime(min){ const h = Math.floor(min/60), m = min%60;
   return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`; }
 const DAY_INDEX = { M:0, T:1, W:2, R:3, F:4, S:5, U:6 };
+function startOfWeek(d){
+  const x = new Date(d);
+  const day = (x.getDay() + 6) % 7;   // 周一=0
+  x.setDate(x.getDate() - day);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function fmtMD(d){ return `${d.getMonth()+1}/${d.getDate()}`; }
+let schedWeekStart = startOfWeek(new Date());   // 当前浏览周的周一（本地时间）
 function renderSchedule(){
   const gridEl = $("schedulePreview"), noFixedEl = $("scheduleNoFixed");
   const data = banwebSchedule;
@@ -531,12 +576,22 @@ function renderSchedule(){
   }
   $("btnWriteSchedule").disabled = false;
   const { lo, hi } = gridMinutes();
+  // 当前浏览周的周一 0 点 → 下周一 0 点（作业 due 只在所属周显示）
+  const wkStart = schedWeekStart.getTime();
+  const wkEnd = wkStart + 7 * 86400000;
+  if ($("weekRange")) {
+    const we = new Date(wkStart); we.setDate(we.getDate() + 6);
+    $("weekRange").textContent = `${fmtMD(new Date(wkStart))} – ${fmtMD(we)}`;
+  }
   fillProfessorFilter();
   const profFilter = $("selProfessor") ? $("selProfessor").value : "";
   const visible = profFilter
     ? data.courses.filter(c => {
         const p = (c.primary_instructor || "").trim();
-        return profFilter === "__none__" ? p === "" : p === profFilter;
+        if (profFilter === "__none__") return p === "";
+        const sep = profFilter.indexOf("");
+        if (sep < 0) return p === profFilter;          // 兼容旧值
+        return c.code === profFilter.slice(0, sep) && p === profFilter.slice(sep + 1);
       })
     : data.courses;
   const HOUR_PX = 56, PX_PER_MIN = HOUR_PX / 60;
@@ -553,7 +608,7 @@ function renderSchedule(){
     const res = banwebSchedule.results[key];
     const canvas = matchCourseByCode(c.code);
     const detailBtn = canvas
-      ? `<button class="cal-detail" data-cid="${canvas.id}"
+      ? `<button class="cal-detail" data-cid="${canvas.id}" data-code="${escAttr(c.code)}"
            aria-label="${esc(t("detail.open"))}" title="${esc(t("detail.open"))}">ⓘ</button>`
       : "";
     let placed = false;
@@ -571,35 +626,40 @@ function renderSchedule(){
           ${detailBtn}
           <div style="font-weight:600;color:#fff">${esc(c.code)} ${esc(c.section)}</div>
           <div style="color:rgba(255,255,255,.9)">${fmtTime(m.start_min)}–${fmtTime(m.end_min)}</div>
-          ${m.room ? `<div style="color:rgba(255,255,255,.8)">${esc(m.room)}</div>` : ""}
+          ${m.room ? `<div style="color:rgba(255,255,255,.8)">${esc(shortRoom(m.room))}</div>` : ""}
           ${badge}</div>`;
       }
     }
     if (!placed) noFixed.push(c);
   }
-  // 作业 due 标注：按 due_at 的星期几落列，整块是 <a target="_blank"> 指向 Canvas 提交页
+  // 作业 due 标注：只在所属周显示，整块是 <a target="_blank"> 指向 Canvas 提交页
   const courseNameById = {};
   courseList.forEach(c => { courseNameById[c.id] = c.name; });
-  Object.entries(assignmentMarks).forEach(([cidStr, list]) => {
-    const cid = Number(cidStr);
-    if (!Array.isArray(list)) return;
-    const cname = courseNameById[cid] || `Course ${cid}`;
-    list.forEach(a => {
-      if (!a.due_at) return;                 // 无截止日期 → 不上日历
-      const due = new Date(a.due_at);
-      if (isNaN(due)) return;
-      const idx = (due.getDay() + 6) % 7;    // JS 周日=0 → 转 周一=0
-      assignBlocks[idx] += `<a class="assignment-mark" href="${escAttr(a.html_url || "")}"
-        target="_blank" rel="noopener"
-        title="${escAttr(a.name)} — ${t("announce.due")} ${fmtDue(a.due_at)}">
-        <span class="mark-course">${esc(cname)}</span> · <span class="mark-name">${esc(a.name)}</span>
-        <span class="mark-due">${esc(fmtDue(a.due_at))}</span></a>`;
-      markCount[idx]++;
+  if (showAssignments) {
+    Object.entries(assignmentMarks).forEach(([cidStr, list]) => {
+      const cid = Number(cidStr);
+      if (!Array.isArray(list)) return;
+      const cname = courseNameById[cid] || `Course ${cid}`;
+      list.forEach(a => {
+        if (!a.due_at) return;                 // 无截止日期 → 不上日历
+        const due = new Date(a.due_at);
+        if (isNaN(due)) return;
+        const dueT = due.getTime();
+        if (dueT < wkStart || dueT >= wkEnd) return;   // 不在当前浏览周 → 不显示
+        const idx = (due.getDay() + 6) % 7;    // JS 周日=0 → 转 周一=0
+        assignBlocks[idx] += `<a class="assignment-mark" href="${escAttr(a.html_url || "")}"
+          target="_blank" rel="noopener"
+          title="${escAttr(cname)} — ${escAttr(a.name)}">
+          <span class="mark-course">${esc(cname)}</span>
+          <span class="mark-name">${esc(a.name)}</span>
+          <span class="mark-due">${esc(t("announce.due"))} ${esc(fmtDue(a.due_at))}</span></a>`;
+        markCount[idx]++;
+      });
     });
-  });
-  // 统一琥珀条高度：任一列有标注时，7 列 + 时间轴都预留同高，保证时间轴对齐
+  }
+  // 统一琥珀条高度：任一列有标注时，7 列 + 时间轴都预留同高（每张作业卡 ~68px），保证时间轴对齐
   const maxMarks = Math.max(...markCount);
-  const stripH = maxMarks ? Math.round(6 + 21.175 * maxMarks) : 0;
+  const stripH = maxMarks ? Math.round(6 + 68 * maxMarks) : 0;
   // 时间轴
   let axis = `<div class="time-axis"><div class="corner"></div>`;
   if (stripH > 0) axis += `<div class="axis-strip" style="height:${stripH}px"></div>`;
@@ -611,11 +671,13 @@ function renderSchedule(){
     const strip = stripH > 0
       ? `<div class="assign-strip" style="height:${stripH}px">${assignBlocks[d]}</div>`
       : "";
-    cols += `<div class="day-col"><div class="day-head">${t("wd."+d)}</div>
+    const dd = new Date(wkStart); dd.setDate(dd.getDate() + d);
+    cols += `<div class="day-col"><div class="day-head">${t("wd."+d)} ${fmtMD(dd)}</div>
       ${strip}
       <div class="day-body" style="height:${rows * HOUR_PX}px">${colBlocks[d]}</div></div>`;
   }
   gridEl.innerHTML = `<div class="schedule-grid">${axis}${cols}</div>`;
+  updateAssignBtn();
   noFixedEl.innerHTML = noFixed.length
     ? `<div class="sub-label">${t("schedule.no_fixed")}</div>` +
       noFixed.map(c => {
@@ -642,13 +704,27 @@ $("btnFetchSchedule").onclick = async () => {
     setStatus(t("status.fetched", {n: r.courses.length}),"ok");
   });
 };
+function hasAssignData(){
+  return Object.keys(assignmentMarks).some(k => (assignmentMarks[k] || []).length);
+}
+function updateAssignBtn(){
+  const b = $("btnLoadAssignments");
+  if (!b) return;
+  b.textContent = (hasAssignData() && showAssignments) ? t("btn.hide_assignments") : t("btn.load_assignments");
+}
 $("btnLoadAssignments").onclick = async () => {
+  if (hasAssignData()) {              // 已加载 → 只切换显隐，不重新拉取
+    showAssignments = !showAssignments;
+    renderSchedule();
+    return;
+  }
   const ids = selectedCourses();
   if (!ids.length){ setStatus(t("status.need_course"), "err"); return; }
   await withBusy(t("status.loading_assignments"), $("btnLoadAssignments"), async ()=>{
     let r;
     try { r = await ensureAssignments(ids); }
     catch (err){ setStatus(t("status.assignments_fail") + (err.message || ""), "err"); return; }
+    showAssignments = true;
     renderSchedule();
     const errCount = Object.keys((r && r.errors) || {}).length;
     if (errCount)
@@ -662,7 +738,9 @@ $("schedulePreview").addEventListener("click", (e) => {
   const detailBtn = e.target.closest(".cal-detail");
   if (detailBtn) {
     e.preventDefault(); e.stopPropagation();
-    openCourseDetail(Number(detailBtn.dataset.cid));
+    const code = detailBtn.dataset.code;
+    const bc = code ? banwebSchedule.courses.find(c => c.code === code) : null;
+    openCourseDetail(Number(detailBtn.dataset.cid), bc ? (bc.meetings || []) : []);
     return;
   }
   const blk = e.target.closest(".cal-block");
@@ -673,6 +751,9 @@ $("schedulePreview").addEventListener("click", (e) => {
   banwebSchedule.selected = [...sel];
   saveBanweb(); renderSchedule();
 });
+$("btnWeekPrev").addEventListener("click", () => { schedWeekStart.setDate(schedWeekStart.getDate() - 7); renderSchedule(); });
+$("btnWeekNext").addEventListener("click", () => { schedWeekStart.setDate(schedWeekStart.getDate() + 7); renderSchedule(); });
+$("btnWeekToday").addEventListener("click", () => { schedWeekStart = startOfWeek(new Date()); renderSchedule(); });
 $("btnWriteSchedule").onclick = async () => {
   const cal=$("selSchedCalendar").value;
   if(!cal){ setStatus(t("status.need_sched_calendar"),"err"); return; }
