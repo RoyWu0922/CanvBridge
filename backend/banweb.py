@@ -225,7 +225,9 @@ def enrich_meetings(courses: list[dict]) -> list[dict]:
                 (sh, sm), (eh, em) = parse_time_range(m["time"])
                 m2["start_min"] = sh * 60 + sm
                 m2["end_min"] = eh * 60 + em
-                m2["days_list"] = [d for d in m.get("days", "") if d in _WEEKDAY]
+                days = m.get("days", "")
+                if days and all(ch in _WEEKDAY for ch in days):
+                    m2["days_list"] = list(days)
             except BanwebError:
                 pass
             meetings.append(m2)

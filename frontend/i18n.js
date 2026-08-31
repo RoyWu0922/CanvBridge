@@ -288,7 +288,14 @@ function applyLang() {
   $$("[data-i18n-ph]").forEach(el => { el.placeholder = t(el.dataset.i18nPh); });
   $$("[data-i18n-aria]").forEach(el => { el.setAttribute("aria-label", t(el.dataset.i18nAria)); });
   const langBtn = $("btnLang"); if (langBtn) langBtn.textContent = LANG() === "zh" ? "EN" : "中";
-  if (typeof fillAlert === "function") { fillAlert("selAlert"); fillAlert("selSchedAlert"); }
+  if (typeof fillAlert === "function") {
+    for (const id of ["selAlert", "selSchedAlert"]) {
+      const el = $(id);
+      const prev = el ? el.value : "";
+      fillAlert(id);
+      if (el && prev && [...el.options].some(o => o.value === prev)) el.value = prev;
+    }
+  }
   renderSummaries(); renderFiles(); renderSchedule();
   refreshPill();
 }

@@ -173,8 +173,8 @@ $("btnSync").onclick = async () => {
 };
 function renderSummaries(){
   const f = filterVisible();
-  const courseSel = $("selAnnounceCourse").value;
   fillCourseFilter("selAnnounceCourse", summaryResults.map(c => c.course_name));
+  const courseSel = $("selAnnounceCourse").value;
   let src = summaryResults;
   if (courseSel) src = summaryResults.filter(c => c.course_name === courseSel);
   displayResults = src.map((c) => {
@@ -261,8 +261,8 @@ $("btnListFiles").onclick = async () => {
 };
 function renderFiles(){
   const filter=$("inpTypeFilter").value.toLowerCase().trim().replace(/^\./,"");
-  const courseSel = $("selFileCourse").value;
   fillCourseFilter("selFileCourse", fileCourses.map(c => c.name));
+  const courseSel = $("selFileCourse").value;
   const shown = fileCourses
     .filter(c => !courseSel || c.name === courseSel)
     .map(c => ({ ...c, _orig: fileCourses.indexOf(c), files:(c.files||[]).filter(f=>{
@@ -419,10 +419,10 @@ function renderSchedule(){
     let placed = false;
     for (const m of (c.meetings || [])) {
       if (m.start_min == null || m.end_min == null) continue;
-      placed = true;
       for (const d of (m.days_list || [])) {
         const idx = DAY_INDEX[d];
         if (idx == null) continue;
+        placed = true;
         const top = (m.start_min - lo) * PX_PER_MIN;
         const hgt = Math.max(20, (m.end_min - m.start_min) * PX_PER_MIN);
         const badge = res ? schedBadge(res) : "";

@@ -127,6 +127,17 @@ def test_enrich_meetings_skips_unparseable_time():
     assert "start_min" not in out[0]["meetings"][0]
 
 
+def test_enrich_meetings_tba_days_has_no_days_list():
+    """days="TBA" 不能拆出 'T'（周二）——整串非全合法星期则不留 days_list。"""
+    courses = [{"code": "CS1315", "section": "C03",
+                "meetings": [{"time": "12:00 pm - 2:50 pm", "days": "TBA"}]}]
+    out = banweb.enrich_meetings(courses)
+    m = out[0]["meetings"][0]
+    assert "days_list" not in m
+    assert m["start_min"] == 720    # 时间仍成功解析，不受 days 影响
+    assert m["end_min"] == 890
+
+
 # ---------------- reconcile_block（课表变更同步） ----------------
 
 def _mc(code, section, course, meetings):
