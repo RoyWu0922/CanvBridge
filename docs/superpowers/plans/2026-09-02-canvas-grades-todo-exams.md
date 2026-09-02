@@ -202,7 +202,7 @@ def _course_score(course: dict, kind: str):
     return None
 ```
 
-文件尾（`get_assignments` 之后）追加三个函数：
+文件尾（`download_file` 之后，即文件末尾）追加三个函数：
 
 ```python
 def get_assignments_full(canvas_url: str, token: str, course_id: int) -> list[dict]:
@@ -423,7 +423,7 @@ Expected: 新测试 FAIL（端点不存在）。
 
 - [ ] **Step 3: 实现**
 
-模型区（`WriteExamsRequest` 之后、`AssignmentsRequest` 附近）加：
+模型区（`AssignmentsRequest` 附近）加：
 
 ```python
 class GradesRequest(CanvasConfig):
@@ -590,12 +590,13 @@ git commit -m "feat: grades/todo/calendar_events/write_canvas_events 端点 + �
 </div>
 ```
 
-`switchTab` 的点击绑定里，`tabTodo`/`tabGrades` 首次进入要触发加载（见 Step 2；把下面这段加进既有 `$$(".tab").forEach(...)` 的 handler 里，`tabSchedule` 之后）：
+`switchTab` 的点击绑定里，`tabTodo` 首次进入要触发加载（见 Step 2；把下面这行加进既有 `$$(".tab").forEach(...)` 的 handler 里，`tabSchedule` 那行之后）：
 
 ```js
   if(target==="tabTodo") initTodoTab();
-  if(target==="tabGrades") initGradesTab();
 ```
+
+（`tabGrades` 的 `if(target==="tabGrades") initGradesTab();` 由 Task 4 加，避免在 `initGradesTab` 定义前引用它。）
 
 - [ ] **Step 2: 加 i18n 键**（`frontend/i18n.js`，zh 与 en 两个块各补）
 
@@ -836,6 +837,14 @@ en 块：
 ```
 
 - [ ] **Step 3: 加 app.js 逻辑**（待办区块之后）
+
+在既有 `$$(".tab").forEach(...)` 的 handler 里（Task 3 加的 `if(target==="tabTodo") initTodoTab();` 那行之后）追加：
+
+```js
+  if(target==="tabGrades") initGradesTab();
+```
+
+再在待办区块之后插入：
 
 ```js
 /* ===== 成绩 ===== */
