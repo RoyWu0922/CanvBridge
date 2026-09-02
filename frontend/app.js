@@ -153,7 +153,7 @@ async function runAutoLogin(showBusy){
     if(loginBtn) loginBtn.hidden=true;
     setBanwebStatusText(t("status.banweb_ok"),"ok");
     stopBanwebPoll();
-    if($("selTerm").options.length <= 1) loadTerms();
+    loadTerms();   // 已登录 → 刷新学期（有缓存也刷新一次，保证最新）
     return true;
   };
   return showBusy ? withBusy(t("status.aims_logging_in"), $("btnSaveAims"), attempt) : attempt();
@@ -768,7 +768,7 @@ async function checkBanwebStatus(){
     setBanwebStatusText(t("status.banweb_ok"),"ok");
     loginBtn.hidden=true;
     stopBanwebPoll();
-    if($("selTerm").options.length <= 1) loadTerms();
+    loadTerms();   // 已登录 → 刷新学期（有缓存也刷新一次，保证最新）
   } else if(r.status==="needs_login"){
     loginBtn.hidden=false;
     if(!aimsAutoTried){
@@ -788,6 +788,9 @@ async function checkBanwebStatus(){
     setBanwebStatusText(t("status.banweb_opening"),"muted");
     loginBtn.hidden=true;
     startBanwebPoll();
+    // 自愈：页面停在空白/中间态时不再死等，直接试抓学期
+    // （list_terms 内部自己会导航到学期页；失败落回 needs_login → 自动登录）
+    if($("selTerm").options.length <= 1) loadTerms();
   } else {
     setBanwebStatusText(t("status.banweb_unknown"),"err");
     loginBtn.hidden=true;
@@ -805,6 +808,28 @@ $("btnBanwebLogin").onclick = async () => {
 function startBanwebPoll(){ if(banwebPollTimer) return; banwebPollTimer=setInterval(checkBanwebStatus, 3000); }
 function stopBanwebPoll(){ if(banwebPollTimer){ clearInterval(banwebPollTimer); banwebPollTimer=null; } }
 /* 学期下拉：始终有占位项（避免空下拉在 macOS 上呈置灰不可选），聚焦空下拉时按需重载 */
+const BANWEB_TERMS_KEY="sc_banweb_terms";
+function loadCachedTerms(){
+  try { const v=JSON.parse(localStorage.getItem(BANWEB_TERMS_KEY)||"null");
+        return v && Array.isArray(v.terms) ? v.terms : null; }
+  catch(e){ return null; }
+}
+function saveCachedTerms(terms){
+  try { localStorage.setItem(BANWEB_TERMS_KEY, JSON.stringify({terms, fetchedAt:new Date().toISOString()})); }
+  catch(e){}
+}
+/* 用给定学期列表填充下拉（占位 + 学期），保留当前选中项 */
+function populateTermOptions(terms){
+  const sel=$("selTerm"); if(!sel) return;
+  const tlist = terms||[];
+  const prev = tlist.some(t=>t.value===banwebSchedule.term) ? banwebSchedule.term : "";
+  sel.innerHTML="";
+  const ph=document.createElement("option"); ph.value=""; ph.textContent=t("schedule.term_placeholder");
+  sel.appendChild(ph);
+  tlist.forEach(t=>{ const o=document.createElement("option"); o.value=t.value; o.textContent=t.label; sel.appendChild(o); });
+  if(prev) sel.value=prev;
+  refreshTermState();
+}
 function ensureTermPlaceholder(){
   const sel=$("selTerm");
   if(!sel || sel.options.length) return;
@@ -838,13 +863,15 @@ async function loadTerms(){
     }
     return;
   }
-  const prev = sel && [...sel.options].some(o=>o.value===banwebSchedule.term) ? banwebSchedule.term : "";
-  sel.innerHTML="";
-  const ph=document.createElement("option"); ph.value=""; ph.textContent=t("schedule.term_placeholder");
-  sel.appendChild(ph);
-  (r.terms||[]).forEach(t=>{ const o=document.createElement("option"); o.value=t.value; o.textContent=t.label; sel.appendChild(o); });
-  if(prev) sel.value=prev;
-  refreshTermState();
+  const terms = r.terms || [];
+  if(!terms.length){
+    // 空列表：学期页 select 未渲染出来等瞬时竞态 → 当瞬时故障重试，不清缓存
+    setBanwebStatusText(t("status.banweb_terms_empty"),"err");
+    startBanwebPoll();
+    return;
+  }
+  saveCachedTerms(terms);   // 缓存成功抓到的学期，会话失效后仍可先选
+  populateTermOptions(terms);
 }
 function schedBadge(res){
   // res 可能是字符串（旧版保存）或 {s:状态, old:旧时间}
@@ -1114,6 +1141,9 @@ async function initScheduleTab(){
   ensureTermPlaceholder();
   refreshTermState();
   renderSchedule();
+  // 先填上次抓到的学期（离线 / AIMS 会话失效时也能先选），再走登录流程刷新
+  const cachedTerms = loadCachedTerms();
+  if(cachedTerms && cachedTerms.length) populateTermOptions(cachedTerms);
   // 已存凭据 → 直接自动登录并加载学期（跳过慢速 status 探测）；未存 → 状态检查提示登录
   const cr = await api("banweb/credentials/status", undefined, "GET");
   if(cr.ok===true && cr.has_credentials){
