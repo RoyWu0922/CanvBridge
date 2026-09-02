@@ -490,3 +490,60 @@ def test_raise_login_error_no_message_gives_generic_hint():
     with pytest.raises(banweb.BanwebError) as ei:
         banweb._raise_login_error(_FakeEvalPage([]))
     assert "未跳回课表" in str(ei.value)
+
+
+# ---------------- 考试时间表解析（AIMS hwsrsett_cityu.P_DispSchd） ----------------
+
+def test_parse_exam_html_not_available():
+    html = ("<html><body>Student Examination Timetable (Semester A 2026/27)"
+            " ... currently not available.</body></html>")
+    assert banweb.parse_exam_html(html) == []
+
+
+EXAM_FIXTURE = """<table>
+<tr><td>Course</td><td>Section</td><td>Date</td><td>Time</td><td>Venue</td><td>Room</td><td>Seat No.</td></tr>
+<tr><td>CS2315</td><td>C01</td><td>2026-12-15</td><td>14:30 - 17:30</td><td>AC1</td><td>LT-17</td><td>23</td></tr>
+<tr><td>MA2000</td><td>B01</td><td>2026-12-17</td><td>09:00 - 12:00</td><td>AC2</td><td>LT-4</td><td>11</td></tr>
+</table>"""
+
+
+def test_parse_exam_html_parses_table():
+    out = banweb.parse_exam_html(EXAM_FIXTURE)
+    assert len(out) == 2
+    e = out[0]
+    assert e["code"] == "CS2315"
+    assert e["section"] == "C01"
+    assert e["date"] == "2026-12-15"
+    assert e["start"] == "14:30"
+    assert e["end"] == "17:30"
+    assert e["room"] == "LT-17"
+    assert e["seat"] == "23"
+
+
+def test_parse_exam_html_12h_time():
+    html = EXAM_FIXTURE.replace("14:30 - 17:30", "2:30 pm - 5:30 pm")
+    out = banweb.parse_exam_html(html)
+    assert out[0]["start"] == "14:30"
+    assert out[0]["end"] == "17:30"
+
+
+def test_parse_exam_html_bad_date_kept():
+    html = EXAM_FIXTURE.replace("2026-12-15", "15 Dec 2026")
+    out = banweb.parse_exam_html(html)
+    assert out[0]["date"] == "2026-12-15"
+
+
+def test_parse_exam_html_no_recognized_headers():
+    html = "<table><tr><td>Foo</td><td>Bar</td></tr><tr><td>a</td><td>b</td></tr></table>"
+    assert banweb.parse_exam_html(html) == []
+
+
+def test_split_exam_time_24h():
+    assert banweb._split_exam_time("14:30 - 17:30") == ("14:30", "17:30")
+
+
+def test_parse_exam_date_formats():
+    assert banweb._parse_exam_date("2026-12-15") == "2026-12-15"
+    assert banweb._parse_exam_date("15/12/2026") == "2026-12-15"
+    assert banweb._parse_exam_date("15 Dec 2026") == "2026-12-15"
+    assert banweb._parse_exam_date("") == ""

@@ -501,3 +501,32 @@ def test_write_canvas_events_error(monkeypatch):
     body = r.json()
     assert body["errors"] == 1
     assert body["items"][0]["status"] == "error"
+
+
+# ---------------- AIMS 考试时间表端点 ----------------
+
+def test_banweb_exams(monkeypatch):
+    monkeypatch.setattr(banweb, "get_exams", lambda: ("Semester A 2026/27", [{"code": "CS2315", "date": "2026-12-15"}]))
+    r = client.post("/api/banweb/exams", json={})
+    assert r.json()["ok"] is True
+    assert r.json()["term_label"] == "Semester A 2026/27"
+    assert r.json()["exams"][0]["code"] == "CS2315"
+
+
+def test_banweb_write_exams(monkeypatch):
+    monkeypatch.setattr(apple_script, "find_events", lambda cal, prefix: [])
+    added = []
+    monkeypatch.setattr(apple_script, "add_calendar_event", lambda *a: added.append(a))
+    r = client.post("/api/banweb/write_exams", json={
+        "calendar_name": "Study",
+        "exams": [{"course": "CS2315 程序设计", "code": "CS2315", "section": "C01",
+                   "date": "2026-12-15", "start": "14:30", "end": "17:30",
+                   "room": "LT-17", "seat": "23"}],
+        "alert_minutes": None})
+    body = r.json()
+    assert body["ok"] is True
+    assert body["created"] == 1
+    assert body["items"][0]["title"] == "CS2315 考试"
+    # 写入事件是考试日的起止时间
+    assert added[0][2] == "2026-12-15T14:30:00"
+    assert added[0][3] == "2026-12-15T17:30:00"

@@ -34,6 +34,18 @@ TERM_PAGE = BANWEB + "/pls/PROD/bwskfshd.P_CrseSchdDetl"
 P_WWWLOGIN = BANWEB + "/pls/PROD/twgkpswd_cityu.P_WWWLogin"
 # 周课表（Matrix Format）页：每格「楼宇码 房间号」，即前端课表块的简称地点来源
 WEEKLY_PAGE = BANWEB + "/pls/PROD/hwsstmtbl_matrix_cityu.Show"
+# 考试时间表（Site Map「Examination Timetable」实测）：只显示当前注册学期
+EXAM_PAGE = BANWEB + "/pls/PROD/hwsrsett_cityu.P_DispSchd"
+_EXAM_NOT_AVAILABLE = "currently not available"
+_EXAM_COLUMN_KEYS = {
+    "course": ("course", "subject", "课程"),
+    "section": ("section", "sec", "分班"),
+    "date": ("date", "日期"),
+    "time": ("time", "时间"),
+    "venue": ("venue", "building", "地点"),
+    "room": ("room", "房间"),
+    "seat": ("seat", "no.", "座位"),
+}
 PROFILE_DIR = Path.home() / ".cityu_aims_profile"
 CDP_PORT = 9339
 # Okta Sign-In Widget v2（auth.cityu.edu.hk，2026-08-31 实测）：两步登录
@@ -281,6 +293,104 @@ def parse_date_range(s: str) -> tuple[datetime, datetime]:
     d0 = datetime(int(m.group(3)), _MONTHS[m.group(1)], int(m.group(2)))
     d1 = datetime(int(m.group(6)), _MONTHS[m.group(4)], int(m.group(5)))
     return d0, d1
+
+
+def _split_exam_time(s: str) -> tuple[str, str]:
+    """"14:30 - 17:30" / "2:30 pm - 5:30 pm" → ("14:30","17:30")；解析失败返回 (s,"")。"""
+    s = s.strip()
+    if not s:
+        return "", ""
+    m = re.match(r"(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})$", s)
+    if m:
+        return (f"{int(m.group(1)):02d}:{m.group(2)}",
+                f"{int(m.group(3)):02d}:{m.group(4)}")
+    try:
+        (sh, sm), (eh, em) = parse_time_range(s)   # 12h "2:30 pm - 5:30 pm"
+        return f"{sh:02d}:{sm:02d}", f"{eh:02d}:{em:02d}"
+    except BanwebError:
+        return s, ""
+
+
+def _parse_exam_date(s: str) -> str:
+    """"2026-12-15" / "15/12/2026" / "15 Dec 2026" → "YYYY-MM-DD"；失败返回 "". """
+    s = s.strip()
+    if not s:
+        return ""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        return s
+    m = re.fullmatch(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", s)
+    if m:
+        return f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+    m = re.fullmatch(r"(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})", s)
+    if m:
+        month = {"Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+                 "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12}
+        mon = month.get(m.group(2).capitalize()[:3])
+        if mon:
+            return f"{m.group(3)}-{mon:02d}-{int(m.group(1)):02d}"
+    return ""
+
+
+def _map_exam_columns(rows: list[list[str]]) -> dict | None:
+    """按表头关键词把列名映射到列下标；无 date 也无 time 列 → None。"""
+    if not rows:
+        return None
+    header = [h.lower() for h in rows[0]]
+    mapping: dict[str, int] = {}
+    for field, keys in _EXAM_COLUMN_KEYS.items():
+        for i, h in enumerate(header):
+            if any(k in h for k in keys):
+                mapping[field] = i
+                break
+    if "date" not in mapping and "time" not in mapping:
+        return None
+    return mapping
+
+
+def _row_to_exam(row: list[str], cols: dict) -> dict | None:
+    def _cell(field: str) -> str:
+        i = cols.get(field)
+        return row[i].strip() if i is not None and i < len(row) else ""
+
+    course = _cell("course")
+    if not course and not _cell("date") and not _cell("time"):
+        return None
+    m = re.search(r"[A-Z]+\d{4}", course.upper())
+    code = m.group(0) if m else re.sub(r"\s", "", course)
+    start, end = _split_exam_time(_cell("time"))
+    return {
+        "course": course,
+        "code": code,
+        "section": _cell("section"),
+        "date": _parse_exam_date(_cell("date")),
+        "start": start,
+        "end": end,
+        "room": _cell("room") or _cell("venue"),
+        "seat": _cell("seat"),
+    }
+
+
+def parse_exam_html(html: str) -> list[dict]:
+    """解析考试时间表页面，返回考试块列表。
+
+    含 "currently not available" → []。否则遍历 _TableParser 的表，找表头含
+    date/time 关键词的数据表，按列映射解析每行（不依赖列序）。
+    """
+    if _EXAM_NOT_AVAILABLE in html:
+        return []
+    parser = _TableParser()
+    parser.feed(html)
+    for t in parser.tables:
+        cols = _map_exam_columns(t["rows"])
+        if not cols:
+            continue
+        out = []
+        for row in t["rows"][1:]:
+            rec = _row_to_exam(row, cols)
+            if rec:
+                out.append(rec)
+        return out
+    return []
 
 
 def first_occurrence(d0: datetime, day_letter: str) -> datetime:
@@ -905,4 +1015,27 @@ def get_schedule(term: str) -> list[dict]:
             except Exception:
                 pass  # 周课表简称抓取失败不阻塞主流程
             return enrich_meetings(courses)
+    return _on_browser_thread(lambda: _retry_once(_run))
+
+
+def get_exams() -> tuple[str, list[dict]]:
+    """抓取当前注册学期的考试时间表。返回 (term_label, exams)。
+
+    term_label 取页面标题行 "Student Examination Timetable (Semester A 2026/27)"
+    括号内的学期名；无考试时 exams=[]。失败抛 BanwebError。
+    """
+    def _run() -> tuple[str, list[dict]]:
+        with _lock:
+            page = _ensure_browser()
+            try:
+                page.goto(EXAM_PAGE, timeout=60000, wait_until="domcontentloaded")
+                page.wait_for_load_state("load", timeout=30000)
+            except Exception as exc:
+                if _target_closed(exc):
+                    raise
+                raise BanwebError("抓取考试时间表失败（可能登录已失效）：" + str(exc)) from exc
+            _require_logged_in(page)
+            content = page.content()
+            m = re.search(r"Student Examination Timetable\s*\(([^)]+)\)", content)
+            return (m.group(1) if m else ""), parse_exam_html(content)
     return _on_browser_thread(lambda: _retry_once(_run))

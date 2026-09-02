@@ -118,6 +118,12 @@ class WriteCanvasEventsRequest(BaseModel):
     alert_minutes: int | None = None
 
 
+class WriteExamsRequest(BaseModel):
+    calendar_name: str
+    exams: list[dict]   # [{course, code, section, date, start, end, room, seat}]
+    alert_minutes: int | None = None
+
+
 class SummarizeSyllabusRequest(BaseModel):
     canvas_url: str
     canvas_token: str
@@ -326,6 +332,39 @@ def _write_one_off(calendar_name: str, items: list[dict], alert_minutes: int | N
 def write_canvas_events(req: WriteCanvasEventsRequest):
     try:
         res = _write_one_off(req.calendar_name, req.items, req.alert_minutes)
+        return {"ok": True, **res}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _exam_to_event(exam: dict) -> dict:
+    """考试块 → 一次性事件规格 {title, start, end, location, notes}。"""
+    code = (exam.get("code") or exam.get("course") or "Exam").strip()
+    title = f"{code} 考试"
+    date = (exam.get("date") or "").strip()
+    start = (exam.get("start") or "").strip()
+    end = (exam.get("end") or "").strip()
+    start_iso = f"{date}T{start}:00" if date and start else ""
+    end_iso = f"{date}T{end}:00" if date and end else start_iso
+    loc = " ".join(x for x in (exam.get("room"), exam.get("seat")) if x).strip()
+    return {"title": title, "start": start_iso, "end": end_iso,
+            "location": loc, "notes": exam.get("course") or ""}
+
+
+@app.post("/api/banweb/exams")
+def banweb_exams():
+    try:
+        term_label, exams = banweb.get_exams()
+        return {"ok": True, "term_label": term_label, "exams": exams}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/banweb/write_exams")
+def banweb_write_exams(req: WriteExamsRequest):
+    try:
+        items = [_exam_to_event(exam) for exam in req.exams]
+        res = _write_one_off(req.calendar_name, items, req.alert_minutes)
         return {"ok": True, **res}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
