@@ -1143,6 +1143,29 @@ function renderSchedule(){
     }
     if (!placed) noFixed.push(c);
   }
+  // 考试块叠加：日期落在浏览周 → 加到对应日列（叠在课程块之上）
+  if (banwebExams && banwebExams.exams.length) {
+    banwebExams.exams.forEach(ex => {
+      if (!ex.date) return;
+      const d = new Date(ex.date + "T00:00:00");
+      if (isNaN(d)) return;
+      const t = d.getTime();
+      if (t < wkStart || t >= wkEnd) return;
+      const idx = (d.getDay() + 6) % 7;
+      const sm = examMinutes(ex.start);
+      if (sm == null) return;
+      const em = examMinutes(ex.end);
+      const top = (sm - lo) * PX_PER_MIN;
+      const hgt = em != null ? Math.max(20, (em - sm) * PX_PER_MIN) : 90;
+      const title = (ex.code || ex.course || "Exam") + " " + (ex.section || "");
+      colBlocks[idx] += `<div class="cal-block exam-block" style="top:${top}px;height:${hgt}px">
+        <span class="exam-tag">${esc(t("schedule.exam_badge"))}</span>
+        <div style="font-weight:600;color:#fff">${esc(title)}</div>
+        <div style="color:rgba(255,255,255,.9)">${fmtTime(sm)}–${em != null ? fmtTime(em) : "?"}</div>
+        ${(ex.room || ex.seat) ? `<div style="color:rgba(255,255,255,.8)">${esc([ex.room, ex.seat].filter(Boolean).join(" · "))}</div>` : ""}
+      </div>`;
+    });
+  }
   // 作业 due 标注：只在所属周显示，整块是 <a target="_blank"> 指向 Canvas 提交页
   const courseNameById = {};
   courseList.forEach(c => { courseNameById[c.id] = c.name; });
@@ -1292,6 +1315,42 @@ $("btnClearSchedule").onclick = () => {
   renderSchedule();
   setStatus(t("status.sched_cleared"),"ok");
 };
+/* ===== 考试时间表叠加 ===== */
+let banwebExams = null;   // {term_label, exams} | null
+function examMinutes(hhmm){
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm || "");
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+}
+async function loadExams(){
+  const el = $("examStatus");
+  if(el) el.textContent = t("schedule.exam_loading");
+  const r = await api("banweb/exams");
+  if(r.ok !== true){
+    banwebExams = null;
+    if(el) el.textContent = t("schedule.exam_fail") + (r.error || "");
+    renderSchedule();
+    return;
+  }
+  banwebExams = { term_label: r.term_label || "", exams: r.exams || [] };
+  if(el) el.textContent = banwebExams.exams.length
+    ? t("schedule.exam_loaded", {term: banwebExams.term_label})
+    : t("schedule.exam_none");
+  renderSchedule();
+}
+$("btnReloadExams").onclick = loadExams;
+$("btnWriteExams").onclick = async () => {
+  const cal = $("selExamCalendar").value;
+  if(!cal){ setStatus(t("status.need_sched_calendar"), "err"); return; }
+  const exams = (banwebExams && banwebExams.exams) || [];
+  if(!exams.length){ setStatus(t("schedule.exam_none"), "err"); return; }
+  const amVal = $("selSchedAlert").value ? Number($("selSchedAlert").value) : null;
+  await withBusy(t("status.writing_events", {n: exams.length}), $("btnWriteExams"), async ()=>{
+    const r = await api("banweb/write_exams", { calendar_name: cal, exams, alert_minutes: amVal });
+    if(r.ok !== true){ setStatus(t("status.write_fail") + (r.error || ""), "err"); return; }
+    setStatus(t("schedule.exam_done", {a:r.created, b:r.exists, e:r.errors}),
+      r.errors === 0 ? "ok" : "err");
+  });
+};
 let schedTabInit=false;
 async function initScheduleTab(){
   if(schedTabInit) return;
@@ -1305,6 +1364,11 @@ async function initScheduleTab(){
   ensureTermPlaceholder();
   refreshTermState();
   renderSchedule();
+  if(!$("selExamCalendar").options.length){
+    const r = await api("calendars");
+    fillSelect("selExamCalendar", r.calendars || []);
+  }
+  loadExams();   // 静默拉考试（登录态复用课表会话；失败仅提示不阻塞）
   // 先填上次抓到的学期（离线 / AIMS 会话失效时也能先选），再走登录流程刷新
   const cachedTerms = loadCachedTerms();
   if(cachedTerms && cachedTerms.length) populateTermOptions(cachedTerms);

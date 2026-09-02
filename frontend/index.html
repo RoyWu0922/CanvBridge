@@ -93,6 +93,14 @@
       </div>
       <div id="schedulePreview"></div>
       <div id="scheduleNoFixed"></div>
+      <div class="filter-bar" id="examBar" style="margin-top:14px">
+        <span class="filter-label" data-i18n="schedule.exam_label"></span>
+        <button id="btnReloadExams" class="btn btn-ghost" data-i18n="schedule.exam_reload"></button>
+        <span id="examStatus" class="muted"></span>
+        <span style="flex:1"></span>
+        <label class="field"><span data-i18n="schedule.calendar"></span><select id="selExamCalendar"></select></label>
+        <button id="btnWriteExams" class="btn btn-accent" data-i18n="schedule.write_exams"></button>
+      </div>
       <div class="write-bar">
         <label class="field"><span data-i18n="schedule.calendar"></span><select id="selSchedCalendar"></select></label>
         <label class="field"><span data-i18n="schedule.alert"></span><select id="selSchedAlert"></select></label>
