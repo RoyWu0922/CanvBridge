@@ -102,6 +102,22 @@ class AssignmentsRequest(BaseModel):
     course_ids: list[int]
 
 
+class GradesRequest(CanvasConfig):
+    course_ids: list[int]
+
+
+class CalendarEventsRequest(CanvasConfig):
+    course_ids: list[int]
+    start_date: str
+    end_date: str
+
+
+class WriteCanvasEventsRequest(BaseModel):
+    calendar_name: str
+    items: list[dict]   # [{title, start, end, location, notes}]
+    alert_minutes: int | None = None
+
+
 class SummarizeSyllabusRequest(BaseModel):
     canvas_url: str
     canvas_token: str
@@ -222,6 +238,97 @@ def assignments(req: AssignmentsRequest):
             by_course[cid] = []
             errors[cid] = str(exc)
     return {"ok": True, "by_course": by_course, "errors": errors}
+
+
+@app.post("/api/grades")
+def grades(req: GradesRequest):
+    """课程总评 + 作业明细；单门作业失败进 errors（该门 assignments=[]），不拖垮整批。"""
+    try:
+        courses = canvas_client.list_courses(req.canvas_url, req.canvas_token, include_scores=True)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    by_id = {c["id"]: c for c in courses}
+    results = []
+    errors = {}
+    for cid in req.course_ids:
+        c = by_id.get(cid)
+        if c is None:
+            results.append({"course_id": cid, "course_name": f"Course {cid}",
+                            "current_score": None, "final_score": None, "assignments": []})
+            continue
+        try:
+            asg = canvas_client.get_assignments_full(req.canvas_url, req.canvas_token, cid)
+        except Exception as exc:
+            asg = []
+            errors[cid] = str(exc)
+        results.append({
+            "course_id": cid, "course_name": c["name"],
+            "current_score": c.get("current_score"), "final_score": c.get("final_score"),
+            "assignments": asg,
+        })
+    return {"ok": True, "courses": results, "errors": errors}
+
+
+@app.post("/api/todo")
+def todo(req: CanvasConfig):
+    try:
+        return {"ok": True, "items": canvas_client.get_todo(req.canvas_url, req.canvas_token)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/calendar_events")
+def calendar_events(req: CalendarEventsRequest):
+    try:
+        events = canvas_client.get_calendar_events(
+            req.canvas_url, req.canvas_token, req.course_ids,
+            req.start_date, req.end_date)
+        return {"ok": True, "events": events}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _write_one_off(calendar_name: str, items: list[dict], alert_minutes: int | None) -> dict:
+    """共享一次性事件写入：按 标题+开始时间 去重（Task 6 写考试复用）。
+
+    items: [{title, start, end, location, notes}]。find_events 按标题前缀读回既有
+    事件，比较 (summary==标题 且 start==开始时间) 判已存在→跳过。返回
+    {items:[{title,status,error?}], created, exists, errors}。
+    """
+    created = exists = errors = 0
+    out = []
+    for item in items:
+        title = (item.get("title") or "").strip()
+        start = (item.get("start") or "").strip()
+        if not title or not start:
+            errors += 1
+            out.append({"title": title or (item.get("title") or ""), "status": "error",
+                        "error": "缺标题或开始时间"})
+            continue
+        try:
+            existing = apple_script.find_events(calendar_name, title)
+            if any(ev["summary"] == title and ev["start"] == start for ev in existing):
+                exists += 1
+                out.append({"title": title, "status": "exists"})
+                continue
+            apple_script.add_calendar_event(
+                calendar_name, title, start, item.get("end") or start,
+                item.get("location") or "", item.get("notes") or "", alert_minutes)
+            created += 1
+            out.append({"title": title, "status": "created"})
+        except Exception as exc:
+            errors += 1
+            out.append({"title": title, "status": "error", "error": str(exc)})
+    return {"items": out, "created": created, "exists": exists, "errors": errors}
+
+
+@app.post("/api/write_canvas_events")
+def write_canvas_events(req: WriteCanvasEventsRequest):
+    try:
+        res = _write_one_off(req.calendar_name, req.items, req.alert_minutes)
+        return {"ok": True, **res}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @app.post("/api/summarize_syllabus")

@@ -420,3 +420,84 @@ def test_pick_dir_error(monkeypatch):
     assert r.json()["ok"] is False
     assert r.json().get("cancelled") is not True
     assert "not authorized" in r.json()["error"]
+
+
+def test_grades(monkeypatch):
+    monkeypatch.setattr(canvas_client, "list_courses",
+                        lambda u, t, include_scores=False: [
+                            {"id": 5, "name": "CS101", "course_code": "CS101A",
+                             "current_score": 88.5, "final_score": 85.0}])
+    monkeypatch.setattr(canvas_client, "get_assignments_full",
+                        lambda u, t, cid: [{"id": 1, "name": "HW1", "due_at": "",
+                                            "points_possible": 10, "html_url": "", "score": 8.0, "submitted": True}])
+    r = client.post("/api/grades", json={"canvas_url": "https://x", "canvas_token": "t", "course_ids": [5]})
+    body = r.json()
+    assert body["ok"] is True
+    assert body["courses"][0]["current_score"] == 88.5
+    assert body["courses"][0]["assignments"][0]["score"] == 8.0
+
+
+def test_grades_course_failure_does_not_drag_batch(monkeypatch):
+    monkeypatch.setattr(canvas_client, "list_courses", lambda u, t, include_scores=False: [{"id": 5, "name": "CS101"}])
+    def _boom(u, t, cid):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(canvas_client, "get_assignments_full", _boom)
+    r = client.post("/api/grades", json={"canvas_url": "https://x", "canvas_token": "t", "course_ids": [5]})
+    body = r.json()
+    assert body["ok"] is True
+    assert body["courses"][0]["assignments"] == []
+    # 与既有 /api/assignments 约定一致：JSON 往返后 errors 的键是字符串
+    assert body["errors"] == {"5": "boom"}
+
+
+def test_todo(monkeypatch):
+    monkeypatch.setattr(canvas_client, "get_todo", lambda u, t: [{"id": 1, "title": "HW1", "overdue": False}])
+    r = client.post("/api/todo", json={"canvas_url": "https://x", "canvas_token": "t"})
+    assert r.json() == {"ok": True, "items": [{"id": 1, "title": "HW1", "overdue": False}]}
+
+
+def test_calendar_events(monkeypatch):
+    monkeypatch.setattr(canvas_client, "get_calendar_events",
+                        lambda u, t, ids, a, b: [{"id": 1, "title": "Talk", "start_at": "2026-09-10T14:00:00Z"}])
+    r = client.post("/api/calendar_events", json={"canvas_url": "https://x", "canvas_token": "t",
+                                                  "course_ids": [5], "start_date": "2026-09-01", "end_date": "2026-09-30"})
+    assert r.json()["ok"] is True
+    assert r.json()["events"][0]["title"] == "Talk"
+
+
+def test_write_canvas_events_dedup(monkeypatch):
+    # find_events 返回一条同标题同开始的既有事件 → 第二项应跳过（exists）
+    monkeypatch.setattr(apple_script, "find_events",
+                        lambda cal, prefix: [{"summary": "Talk", "start": "2026-09-10T14:00:00"}])
+    added = []
+    monkeypatch.setattr(apple_script, "add_calendar_event",
+                        lambda *a: added.append(a))
+    r = client.post("/api/write_canvas_events", json={
+        "calendar_name": "Study",
+        "items": [
+            {"title": "Talk", "start": "2026-09-10T14:00:00", "end": "2026-09-10T15:00:00",
+             "location": "LT-1", "notes": ""},
+            {"title": "Other", "start": "2026-09-11T09:00:00", "end": "2026-09-11T10:00:00",
+             "location": "", "notes": ""},
+        ],
+        "alert_minutes": None})
+    body = r.json()
+    assert body["ok"] is True
+    assert body["created"] == 1
+    assert body["exists"] == 1
+    assert body["errors"] == 0
+    assert len(added) == 1
+
+
+def test_write_canvas_events_error(monkeypatch):
+    monkeypatch.setattr(apple_script, "find_events", lambda cal, prefix: [])
+    def _boom(cal, title, start, end, loc, notes, alert):
+        raise RuntimeError("cal busy")
+    monkeypatch.setattr(apple_script, "add_calendar_event", _boom)
+    r = client.post("/api/write_canvas_events", json={
+        "calendar_name": "Study",
+        "items": [{"title": "X", "start": "2026-09-10T14:00:00", "end": "2026-09-10T15:00:00", "location": "", "notes": ""}],
+        "alert_minutes": None})
+    body = r.json()
+    assert body["errors"] == 1
+    assert body["items"][0]["status"] == "error"
