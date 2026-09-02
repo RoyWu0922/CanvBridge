@@ -284,7 +284,7 @@ def test_get_todo_normalizes_and_sorts(monkeypatch):
                         "html_url": "https://x/c/1/a/1", "points_possible": 5, "course_id": 1},
          "context_name": "CS101"},
         {"type": "Quiz",
-         "assignment": {"id": 2, "name": "Soon", "due_at": "2026-09-15T10:00:00Z",
+         "assignment": {"id": 2, "name": "Soon", "due_at": "2099-01-01T10:00:00Z",
                         "html_url": "", "points_possible": None, "course_id": 2},
          "context_name": "MA200"},
     ], "")])
