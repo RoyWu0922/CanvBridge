@@ -363,6 +363,7 @@ $$(".tab").forEach(b=> b.addEventListener("click", ()=>{
   const target=b.dataset.target;
   switchTab(target);
   if(target==="tabSchedule") initScheduleTab();
+  if(target==="tabTodo") initTodoTab();
 }));
 
 /* 事件日期筛选 */
@@ -742,6 +743,115 @@ $("btnDownloadFiles").onclick = async () => {
     $("btnDownloadFiles").disabled=false;
     setTimeout(()=>{ bar.hidden=true; }, 1500);
   }
+};
+
+/* ===== 待办 + Canvas 日历事件 ===== */
+let todoItems = [];       // 归一化待办（/api/todo）
+let todoEvents = [];      // Canvas 一次性事件（/api/calendar_events）
+let todoTabInit = false;
+async function initTodoTab(){
+  if(todoTabInit) return;
+  todoTabInit = true;
+  if(!$("selTodoCalendar").options.length){
+    const r = await api("calendars");
+    fillSelect("selTodoCalendar", r.calendars || []);
+  }
+  if(!$("selTodoAlert").options.length) fillAlert("selTodoAlert");
+  await loadTodo();
+}
+async function loadTodo(){
+  await withBusy(t("todo.loading"), $("btnLoadTodo"), async ()=>{
+    const s = settings();
+    const r = await api("todo", { canvas_url:s.canvas_url, canvas_token:s.canvas_token });
+    if(r.ok !== true){ setStatus(t("todo.fail") + (r.error || ""), "err"); return; }
+    todoItems = r.items || [];
+    const ids = selectedCourses();
+    if(!ids.length){
+      todoEvents = [];
+      renderTodo();
+      $("todoEvents").innerHTML = `<div class="muted">${t("todo.need_course")}</div>`;
+      setStatus(t("todo.loaded", {a: todoItems.length, b: 0}), "ok");
+      return;
+    }
+    const now = new Date();
+    const end = new Date(now); end.setDate(end.getDate() + 30);
+    const er = await api("calendar_events", {
+      canvas_url:s.canvas_url, canvas_token:s.canvas_token,
+      course_ids:ids, start_date:fmt(now), end_date:fmt(end) });
+    if(er.ok !== true){ setStatus(t("todo.fail") + (er.error || ""), "err"); return; }
+    todoEvents = er.events || [];
+    renderTodo();
+    setStatus(t("todo.loaded", {a: todoItems.length, b: todoEvents.length}), "ok");
+  });
+}
+$("btnLoadTodo").onclick = () => { todoTabInit = false; initTodoTab(); };
+/* 分组键：已过期 / 今天 / 本周（7 天内）/ 以后 */
+function todoGroupKey(item){
+  if(item.overdue) return "overdue";
+  if(!item.due_at) return "later";
+  const due = new Date(item.due_at);
+  if(isNaN(due)) return "later";
+  const now = new Date(); now.setHours(0,0,0,0);
+  const dueDay = new Date(due); dueDay.setHours(0,0,0,0);
+  const diff = Math.round((dueDay - now) / 86400000);
+  if(diff <= 0) return "overdue";
+  if(diff === 0) return "today";
+  if(diff < 7) return "week";
+  return "later";
+}
+function renderTodo(){
+  const groups = { overdue: [], today: [], week: [], later: [] };
+  todoItems.forEach(it => { (groups[todoGroupKey(it)] || groups.later).push(it); });
+  const order = ["overdue", "today", "week", "later"];
+  const keys = { overdue: t("todo.group_overdue"), today: t("todo.group_today"),
+                 week: t("todo.group_week"), later: t("todo.group_later") };
+  const has = order.some(k => groups[k].length);
+  if(!has){
+    $("todoGroups").innerHTML = `<div class="empty">${t("todo.no_todo")}</div>`;
+  } else {
+    $("todoGroups").innerHTML = order.map(k => {
+      if(!groups[k].length) return "";
+      return `<div class="sub-label">${esc(keys[k])}（${groups[k].length}）</div>` +
+        groups[k].map(it => `
+        <div class="item">
+          <div>
+            <div class="item-title">${it.html_url
+              ? `<a href="${escAttr(it.html_url)}" target="_blank" rel="noopener">${esc(it.title)}</a>`
+              : esc(it.title)}
+              ${it.overdue ? `<span class="sched-badge err">${esc(t("todo.overdue_badge"))}</span>` : ""}</div>
+            <div class="file-path">${esc(it.course_name || "")}${it.due_at ? " · " + esc(t("announce.due")) + " " + esc(fmtDue(it.due_at)) : ""}${it.points_possible != null ? " · " + esc(String(it.points_possible)) + " pts" : ""}</div>
+          </div>
+        </div>`).join("");
+    }).join("");
+  }
+  const evs = todoEvents;
+  if(!evs.length){
+    $("todoEvents").innerHTML = `<div class="muted">${t("todo.no_events")}</div>`;
+    return;
+  }
+  $("todoEvents").innerHTML = evs.map((e, i) => `
+    <div class="item"><input type="checkbox" class="cev" data-i="${i}">
+      <div><div class="item-title">${e.html_url
+        ? `<a href="${escAttr(e.html_url)}" target="_blank" rel="noopener">${esc(e.title)}</a>`
+        : esc(e.title)}</div>
+      <div class="file-path">${esc(fmtDue(e.start_at))} → ${e.end_at ? esc(fmtDue(e.end_at)) : ""}${e.location_name ? " · " + esc(e.location_name) : ""}</div></div></div>`).join("");
+}
+$("btnWriteTodoEvents").onclick = async () => {
+  const cal = $("selTodoCalendar").value;
+  if(!cal){ setStatus(t("status.need_calendar"), "err"); return; }
+  const sel = [...document.querySelectorAll(".cev:checked")].map(i => todoEvents[Number(i.dataset.i)]);
+  if(!sel.length){ setStatus(t("status.no_event"), "err"); return; }
+  const amVal = $("selTodoAlert").value ? Number($("selTodoAlert").value) : null;
+  await withBusy(t("status.writing_events", {n: sel.length}), $("btnWriteTodoEvents"), async ()=>{
+    const r = await api("write_canvas_events", {
+      calendar_name: cal,
+      items: sel.map(e => ({ title:e.title, start:e.start_at, end:e.end_at,
+                            location:e.location_name || "", notes:"" })),
+      alert_minutes: amVal });
+    if(r.ok !== true){ setStatus(t("status.write_fail") + (r.error || ""), "err"); return; }
+    setStatus(t("todo.events_done", {a:r.created, b:r.created + r.exists}),
+      r.errors === 0 ? "ok" : "err");
+  });
 };
 
 /* ===== 课表（AIMS / Banweb）===== */

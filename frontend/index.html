@@ -36,6 +36,8 @@
       <button class="tab active" data-target="tabAnnounce" role="tab" aria-selected="true" data-i18n="tab.announce"></button>
       <button class="tab" data-target="tabFiles" role="tab" aria-selected="false" data-i18n="tab.files"></button>
       <button class="tab" data-target="tabSchedule" role="tab" aria-selected="false" data-i18n="tab.schedule"></button>
+      <button class="tab" data-target="tabTodo" role="tab" aria-selected="false" data-i18n="tab.todo"></button>
+      <button class="tab" data-target="tabGrades" role="tab" aria-selected="false" data-i18n="tab.grades"></button>
     </div>
 
     <div id="tabAnnounce" class="tab-panel" role="tabpanel">
@@ -96,6 +98,21 @@
         <label class="field"><span data-i18n="schedule.alert"></span><select id="selSchedAlert"></select></label>
         <button id="btnWriteSchedule" class="btn btn-accent" data-i18n="btn.sync_schedule"></button>
         <button id="btnClearSchedule" class="btn btn-ghost" data-i18n="btn.clear"></button>
+      </div>
+    </div>
+
+    <div id="tabTodo" class="tab-panel" role="tabpanel" hidden>
+      <div class="filter-bar" id="todoStatus">
+        <span class="filter-label" data-i18n="todo.groups_label"></span>
+        <button id="btnLoadTodo" class="btn btn-primary" data-i18n="btn.load_todo"></button>
+      </div>
+      <div id="todoGroups"></div>
+      <div class="sub-label" style="margin-top:18px" data-i18n="todo.events_heading"></div>
+      <div id="todoEvents" class="muted" style="margin-top:4px"></div>
+      <div class="write-bar">
+        <label class="field"><span data-i18n="schedule.calendar"></span><select id="selTodoCalendar"></select></label>
+        <label class="field"><span data-i18n="schedule.alert"></span><select id="selTodoAlert"></select></label>
+        <button id="btnWriteTodoEvents" class="btn btn-accent" data-i18n="todo.write_events"></button>
       </div>
     </div>
   </section>
