@@ -364,6 +364,7 @@ $$(".tab").forEach(b=> b.addEventListener("click", ()=>{
   switchTab(target);
   if(target==="tabSchedule") initScheduleTab();
   if(target==="tabTodo") initTodoTab();
+  if(target==="tabGrades") initGradesTab();
 }));
 
 /* 事件日期筛选 */
@@ -853,6 +854,59 @@ $("btnWriteTodoEvents").onclick = async () => {
       r.errors === 0 ? "ok" : "err");
   });
 };
+
+/* ===== 成绩 ===== */
+let gradesData = [];
+let gradesTabInit = false;
+async function initGradesTab(){
+  if(gradesTabInit) return;
+  gradesTabInit = true;
+  await loadGrades();
+}
+async function loadGrades(){
+  const ids = selectedCourses();
+  if(!ids.length){ setStatus(t("todo.need_course"), "err"); return; }
+  await withBusy(t("grades.loading"), $("btnLoadGrades"), async ()=>{
+    const s = settings();
+    const r = await api("grades", { canvas_url:s.canvas_url, canvas_token:s.canvas_token,
+                                    course_ids: ids });
+    if(r.ok !== true){ setStatus(t("grades.fail") + (r.error || ""), "err"); return; }
+    gradesData = r.courses || [];
+    renderGrades();
+    setStatus(t("grades.loaded", {n: gradesData.length}), "ok");
+  });
+}
+$("btnLoadGrades").onclick = () => { gradesTabInit = false; initGradesTab(); };
+function renderGrades(){
+  if(!gradesData.length){
+    $("gradesArea").innerHTML = `<div class="empty">${t("grades.no_data")}</div>`;
+    return;
+  }
+  $("gradesArea").innerHTML = gradesData.map(g => {
+    const scoreLine = (g.current_score != null || g.final_score != null)
+      ? `<div class="file-path">${esc(t("grades.current"))}: <b>${g.current_score != null ? esc(String(g.current_score)) : "—"}</b> · ${esc(t("grades.final"))}: <b>${g.final_score != null ? esc(String(g.final_score)) : "—"}</b></div>`
+      : `<div class="file-path">${esc(t("grades.no_grade"))}</div>`;
+    const rows = (g.assignments || []).map(a => `
+      <div class="item">
+        <div>
+          <div class="item-title">${a.html_url
+            ? `<a href="${escAttr(a.html_url)}" target="_blank" rel="noopener">${esc(a.name)}</a>`
+            : esc(a.name)}
+            ${a.submitted ? `<span class="file-saved">${esc(t("grades.submitted"))}</span>` : `<span class="muted">${esc(t("grades.unsubmitted"))}</span>`}</div>
+          <div class="file-path">${a.due_at ? esc(t("announce.due")) + " " + esc(fmtDue(a.due_at)) : ""}
+            ${a.points_possible != null ? " · " + esc(String(a.points_possible)) + " pts" : ""}
+            ${a.score != null ? " · <b>" + esc(String(a.score)) + "</b>" : ""}</div>
+        </div>
+      </div>`).join("");
+    return `
+    <div class="course-card">
+      <div class="course-name">${esc(g.course_name)}</div>
+      ${scoreLine}
+      <div class="sub-label">${esc(t("grades.assignments"))}（${(g.assignments || []).length}）</div>
+      ${rows || `<div class="muted" style="padding:4px 0">${esc(t("detail.no_assignments"))}</div>`}
+    </div>`;
+  }).join("");
+}
 
 /* ===== 课表（AIMS / Banweb）===== */
 const BANWEB_KEY="sc_banweb_preview";
