@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -294,6 +295,20 @@ def calendar_events(req: CalendarEventsRequest):
         return {"ok": False, "error": str(exc)}
 
 
+def _to_local_naive(iso: str) -> str:
+    """带时区/Z 后缀的 ISO → 本地无时区 ISO（秒归零）；纯本地时间原样返回。"""
+    iso = (iso or "").strip()
+    if not iso:
+        return iso
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return iso
+    if dt.tzinfo is None:
+        return iso
+    return dt.astimezone().strftime("%Y-%m-%dT%H:%M:00")
+
+
 def _write_one_off(calendar_name: str, items: list[dict], alert_minutes: int | None) -> dict:
     """共享一次性事件写入：按 标题+开始时间 去重（Task 6 写考试复用）。
 
@@ -305,7 +320,8 @@ def _write_one_off(calendar_name: str, items: list[dict], alert_minutes: int | N
     out = []
     for item in items:
         title = (item.get("title") or "").strip()
-        start = (item.get("start") or "").strip()
+        start = _to_local_naive(item.get("start"))
+        end = _to_local_naive(item.get("end")) or start
         if not title or not start:
             errors += 1
             out.append({"title": title or (item.get("title") or ""), "status": "error",
@@ -318,7 +334,7 @@ def _write_one_off(calendar_name: str, items: list[dict], alert_minutes: int | N
                 out.append({"title": title, "status": "exists"})
                 continue
             apple_script.add_calendar_event(
-                calendar_name, title, start, item.get("end") or start,
+                calendar_name, title, start, end,
                 item.get("location") or "", item.get("notes") or "", alert_minutes)
             created += 1
             out.append({"title": title, "status": "created"})

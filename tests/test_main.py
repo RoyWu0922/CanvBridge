@@ -530,3 +530,34 @@ def test_banweb_write_exams(monkeypatch):
     # 写入事件是考试日的起止时间
     assert added[0][2] == "2026-12-15T14:30:00"
     assert added[0][3] == "2026-12-15T17:30:00"
+
+
+def test_write_one_off_utc_normalized_to_local(monkeypatch):
+    """Z 后缀 UTC 开始时间 → 写入本地无时区；find_events 读回本地时间判 exists。"""
+    import datetime as _dt
+    src = "2026-09-10T06:00:00Z"
+    expect = _dt.datetime(2026, 9, 10, 6, 0, tzinfo=_dt.timezone.utc).astimezone().strftime("%Y-%m-%dT%H:%M:00")
+    monkeypatch.setattr(apple_script, "find_events",
+                        lambda cal, prefix: [{"summary": "Guest Talk", "start": expect}])
+    added = []
+    monkeypatch.setattr(apple_script, "add_calendar_event", lambda *a: added.append(a))
+    res = main._write_one_off("Study", [{"title": "Guest Talk", "start": src, "end": None}], None)
+    assert res["created"] == 0
+    assert res["exists"] == 1
+    assert added == []          # 命中已存在，不重复写入
+
+
+def test_write_one_off_writes_local_naive_when_absent(monkeypatch):
+    """不存在时按本地无时区写入（不含 Z）。"""
+    import datetime as _dt
+    src = "2026-09-10T06:00:00Z"
+    expect_start = _dt.datetime(2026, 9, 10, 6, 0, tzinfo=_dt.timezone.utc).astimezone().strftime("%Y-%m-%dT%H:%M:00")
+    expect_end = _dt.datetime(2026, 9, 10, 7, 0, tzinfo=_dt.timezone.utc).astimezone().strftime("%Y-%m-%dT%H:%M:00")
+    monkeypatch.setattr(apple_script, "find_events", lambda cal, prefix: [])
+    added = []
+    monkeypatch.setattr(apple_script, "add_calendar_event", lambda *a: added.append(a))
+    res = main._write_one_off("Study",
+        [{"title": "Guest Talk", "start": src, "end": "2026-09-10T07:00:00Z"}], None)
+    assert res["created"] == 1
+    assert added[0][2] == expect_start     # 写入的开始=本地无时区
+    assert added[0][3] == expect_end       # 写入的结束=本地无时区
