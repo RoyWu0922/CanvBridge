@@ -794,7 +794,7 @@ function todoGroupKey(item){
   const now = new Date(); now.setHours(0,0,0,0);
   const dueDay = new Date(due); dueDay.setHours(0,0,0,0);
   const diff = Math.round((dueDay - now) / 86400000);
-  if(diff <= 0) return "overdue";
+  if(diff < 0) return "overdue";
   if(diff === 0) return "today";
   if(diff < 7) return "week";
   return "later";
