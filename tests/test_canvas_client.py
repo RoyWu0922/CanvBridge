@@ -21,6 +21,12 @@ class _Session:
         self.pages = pages  # [(data, link), ...]
         self.calls = []
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
     def get(self, url, params=None, headers=None):
         self.calls.append((url, params))
         data, link = self.pages[len(self.calls) - 1]
@@ -220,3 +226,104 @@ def test_get_assignments_drops_unparseable_due(monkeypatch):
                                              "due_at": "not-a-date", "html_url": "http://x/9"}])
     result = canvas_client.get_assignments("https://x", "tok", 42)
     assert result == []
+
+
+def test_list_courses_include_scores(monkeypatch):
+    s = _Session([([{
+        "id": 1, "name": "CS101", "course_code": "CS101A",
+        "enrollments": [{"grades": {"current_score": 88.5, "final_score": 85.0}}],
+    }], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.list_courses("https://x", "tok", include_scores=True)
+    assert out[0]["current_score"] == 88.5
+    assert out[0]["final_score"] == 85.0
+    # 请求带 include[] 数组参数
+    assert s.calls[0][1]["include[]"] == ["enrollments", "total_scores"]
+
+
+def test_list_courses_include_scores_missing(monkeypatch):
+    s = _Session([([{"id": 1, "name": "CS101", "course_code": "CS101A"}], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.list_courses("https://x", "tok", include_scores=True)
+    assert out[0]["current_score"] is None
+    assert out[0]["final_score"] is None
+
+
+def test_list_courses_default_no_include_scores(monkeypatch):
+    s = _Session([([{"id": 1, "name": "CS101", "course_code": "CS101A"}], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.list_courses("https://x", "tok")
+    assert "include[]" not in s.calls[0][1]
+    assert "current_score" not in out[0]
+
+
+def test_get_assignments_full(monkeypatch):
+    s = _Session([([{
+        "id": 9, "name": "HW1", "due_at": "2026-09-10T23:59:59Z",
+        "points_possible": 10, "html_url": "https://x/c/1/a/9",
+        "submission": {"score": 8.0, "submitted_at": "2026-09-09T10:00:00Z"},
+    }], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_assignments_full("https://x", "tok", 1)
+    assert out[0]["score"] == 8.0
+    assert out[0]["submitted"] is True
+
+
+def test_get_assignments_full_no_submission(monkeypatch):
+    s = _Session([([{"id": 9, "name": "HW1", "due_at": ""}], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_assignments_full("https://x", "tok", 1)
+    assert out[0]["score"] is None
+    assert out[0]["submitted"] is False
+
+
+def test_get_todo_normalizes_and_sorts(monkeypatch):
+    s = _Session([([
+        {"type": "Assignment",
+         "assignment": {"id": 1, "name": "Late", "due_at": "2026-08-20T23:59:59Z",
+                        "html_url": "https://x/c/1/a/1", "points_possible": 5, "course_id": 1},
+         "context_name": "CS101"},
+        {"type": "Quiz",
+         "assignment": {"id": 2, "name": "Soon", "due_at": "2026-09-15T10:00:00Z",
+                        "html_url": "", "points_possible": None, "course_id": 2},
+         "context_name": "MA200"},
+    ], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_todo("https://x", "tok")
+    assert out[0]["overdue"] is True
+    assert out[0]["type"] == "Assignment"
+    assert out[1]["overdue"] is False
+    assert out[1]["course_name"] == "MA200"
+    # 按 due_at 升序：Late 在前
+    assert out[0]["title"] == "Late"
+
+
+def test_get_todo_undated_last(monkeypatch):
+    s = _Session([([
+        {"type": "Assignment",
+         "assignment": {"id": 1, "name": "NoDue", "due_at": None, "course_id": 1},
+         "context_name": "CS101"},
+        {"type": "Assignment",
+         "assignment": {"id": 2, "name": "Dated", "due_at": "2026-09-20T23:59:59Z", "course_id": 1},
+         "context_name": "CS101"},
+    ], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_todo("https://x", "tok")
+    assert out[0]["title"] == "Dated"
+    assert out[1]["title"] == "NoDue"
+
+
+def test_get_calendar_events_filters_assignment(monkeypatch):
+    s = _Session([([
+        {"id": 1, "type": "event", "title": "Guest Talk", "context_code": "course_5",
+         "start_at": "2026-09-10T14:00:00Z", "end_at": "2026-09-10T15:00:00Z",
+         "location_name": "LT-1", "html_url": "https://x/c/5/e/1"},
+        {"id": 2, "type": "assignment", "title": "HW1", "context_code": "course_5",
+         "start_at": "2026-09-10T23:59:59Z"},
+    ], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_calendar_events("https://x", "tok", [5], "2026-09-01", "2026-09-30")
+    assert len(out) == 1
+    assert out[0]["title"] == "Guest Talk"
+    assert out[0]["course_id"] == 5
+    assert s.calls[0][1]["context_codes[]"] == ["course_5"]

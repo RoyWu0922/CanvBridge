@@ -54,8 +54,8 @@ def _paginate(session: requests.Session, url: str, params: dict[str, Any],
     return results
 
 
-def list_courses(canvas_url: str, token: str) -> list[dict]:
-    """返回用户当前在修的课程 [{"id": int, "name": str, "course_code": str}]。
+def list_courses(canvas_url: str, token: str, include_scores: bool = False) -> list[dict]:
+    """返回用户当前在修的课程 [{"id", "name", "course_code"}]。
 
     course_code 是 Canvas/SIS 里的课程代码（如 "CS1315A"），前端用它把
     Banweb 课表与 Canvas 课程按「字母简称 + 4 位数字」对齐（忽略 a/c 后缀）。
@@ -63,21 +63,50 @@ def list_courses(canvas_url: str, token: str) -> list[dict]:
     学生接受邀请前 enrollment 状态是 invited/invitation_pending，只查 active
     会把这类课程静默漏掉（Canvas 页面上能看到 7 门、这里只返回 6 门）。
     current_and_invited = 当前学期 active + invited 的选课，不含已结业课程。
+    include_scores=True 时请求带 include[]=enrollments&include[]=total_scores，
+    每课附加 current_score / final_score（数字或 None，课程未给分时为 None）。
     """
     base = canvas_url.rstrip("/")
+    params = {"enrollment_state": "current_and_invited", "per_page": 100}
+    if include_scores:
+        params["include[]"] = ["enrollments", "total_scores"]
     with requests.Session() as s:
-        data = _paginate(
-            s, f"{base}/api/v1/courses",
-            {"enrollment_state": "current_and_invited", "per_page": 100}, token,
-        )
-    return [
-        {
+        data = _paginate(s, f"{base}/api/v1/courses", params, token)
+    out = []
+    for c in data:
+        item = {
             "id": c["id"],
             "name": c.get("name", f"Course {c['id']}"),
             "course_code": c.get("course_code", "") or "",
         }
-        for c in data
-    ]
+        if include_scores:
+            item["current_score"] = _course_score(c, "current")
+            item["final_score"] = _course_score(c, "final")
+        out.append(item)
+    return out
+
+
+def _course_score(course: dict, kind: str):
+    """从 enrollments[0].grades 或 total_scores 取当前/期末分数，缺失返回 None。
+
+    include[]=enrollments 返回 enrollments[].grades.{current,final}_score；
+    include[]=total_scores 返回 total_scores（list）的 computed_{current,final}_score。
+    两者都缺（课程未给分）→ None。
+    """
+    grades = (course.get("enrollments") or [None])[0]
+    if grades:
+        g = grades.get("grades") or {}
+        v = g.get("current_score" if kind == "current" else "final_score")
+        if v is not None:
+            return v
+    totals = course.get("total_scores") or []
+    if isinstance(totals, dict):
+        totals = [totals]
+    for t in totals:
+        v = t.get("computed_current_score" if kind == "current" else "computed_final_score")
+        if v is not None:
+            return v
+    return None
 
 
 def get_course(canvas_url: str, token: str, course_id: int) -> dict:
@@ -258,3 +287,100 @@ def download_file(canvas_url: str, token: str, file_url: str, dest_path: str) ->
         for chunk in resp.iter_content(chunk_size=65536):
             if chunk:
                 fh.write(chunk)
+
+
+def get_assignments_full(canvas_url: str, token: str, course_id: int) -> list[dict]:
+    """返回全部作业（含已截止）与提交分数 [{id, name, due_at, points_possible, html_url, score, submitted}]。
+
+    include[]=submission 让每作业带 submission 对象；score 取 submission.score
+    （无提交 None），submitted = 有 submitted_at。成绩明细用，不筛未来。
+    """
+    base = canvas_url.rstrip("/")
+    with requests.Session() as s:
+        data = _paginate(
+            s, f"{base}/api/v1/courses/{course_id}/assignments",
+            {"per_page": 100, "include[]": "submission"}, token,
+        )
+    out = []
+    for a in data:
+        sub = a.get("submission") or {}
+        out.append({
+            "id": a.get("id"),
+            "name": a.get("name", "(untitled)"),
+            "due_at": a.get("due_at") or "",
+            "points_possible": a.get("points_possible"),
+            "html_url": a.get("html_url")
+                or f"{base}/courses/{course_id}/assignments/{a.get('id')}",
+            "score": sub.get("score"),
+            "submitted": bool(sub.get("submitted_at")),
+        })
+    return out
+
+
+def get_todo(canvas_url: str, token: str) -> list[dict]:
+    """返回归一化待办 [{id, type, title, course_id, course_name, due_at, html_url, points_possible, overdue}]。
+
+    调 /api/v1/users/self/todo（含已过期项，无需课程参数）。due_at 解析失败按无截止
+    处理；overdue = 有截止且早于现在。按 due_at 升序，无截止排最后。
+    """
+    base = canvas_url.rstrip("/")
+    with requests.Session() as s:
+        data = _paginate(s, f"{base}/api/v1/users/self/todo", {"per_page": 100}, token)
+    now = datetime.now(timezone.utc)
+    out = []
+    for item in data:
+        asg = item.get("assignment") or {}
+        if not asg:
+            continue
+        due_raw = asg.get("due_at")
+        due_dt = None
+        if due_raw:
+            try:
+                due_dt = datetime.fromisoformat(due_raw.replace("Z", "+00:00"))
+            except ValueError:
+                due_dt = None
+        out.append({
+            "id": asg.get("id"),
+            "type": item.get("type") or "Assignment",
+            "title": asg.get("name", "(untitled)"),
+            "course_id": asg.get("course_id"),
+            "course_name": item.get("context_name") or "",
+            "due_at": due_raw or "",
+            "html_url": asg.get("html_url") or "",
+            "points_possible": asg.get("points_possible"),
+            "overdue": bool(due_dt and due_dt < now),
+        })
+    out.sort(key=lambda x: (x["due_at"] == "", x["due_at"]))
+    return out
+
+
+def get_calendar_events(canvas_url: str, token: str, course_ids: list[int],
+                        start_date: str, end_date: str) -> list[dict]:
+    """按课程拉日历事件，只保留 type=="event" 的一次性事件。
+
+    返回 [{id, title, course_id, start_at, end_at, location_name, html_url}]。
+    type=="assignment" 的日历事件（作业截止在日历上的展示）与待办重复，排除。
+    """
+    base = canvas_url.rstrip("/")
+    with requests.Session() as s:
+        data = _paginate(
+            s, f"{base}/api/v1/calendar_events",
+            {"context_codes[]": [f"course_{cid}" for cid in course_ids],
+             "start_date": start_date, "end_date": end_date, "per_page": 100}, token,
+        )
+    out = []
+    for ev in data:
+        if (ev.get("type") or "") != "event":
+            continue
+        match = re.fullmatch(r"course_(\d+)", ev.get("context_code") or "")
+        out.append({
+            "id": ev.get("id"),
+            "title": ev.get("title", "(untitled)"),
+            "course_id": int(match.group(1)) if match else None,
+            "start_at": ev.get("start_at") or "",
+            "end_at": ev.get("end_at") or ev.get("start_at") or "",
+            "location_name": ev.get("location_name") or "",
+            "html_url": ev.get("html_url") or "",
+        })
+    out.sort(key=lambda x: x["start_at"])
+    return out
