@@ -1,5 +1,6 @@
 """Banweb 课表解析与事件规格的单元测试（不依赖浏览器）。"""
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -547,3 +548,47 @@ def test_parse_exam_date_formats():
     assert banweb._parse_exam_date("15/12/2026") == "2026-12-15"
     assert banweb._parse_exam_date("15 Dec 2026") == "2026-12-15"
     assert banweb._parse_exam_date("") == ""
+
+
+# ---------------- 浏览器单线程 executor 看门狗 ----------------
+
+def test_on_browser_thread_normal_op_returns_result():
+    """健康 executor 上普通操作照常返回结果（回归保护）。"""
+    assert banweb._on_browser_thread(lambda: 42) == 42
+
+
+def test_on_browser_thread_recovers_after_stuck_worker(monkeypatch):
+    """单线程 worker 被永久阻塞后，看门狗应弃用旧 executor、重建并重试成功。
+
+    模拟故障：先用一个永远不返回的任务占住唯一的 worker 线程；随后任何新任务
+    都会排队超时。期望：_on_browser_thread 检测到超时 → 整体恢复 → 在全新的
+    executor 上重试并成功返回，而不是把 TimeoutError 抛给调用方。
+    """
+    monkeypatch.setattr(banweb, "_kill_zombie_chrome", lambda: None)
+    monkeypatch.setattr(banweb, "BROWSER_OP_TIMEOUT", 0.5)
+    released = threading.Event()
+
+    def blocker():
+        released.wait()  # 模拟对半死连接永久阻塞的浏览器调用
+
+    ex0 = banweb._browser_executor_instance()
+    ex0.submit(blocker)
+    try:
+        assert banweb._on_browser_thread(lambda: 42) == 42
+        # 恢复后 executor 必须是全新实例（旧卡死 executor 已被弃用）
+        assert banweb._browser_executor is not ex0
+    finally:
+        released.set()  # 让卡死线程退出，避免泄漏
+
+
+def test_recover_browser_swaps_executor_lock_and_refs(monkeypatch):
+    """恢复原语应弃用旧 executor、清空浏览器句柄，并换一把新锁。"""
+    monkeypatch.setattr(banweb, "_kill_zombie_chrome", lambda: None)
+    banweb._ctx = object()
+    banweb._page = object()
+    ex0 = banweb._browser_executor_instance()
+    lock0 = banweb._lock
+    banweb._recover_browser_subprocess()
+    assert banweb._browser_executor is not ex0
+    assert banweb._lock is not lock0
+    assert banweb._ctx is None and banweb._page is None

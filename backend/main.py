@@ -463,8 +463,15 @@ def download_files(req: DownloadRequest):
 
 @app.post("/api/banweb/status")
 def banweb_status():
-    """AIMS 登录态（opening / needs_login / logged_in / error）。"""
-    return banweb.get_status()
+    """AIMS 登录态（opening / needs_login / logged_in / error）。
+
+    任何异常都返回 {ok:false, error} JSON，而不是裸 500：前端轮询靠 status 的
+    ok 字段走兜底，裸 500 只会让界面停留在上一次的状态。
+    """
+    try:
+        return banweb.get_status()
+    except Exception as exc:
+        return {"ok": False, "status": "error", "error": str(exc)}
 
 
 @app.post("/api/banweb/terms")

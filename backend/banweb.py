@@ -56,11 +56,15 @@ _OKTA_SUBMIT = 'input[type="submit"], button[type="submit"], button[data-type="s
 _OKTA_ERROR = '[data-se="o-form-error-container"]'
 
 _lock = threading.RLock()
+# 单次浏览器操作执行的硬时限：超时即判定卡死。任一 _run 的正常耗时都被内部各
+# Playwright 步骤的超时（goto≤60s、load≤60s 等）封顶，180s 是安全上界。
+BROWSER_OP_TIMEOUT = 180
 _pw = None
 _ctx = None
 _page = None
 _browser_headless: bool | None = None   # 当前浏览器是否无头（None=附着到外部实例）
 _browser_executor: concurrent.futures.ThreadPoolExecutor | None = None
+_recovery_lock = threading.Lock()       # 中毒恢复互斥：并发请求只重建一次
 
 
 class BanwebError(RuntimeError):
@@ -598,6 +602,41 @@ def _find_page(ctx) -> object:
     return ctx.pages[0] if ctx.pages else ctx.new_page()
 
 
+def _browser_executor_instance():
+    """取当前单线程 executor；首次调用时惰性创建。"""
+    global _browser_executor
+    if _browser_executor is None:
+        _browser_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="banweb-browser")
+    return _browser_executor
+
+
+def _recover_browser_subprocess() -> None:
+    """浏览器子系统判定中毒后整体重建。
+
+    单线程 worker 一旦被永久阻塞（如对半死的 CDP 连接做无超时的存活探测）就
+    无法被中断，只能弃用旧 executor、另起一个全新的；卡死线程攥着的旧 RLock
+    也必须换掉，否则新线程会在 `with _lock` 处继续死等。随后清空浏览器句柄
+    （_pw 驱动实例保留复用）、杀掉占住 9339 的僵尸 Chrome，让下一次
+    _ensure_browser 从干净状态重新开窗。被弃用的卡死线程变成无害僵尸线程；
+    该事件罕见（实测服务器连续运行约一天触发一次），可接受。
+    """
+    global _browser_executor, _lock
+    with _recovery_lock:
+        if _browser_executor is None:
+            return
+        old = _browser_executor
+        _browser_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="banweb-browser")
+        _lock = threading.RLock()
+        _reset_browser()
+        _kill_zombie_chrome()
+        try:
+            old.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+
+
 def _on_browser_thread(fn):
     """在专属线程上运行 fn，返回其返回值。
 
@@ -605,12 +644,33 @@ def _on_browser_thread(fn):
     sync 端点跑在线程池里，换线程再调用会抛 "Cannot switch to a different
     thread"（实测 launch_persistent_context 必炸）。用单 worker 的线程池把
     所有浏览器操作钉在一个线程上。
+
+    看门狗：单线程 executor 是单点故障——某次操作若永久阻塞（driver 对半死
+    连接不回包也不报错），worker 卡死，之后所有浏览器请求排队至超时，整条
+    AIMS 链路瘫痪且无法自愈。这里给每次提交加硬时限：超时即判定浏览器子系统
+    中毒 → _recover_browser_subprocess 整体重建 → 在全新 executor 上重试一次。
+    若恢复已被别的并发请求抢先完成（全局 executor 已不是我们提交的那个），
+    则直接在新 executor 上重试，不再重复重建。
     """
-    global _browser_executor
-    if _browser_executor is None:
-        _browser_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="banweb-browser")
-    return _browser_executor.submit(fn).result(timeout=180)
+    for attempt in range(2):
+        ex = _browser_executor_instance()
+        try:
+            fut = ex.submit(fn)
+        except Exception:
+            fut = None  # executor 刚被别的恢复 shutdown（竞态）→ 直接走重试
+        if fut is not None:
+            try:
+                return fut.result(timeout=BROWSER_OP_TIMEOUT)
+            except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
+                pass  # 卡死 / 被恢复流程取消：交给下方恢复与重试
+            except Exception:
+                raise  # 操作自身抛错（BanwebError 等）→ 正常传播
+        if attempt == 0:
+            if _browser_executor is ex:
+                _recover_browser_subprocess()  # 无人抢先 → 由本次负责恢复
+            continue  # 恢复后（或已被他人恢复）→ 在新 executor 上重试
+        raise BanwebError("AIMS 浏览器无响应，已尝试自动恢复仍失败，请稍后重试")
+    raise BanwebError("AIMS 浏览器不可用")  # 保险，实际不可达
 
 
 def _target_closed(exc: Exception) -> bool:
@@ -677,16 +737,19 @@ def _kill_zombie_chrome() -> None:
     2) 再按 profile 路径 pkill -9 兜底（清理只占 profile 锁、没占端口的进程）。
     只在该端口已连不上（connect_over_cdp 失败）时才会走到这里，不会误杀活窗口。
     """
+    # subprocess.run 都带 timeout：卡死的 lsof/pkill 不应拖住调用方（尤其在看门狗
+    # 恢复路径里，调用方正持有 _recovery_lock）
     try:
         out = subprocess.run(
             ["lsof", "-nP", "-tiTCP", f"{CDP_PORT}", "-sTCP:LISTEN"],
-            capture_output=True, text=True, check=False)
+            capture_output=True, text=True, check=False, timeout=5)
         for pid in out.stdout.split():
-            subprocess.run(["kill", "-9", pid], check=False)
+            subprocess.run(["kill", "-9", pid], check=False, timeout=5)
     except Exception:
         pass
     try:
-        subprocess.run(["pkill", "-9", "-f", str(PROFILE_DIR)], check=False)
+        subprocess.run(["pkill", "-9", "-f", str(PROFILE_DIR)],
+                       check=False, timeout=5)
     except Exception:
         pass
     # 等端口真正释放（最多 ~3 秒），否则立刻 launch 仍可能撞上残留
@@ -694,7 +757,7 @@ def _kill_zombie_chrome() -> None:
         try:
             out = subprocess.run(
                 ["lsof", "-nP", "-i", f":{CDP_PORT}"],
-                capture_output=True, text=True, check=False)
+                capture_output=True, text=True, check=False, timeout=2)
             if not out.stdout.strip():
                 return
         except Exception:
