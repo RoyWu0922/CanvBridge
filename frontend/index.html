@@ -5,6 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Canvas 课程助手</title>
 <link rel="stylesheet" href="/static/app.css">
+<script>
+  // 主题预解析：首次绘制前设 <html data-theme>，避免跟随系统时先闪一遍浅色。
+  // sc_theme: "light" | "dark" | "system"（缺省=system）。真正的持久化/监听由 app.js 做。
+  (function () {
+    try {
+      var mode = localStorage.getItem("sc_theme") || "system";
+      var dark = mode === "dark" || (mode === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+    } catch (e) {
+      document.documentElement.dataset.theme = "light";
+    }
+  })();
+</script>
 </head>
 <body>
 <header class="app-header">
@@ -26,7 +39,6 @@
       <label class="field"><span data-i18n="sync.start"></span><input id="inpStart" type="date"></label>
       <label class="field"><span data-i18n="sync.end"></span><input id="inpEnd" type="date"></label>
       <button id="btnLoadCourses" class="btn btn-ghost" data-i18n="btn.load_courses"></button>
-      <button id="btnSync" class="btn btn-primary" data-i18n="btn.sync"></button>
     </div>
     <div id="courseCheckboxes" class="chips"></div>
   </section>
@@ -142,6 +154,11 @@
       <button id="btnCloseSettings" class="modal-close" data-i18n-aria="settings.close">✕</button>
     </div>
     <div class="grid">
+      <label class="field"><span data-i18n="settings.theme"></span><select id="selTheme">
+        <option value="system" data-i18n="settings.theme_system"></option>
+        <option value="light" data-i18n="settings.theme_light"></option>
+        <option value="dark" data-i18n="settings.theme_dark"></option>
+      </select></label>
       <label class="field"><span data-i18n="settings.canvas_url"></span><input id="canvasUrl" type="text" placeholder="https://canvas.cityu.edu.hk"></label>
       <label class="field"><span data-i18n="settings.canvas_token"></span><input id="canvasToken" type="password" placeholder="…"></label>
       <label class="field"><span data-i18n="settings.llm_base"></span><input id="llmBaseUrl" type="text" placeholder="https://api.deepseek.com/v1"></label>
@@ -152,6 +169,14 @@
           <input id="downloadDir" type="text" placeholder="~/Downloads/Canvas课程文件" style="flex:1">
           <button id="btnBrowseDir" type="button" class="btn btn-ghost" data-i18n="settings.browse_dir"></button>
         </div>
+      </div>
+    </div>
+    <div style="margin-top:20px">
+      <span class="eyebrow" data-i18n="settings.ignore_heading"></span>
+      <div id="ignoreCourses" class="chips" style="margin-bottom:6px"></div>
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <button id="btnClearIgnore" class="btn btn-ghost" data-i18n="settings.clear_ignore"></button>
+        <span class="muted" data-i18n="settings.ignore_hint"></span>
       </div>
     </div>
     <div style="margin-top:20px">

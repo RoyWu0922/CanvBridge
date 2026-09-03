@@ -4,6 +4,27 @@ const $$ = (sel) => [...document.querySelectorAll(sel)];
 const KEY = ["canvasUrl","canvasToken","llmBaseUrl","llmApiKey","llmModel","downloadDir"];
 const ALERTS = [[0,"alert.none"],[5,"alert.min5"],[10,"alert.min10"],[30,"alert.min30"],[60,"alert.hour1"],[120,"alert.hour2"],[360,"alert.hour6"],[720,"alert.hour12"],[1440,"alert.day1"]];
 
+/* 外观主题：light / dark / system（跟随系统），写 localStorage 的 sc_theme。
+   首绘前的解析由 index.html 头部内联脚本负责，这里负责持久化 + 实时跟随系统 + 下拉同步。 */
+const THEME_KEY = "sc_theme";
+const _themeMQ = window.matchMedia("(prefers-color-scheme: dark)");
+let themeMode = "system";
+try { const _v = localStorage.getItem(THEME_KEY); if (_v === "light" || _v === "dark" || _v === "system") themeMode = _v; } catch (e) {}
+function applyThemeAttr(){
+  const dark = themeMode === "dark" || (themeMode === "system" && _themeMQ.matches);
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+}
+function _themeMQChanged(){ if (themeMode === "system") applyThemeAttr(); }
+function applyTheme(mode){
+  if (mode !== "light" && mode !== "dark" && mode !== "system") mode = "system";
+  themeMode = mode;
+  try { localStorage.setItem(THEME_KEY, mode); } catch (e) {}
+  applyThemeAttr();
+  if (mode === "system") _themeMQ.addEventListener("change", _themeMQChanged);
+  else _themeMQ.removeEventListener("change", _themeMQChanged);
+}
+applyTheme(themeMode);
+
 function loadSettings(){ KEY.forEach(k=>{ const v=localStorage.getItem("sc_"+k); if(v) $(k).value=v; }); }
 function saveSettings(){ KEY.forEach(k=>localStorage.setItem("sc_"+k, $(k).value)); }
 function settings(){
@@ -106,12 +127,13 @@ function fillProfessorFilter(){
 }
 
 /* 设置弹窗 */
-function openSettings(){ $("settingsModal").hidden=false; setTimeout(()=>$("canvasUrl").focus(), 60); refreshAimsUi(); }
+function openSettings(){ $("settingsModal").hidden=false; $("selTheme").value = themeMode; setTimeout(()=>$("canvasUrl").focus(), 60); refreshAimsUi(); fillIgnoreCourses(); }
 function closeSettings(){ $("settingsModal").hidden=true; }
 $("btnSettings").onclick = openSettings;
 $("btnCloseSettings").onclick = closeSettings;
 $("settingsModal").querySelector(".modal-backdrop").addEventListener("click", closeSettings);
 document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("settingsModal").hidden) closeSettings(); });
+$("selTheme").addEventListener("change", e => applyTheme(e.target.value));
 
 /* 下载目录：点「浏览」弹系统文件夹选择框，选中后直接填入（取消则无操作） */
 $("btnBrowseDir").onclick = async () => {
@@ -416,14 +438,82 @@ $("btnLoadCourses").onclick = async () => {
     const r=await api("courses", s);
     if(!r.ok){ setStatus(t("status.courses_fail")+r.error,"err"); return; }
     courseList=r.courses;
-    $("courseCheckboxes").innerHTML = courseList.map(c=>
-      `<label class="chip"><input type="checkbox" checked data-id="${c.id}"> ${esc(c.name)}</label>`).join("");
+    renderCourseCheckboxes(courseList);
     setStatus(t("status.courses_loaded", {n: courseList.length}),"ok");
   });
   // 测试连接 → 顺带同步公告（只拉原文，不调 AI）
   if(await syncAnnouncements()) switchTab("tabAnnounce");
 };
 function selectedCourses(){ return [...document.querySelectorAll("#courseCheckboxes input:checked")].map(i=>Number(i.dataset.id)); }
+
+/* 记住上次课程勾选（含取消勾选的），下次「加载课程」自动还原 */
+const COURSE_SEL_KEY = "sc_courseChecked";
+function savedCourseSel(){
+  try {
+    const v = JSON.parse(localStorage.getItem(COURSE_SEL_KEY) || "null");
+    return Array.isArray(v) ? new Set(v) : null;   // null = 还没有记忆
+  } catch (e) { return null; }
+}
+function saveCourseSel(){ localStorage.setItem(COURSE_SEL_KEY, JSON.stringify(selectedCourses())); }
+function renderCourseCheckboxes(courses){
+  const saved = savedCourseSel();
+  const ignored = savedCourseIgnored();
+  const shown = ignored && ignored.size ? courses.filter(c => !ignored.has(c.id)) : courses;
+  if(!shown.length){
+    $("courseCheckboxes").innerHTML = `<span class="muted">${t("settings.ignore_all")}</span>`;
+    return;
+  }
+  $("courseCheckboxes").innerHTML = shown.map(c => {
+    const on = !saved || saved.has(c.id);           // 无记忆 / 新课程 → 默认勾选
+    return `<label class="chip"><input type="checkbox"${on ? " checked" : ""} data-id="${c.id}"> ${esc(c.name)}</label>`;
+  }).join("");
+}
+$("courseCheckboxes").addEventListener("change", e => {
+  if (e.target && e.target.matches("input[data-id]")) { saveCourseSel(); scheduleAutoSync(); }
+});
+
+/* 忽略课程：在设置里勾选即忽略 —— 从顶部课程区隐藏、永不自动勾选 */
+const COURSE_IGNORE_KEY = "sc_courseIgnored";
+function savedCourseIgnored(){
+  try {
+    const v = JSON.parse(localStorage.getItem(COURSE_IGNORE_KEY) || "null");
+    return Array.isArray(v) ? new Set(v) : null;   // null = 没有忽略
+  } catch (e) { return null; }
+}
+function saveCourseIgnored(ids){
+  localStorage.setItem(COURSE_IGNORE_KEY, JSON.stringify(ids));
+  // 刚被忽略的课同步从「勾选记忆」里移除：以后恢复时默认不勾
+  const checked = savedCourseSel();
+  if (checked){
+    const drop = new Set(ids);
+    const next = [...checked].filter(id => !drop.has(id));
+    localStorage.setItem(COURSE_SEL_KEY, JSON.stringify(next));
+  }
+}
+function fillIgnoreCourses(){
+  const box = $("ignoreCourses");
+  if (!box) return;
+  if (!courseList.length){
+    box.innerHTML = `<span class="muted">${t("settings.ignore_empty")}</span>`;
+    return;
+  }
+  const ignored = savedCourseIgnored() || new Set();
+  box.innerHTML = courseList.map(c => {
+    const on = ignored.has(c.id);
+    return `<label class="chip"><input type="checkbox"${on ? " checked" : ""} data-id="${c.id}"> ${esc(c.name)}</label>`;
+  }).join("");
+}
+$("ignoreCourses").addEventListener("change", e => {
+  if (!e.target || !e.target.matches("input[data-id]")) return;
+  const ids = [...document.querySelectorAll("#ignoreCourses input:checked")].map(i => Number(i.dataset.id));
+  saveCourseIgnored(ids);
+  if (courseList.length) renderCourseCheckboxes(courseList);  // 顶部课程区立即增删
+});
+$("btnClearIgnore").onclick = () => {
+  localStorage.removeItem(COURSE_IGNORE_KEY);
+  if (courseList.length) renderCourseCheckboxes(courseList);
+  fillIgnoreCourses();
+};
 
 /* 同步公告：只拉原始公告，不做 AI 总结 */
 async function syncAnnouncements(){
@@ -444,11 +534,22 @@ async function syncAnnouncements(){
   setStatus(t("status.sync_done", {n: summaryResults.length}),"ok");
   return true;
 }
-$("btnSync").onclick = async () => {
-  await withBusy(t("status.syncing"), $("btnSync"), async ()=>{
-    if(await syncAnnouncements()) switchTab("tabAnnounce");
-  });
-};
+/* 改日期范围 / 课程勾选 → 自动重同步公告（去抖 600ms，不遮罩、不切页签） */
+let _autoSyncT = null;
+function scheduleAutoSync(){
+  clearTimeout(_autoSyncT);                                  // 作废先前排队；guard 不通过也清掉，避免悬空触发
+  const s = settings();
+  if(!s.canvas_url || !s.canvas_token) return;               // 还没配 Canvas
+  if(!courseList.length) return;                             // 还没加载过课程
+  if(!selectedCourses().length) return;                      // 全不选时不打扰
+  if($("btnLoadCourses").disabled) return;                   // 手动「加载课程+同步」进行中
+  _autoSyncT = setTimeout(async ()=>{
+    _autoSyncT = null;
+    const st=$("inpStart").value, en=$("inpEnd").value;
+    if(!st || !en || st>en) return;                          // 范围还没填好，等下一次
+    await syncAnnouncements();
+  }, 600);
+}
 
 /* 单门课程 AI 总结（手点） */
 async function summarizeAnnouncement(orig){
@@ -641,17 +742,19 @@ $("btnListFiles").onclick = async () => {
   await withBusy(t("status.loading_files"), $("btnListFiles"), async ()=>{
     const r=await api("list_files",{ ...s, course_ids:ids, download_dir:downloadDir() });
     if(!r.ok){ setStatus(t("status.files_fail")+r.error,"err"); return; }
-    fileCourses=r.courses; renderFiles();
+    fileCourses=r.courses; expandedFiles.clear(); renderFiles();   // 新一批课程默认全部收起
     setStatus(t("status.files_loaded", {n: fileCourses.length}),"ok");
   });
 };
+/* 文件页展开的课程（按 course_id）。新列出文件时清空 → 默认全收起；筛选重渲时保留，不打断查看 */
+const expandedFiles = new Set();
 function renderFiles(){
   const filter=$("inpTypeFilter").value.toLowerCase().trim().replace(/^\./,"");
   fillCourseFilter("selFileCourse", fileCourses.map(c => c.name));
   const courseSel = $("selFileCourse").value;
   const shown = fileCourses
     .filter(c => !courseSel || c.name === courseSel)
-    .map(c => ({ ...c, _orig: fileCourses.indexOf(c), files:(c.files||[]).filter(f=>{
+    .map(c => ({ ...c, _orig: fileCourses.indexOf(c), _empty:(c.files||[]).length===0, files:(c.files||[]).filter(f=>{
       if(!filter) return true;
       return (f.content_type||"").toLowerCase().includes(filter)
           || (f.display_name||"").toLowerCase().endsWith("."+filter);
@@ -663,13 +766,16 @@ function renderFiles(){
   }
   $("filesArea").innerHTML = shown.map((c)=>{
     const cfs=c.files||[];
-    return `
-    <div class="course-card">
-      <div class="course-name"><label class="course-sel" title="${escAttr(t("files.course_sel"))}"><input type="checkbox" class="cs" data-orig="${c._orig}"></label>${esc(c.name)} ${c.error?`<span style="color:var(--err);font-size:12px">（${esc(c.error)}）</span>`:""}</div>
-      ${cfs.map(f=>`
+    const rows = cfs.map(f=>`
         <div class="item"><input type="checkbox" class="fl" data-ci="${c._orig}" data-fi="${f.file_id}" ${f.saved?"":"checked"}>
           <div><div class="item-title">${esc(f.display_name)} <span class="muted">（${esc(f.content_type)}）</span>${f.saved?` <span class="file-saved">${esc(t("files.saved"))}</span>`:""}</div>
-          <div class="file-path">${esc(f.path||"/")}</div></div></div>`).join("")}
+          <div class="file-path">${esc(f.path||"/")}</div></div></div>`).join("");
+    const has = cfs.length>0;
+    const open = has && expandedFiles.has(c.course_id);
+    return `
+    <div class="course-card${open?" open":""}">
+      <div class="course-name"><label class="course-sel" title="${escAttr(t("files.course_sel"))}"><input type="checkbox" class="cs" data-orig="${c._orig}"></label>${esc(c.name)} ${c.error?`<span style="color:var(--err);font-size:12px">（${esc(c.error)}）</span>`:c._empty?`<span class="muted" style="font-size:12px"> ${esc(t("files.no_files"))}</span>`:""}${has?`<button type="button" class="caret" data-cid="${c.course_id}" aria-expanded="${open}" title="${open?escAttr(t("files.collapse")):escAttr(t("files.expand"))}">▸</button>`:""}</div>
+      ${has?`<div class="items"${open?"":" hidden"}>${rows}</div>`:""}
     </div>`;
   }).join("");
   updateSelectAllBtn();
@@ -700,6 +806,19 @@ $("btnSelectAllFiles").onclick = () => {
   updateSelectAllBtn();
 };
 $("filesArea").addEventListener("click", (e)=>{
+  const ct=e.target.closest(".caret");
+  if(ct){
+    const card=ct.closest(".course-card");
+    const items=card.querySelector(".items");
+    const wasOpen = items && !items.hidden;              // 当前开着 → 本次点它收起
+    if(items) items.hidden = wasOpen;
+    card.classList.toggle("open", !wasOpen);
+    ct.setAttribute("aria-expanded", String(!wasOpen));
+    ct.title = wasOpen ? t("files.expand") : t("files.collapse");
+    const cid=Number(ct.dataset.cid);
+    if(wasOpen) expandedFiles.delete(cid); else expandedFiles.add(cid);
+    return;
+  }
   const cb=e.target.closest(".cs");
   if(!cb) return;
   // 浏览器已翻转勾选态：点 indeterminate → 全选；点已全选 → 取消全选
@@ -1393,8 +1512,14 @@ defaultRange();
 fillSelect("selCalendar", []); fillSelect("selList", []);
 fillAlert();
 renderSchedule();
-$("inpStart").addEventListener("change", refreshPill);
-$("inpEnd").addEventListener("change", refreshPill);
+function onTopRangeChange(){
+  refreshPill();
+  $("filterStart").value = $("inpStart").value;   // 公告总结的显示范围跟着同步窗口走
+  $("filterEnd").value = $("inpEnd").value;
+  scheduleAutoSync();
+}
+$("inpStart").addEventListener("change", onTopRangeChange);
+$("inpEnd").addEventListener("change", onTopRangeChange);
 refreshPill();
 $("filterStart").value=$("inpStart").value;
 $("filterEnd").value=$("inpEnd").value;
@@ -1406,8 +1531,7 @@ async function autoLoadOnOpen(){
   const r=await api("courses", s);
   if(!r.ok) return;                                 // 静默失败，用户可点「加载课程」重试
   courseList=r.courses;
-  $("courseCheckboxes").innerHTML = courseList.map(c=>
-    `<label class="chip"><input type="checkbox" checked data-id="${c.id}"> ${esc(c.name)}</label>`).join("");
+  renderCourseCheckboxes(courseList);
   await syncAnnouncements();
   switchTab("tabAnnounce");
 }

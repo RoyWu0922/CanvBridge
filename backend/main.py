@@ -22,6 +22,16 @@ FRONTEND = FRONTEND_DIR / "index.html"
 
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
+# 开发缓存策略：/static 一律 no-cache（每次重新校验，改了前端文件立即生效）。
+# 浏览器对没有 Cache-Control 的静态资源会按 Last-Modified 做启发式缓存，
+# 改完前端仍显示旧版（旧 i18n 键、旧链接色）就是它导致的。
+@app.middleware("http")
+async def _static_no_cache(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 
 class CanvasConfig(BaseModel):
     canvas_url: str
@@ -442,6 +452,14 @@ def list_files(req: ListFilesRequest):
                     "saved": bool(by_id.get(f["id"], {}).get("saved")),
                 } for f in files],
             })
+        except canvas_client.CanvasError as exc:
+            # Canvas 对文件区为空 / 未对学生开放的课程返回 403。这里按「暂无文件」处理，
+            # 前端灰色弱提示，不再把它当权限错误红字吓人。真正的异常照旧走 error。
+            msg = str(exc)
+            if "HTTP 403" in msg:
+                results.append({"course_id": cid, "name": name, "files": [], "no_files": True})
+            else:
+                results.append({"course_id": cid, "name": name, "files": [], "error": msg})
         except Exception as exc:
             results.append({"course_id": cid, "name": name, "files": [], "error": str(exc)})
     return {"ok": True, "courses": results}
