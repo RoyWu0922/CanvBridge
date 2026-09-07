@@ -121,27 +121,62 @@ def extract_course_summary(base_url: str, api_key: str, model: str,
 _MAX_SYLLABUS = 20000
 
 
+def _syllabus_schema(language: str) -> str:
+    """syllabus 提取的结构化指令：要点总结 + 可写日历的日程/截止事项。"""
+    lang = "Chinese" if language == "zh" else "English"
+    return (
+        'Produce a JSON object with EXACTLY this structure:\n'
+        '{\n'
+        f'  "summary": "<concise {lang} bullet-point summary>",\n'
+        '  "calendar_events": [{"title": "...", "start": "YYYY-MM-DDTHH:MM:SS", '
+        '"end": "YYYY-MM-DDTHH:MM:00", "location": "...", "notes": "..."}],\n'
+        '  "reminders": [{"title": "...", "due_date": "YYYY-MM-DDTHH:MM:SS", "notes": "..."}]\n'
+        '}\n'
+        'Rules:\n'
+        f'- summary: in {lang}, as concise bullet points. Cover course objectives, grading '
+        'scheme, key deadlines and assessments, and anything a student must know.\n'
+        '- calendar_events: ONLY items with a concrete date/time or a single dated event '
+        '(exam dates, special sessions, reading-week holidays). If only a date is given, '
+        'use 09:00:00 as start and 23:59:00 as end. Location if mentioned, else "".\n'
+        '- reminders: ONLY deadlines and due dates without a start/end period (assignment '
+        'due dates, registration or add/drop deadlines). due_date is the deadline; default '
+        'to 23:59:00 if only a date is given.\n'
+        '- Titles and notes verbatim from the syllabus where possible.\n'
+        '- Return [] for calendar_events or reminders if there are none. Never invent dates '
+        'that are not in the syllabus.\n'
+        'Return ONLY the JSON object.'
+    )
+
+
 def summarize_syllabus(base_url: str, api_key: str, model: str,
                        course_name: str, syllabus_text: str,
-                       language: str = "zh") -> str:
-    """返回 syllabus 的中/英要点总结（纯文本）。
+                       language: str = "zh") -> dict:
+    """返回结构化结果 {summary, calendar_events, reminders}。
 
-    syllabus 过长截断防 token 超限；失败重试一次，仍失败抛异常
-    （由端点转 ok:false，不静默降级成原文）。
+    summary 为要点总结（目标语言）；calendar_events/reminders 是从 syllabus
+    提取的可写日历事项。syllabus 过长截断防 token 超限；输出需能解析为 JSON，
+    失败重试一次，仍失败抛异常（由端点转 ok:false，不静默降级成原文）。
     """
     if len(syllabus_text) > _MAX_SYLLABUS:
         syllabus_text = syllabus_text[:_MAX_SYLLABUS] + "\n…(已截断)"
-    lang = "Chinese" if language == "zh" else "English"
     prompt = (
-        f'You are an academic assistant. Summarize the syllabus for "{course_name}" '
-        f"as concise bullet points in {lang}. Cover: course objectives, grading "
-        f"scheme, key deadlines and assessments, and anything a student must know.\n\n"
-        f"Syllabus:\n{syllabus_text}"
+        f'You are an academic assistant. Below is the syllabus for "{course_name}". '
+        f"Extract a summary and any dated schedule items exactly as instructed.\n\n"
+        f"Syllabus:\n{syllabus_text}\n\n"
+        + _syllabus_schema(language)
     )
     last_err: Exception | None = None
     for _attempt in range(2):
         try:
-            return _call_chat(base_url, api_key, model, prompt, json_mode=False).strip()
+            content = _call_chat(base_url, api_key, model, prompt, json_mode=True)
+            parsed = _parse_json(content)
+            if not isinstance(parsed, dict):
+                raise ValueError("LLM 返回非 JSON 对象")
+            return {
+                "summary": parsed.get("summary", ""),
+                "calendar_events": parsed.get("calendar_events") or [],
+                "reminders": parsed.get("reminders") or [],
+            }
         except Exception as exc:
             last_err = exc
     raise RuntimeError(f"Syllabus 总结失败: {last_err}") from last_err

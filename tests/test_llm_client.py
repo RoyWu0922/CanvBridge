@@ -69,30 +69,44 @@ def test_extract_fallback_on_non_dict_json(monkeypatch):
     assert result["calendar_events"] == []
 
 
-def test_summarize_syllabus_returns_text(monkeypatch):
-    """json_mode 关掉（plain text），strip 后返回总结。"""
+def test_summarize_syllabus_returns_structured(monkeypatch):
+    """json_mode 打开：返回解析后的 {summary, calendar_events, reminders}。"""
     captured = {}
+    payload = json.dumps({
+        "summary": "- Objective: learn Python\n- Grading: 40% exam",
+        "calendar_events": [{"title": "Midterm", "start": "2026-11-12T14:00:00",
+                             "end": "2026-11-12T17:00:00", "location": "LT-1", "notes": ""}],
+        "reminders": [{"title": "HW1", "due_date": "2026-09-15T23:59:00", "notes": ""}],
+    })
     def fake_call(base, key, model, prompt, json_mode=True):
         captured["json_mode"] = json_mode
         captured["prompt"] = prompt
-        return "  - Objective: learn Python\n- Grading: 40% exam\n"
+        return payload
     monkeypatch.setattr(llm_client, "_call_chat", fake_call)
     out = llm_client.summarize_syllabus(
         "https://llm/v1", "key", "m", "CS 101", "<p>syllabus</p>", language="zh")
-    assert out == "- Objective: learn Python\n- Grading: 40% exam"
-    assert captured["json_mode"] is False
+    assert out == {"summary": "- Objective: learn Python\n- Grading: 40% exam",
+                   "calendar_events": [{"title": "Midterm", "start": "2026-11-12T14:00:00",
+                                         "end": "2026-11-12T17:00:00",
+                                         "location": "LT-1", "notes": ""}],
+                   "reminders": [{"title": "HW1", "due_date": "2026-09-15T23:59:00",
+                                  "notes": ""}]}
+    assert captured["json_mode"] is True
     assert "CS 101" in captured["prompt"] and "Chinese" in captured["prompt"]
 
 
 def test_summarize_syllabus_truncates_long(monkeypatch):
-    """超长 syllabus 截断到约 20000 字符，防 token 超限。"""
+    """超长 syllabus 截断到约 20000 字符，防 token 超限（总 prompt 含 schema 指令开销）。"""
     captured = {}
     def fake_call(base, key, model, prompt, json_mode=True):
         captured["prompt"] = prompt
-        return "ok"
+        return json.dumps({"summary": "ok", "calendar_events": [], "reminders": []})
     monkeypatch.setattr(llm_client, "_call_chat", fake_call)
     llm_client.summarize_syllabus("u", "k", "m", "C", "x" * 50000)
-    assert len(captured["prompt"]) < 21000
+    assert "x" * 20000 in captured["prompt"]                 # 正文被压到 _MAX_SYLLABUS
+    assert "x" * 20001 not in captured["prompt"]
+    assert "…(已截断)" in captured["prompt"]
+    assert len(captured["prompt"]) < 22000                   # 20000 + 指令开销富余
 
 
 def test_summarize_syllabus_raises_after_retry(monkeypatch):
@@ -100,5 +114,12 @@ def test_summarize_syllabus_raises_after_retry(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("api down")
     monkeypatch.setattr(llm_client, "_call_chat", boom)
+    with pytest.raises(RuntimeError):
+        llm_client.summarize_syllabus("u", "k", "m", "C", "text")
+
+
+def test_summarize_syllabus_non_json_raises(monkeypatch):
+    """非 JSON 输出重试一次后仍失败 → 抛异常（不静默降级成原文）。"""
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: "not json at all")
     with pytest.raises(RuntimeError):
         llm_client.summarize_syllabus("u", "k", "m", "C", "text")

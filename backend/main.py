@@ -1,12 +1,13 @@
 """FastAPI 应用：Canvas 课程助手后端。"""
 from __future__ import annotations
 
+import itertools
 import sys
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -83,6 +84,19 @@ class ListFilesRequest(CanvasConfig):
 
 class DownloadRequest(CanvasConfig):
     items: list[dict]  # [{course_id, file_id, dest_path}]
+
+
+class DownloadModuleItemRequest(CanvasConfig):
+    download_dir: str
+    course_id: int
+    course_name: str = ""
+    module_name: str = ""
+    file_id: int
+
+
+class ModuleFileStreamRequest(CanvasConfig):
+    course_id: int
+    file_id: int
 
 
 class BanwebScheduleRequest(BaseModel):
@@ -237,9 +251,15 @@ def summarize_course(req: SummarizeAnnouncementsRequest):
 def course_detail(req: CourseDetailRequest):
     try:
         course = canvas_client.get_course(req.canvas_url, req.canvas_token, req.course_id)
-        return {"ok": True, "course": course}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+    # modules 属增强信息：拉取失败只报 modules_error，不拖垮详情展示
+    modules, modules_error = None, None
+    try:
+        modules = canvas_client.get_modules(req.canvas_url, req.canvas_token, req.course_id)
+    except Exception as exc:
+        modules_error = str(exc)
+    return {"ok": True, "course": course, "modules": modules, "modules_error": modules_error}
 
 
 @app.post("/api/assignments")
@@ -400,10 +420,10 @@ def banweb_write_exams(req: WriteExamsRequest):
 def summarize_syllabus(req: SummarizeSyllabusRequest):
     try:
         course = canvas_client.get_course(req.canvas_url, req.canvas_token, req.course_id)
-        summary = llm_client.summarize_syllabus(
+        result = llm_client.summarize_syllabus(
             req.llm_base_url, req.llm_api_key, req.llm_model,
             course["name"], course["syllabus_text"], language=req.language)
-        return {"ok": True, "summary": summary}
+        return {"ok": True, **result}   # summary + calendar_events + reminders
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -477,6 +497,65 @@ def download_files(req: DownloadRequest):
             continue
     planned = [{"file_id": i["file_id"], "dest_path": i["dest_path"]} for i in req.items]
     return files_downloader.download_items(req.canvas_url, req.canvas_token, files_by_id, planned)
+
+
+@app.post("/api/download_module_item")
+def download_module_item(req: DownloadModuleItemRequest):
+    """下载单个模块 File 条目到 下载目录/课程/模块/文件名；已存在则跳过。
+
+    模块 File 条目的 file_id 即 Canvas 文件 id：先 get_file 拿到真实文件名与
+    下载地址，再经下载目录规划目标路径。返回 dest_path 与是否命中已存在。
+    """
+    try:
+        info = canvas_client.get_file(req.canvas_url, req.canvas_token,
+                                      req.course_id, req.file_id)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    display = (info.get("display_name") or info.get("filename")
+               or f"file_{req.file_id}")
+    course_name = req.course_name or f"Course {req.course_id}"
+    dest = files_downloader.module_dest(req.download_dir, course_name,
+                                        req.module_name, display)
+    if dest.exists():
+        return {"ok": True, "saved": True, "dest_path": str(dest)}
+    try:
+        if not info.get("url"):
+            return {"ok": False, "error": "缺少下载地址"}
+        canvas_client.download_file(req.canvas_url, req.canvas_token,
+                                    info["url"], str(dest))
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "saved": False, "dest_path": str(dest)}
+
+
+@app.post("/api/module_file_stream")
+def module_file_stream(req: ModuleFileStreamRequest):
+    """以 inline 方式把模块 File 条目本体回传给前端（内联预览，不触发下载）。
+
+    Canvas 文件对象自带的 url 是带 download_frd 的下载直链——浏览器新标签打开会
+    被 Canvas 判定为附件下载，无法内联渲染。这里由后端用 token 流式取回文件字节，
+    以文件真实 content-type 回传；前端 fetch→blob 后让浏览器内置 PDF 查看器渲染。
+    失败路径一律回 JSON {ok:false,error}。
+    """
+    try:
+        info = canvas_client.get_file(req.canvas_url, req.canvas_token,
+                                      req.course_id, req.file_id)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    info = info or {}
+    url = info.get("url") or ""
+    if not url:
+        return {"ok": False, "error": "缺少下载地址"}
+    content_type = info.get("content-type") or "application/octet-stream"
+    low_name = ((info.get("display_name") or info.get("filename") or "")).lower()
+    if content_type == "application/octet-stream" and low_name.endswith(".pdf"):
+        content_type = "application/pdf"
+    try:
+        it = canvas_client.stream_file(req.canvas_url, req.canvas_token, url)
+        first = next(it)                 # 提前触发连接/鉴权，失败在发响应头前暴露
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    return StreamingResponse(itertools.chain([first], it), media_type=content_type)
 
 
 @app.post("/api/banweb/status")

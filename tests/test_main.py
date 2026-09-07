@@ -85,10 +85,37 @@ def test_course_detail_ok(monkeypatch):
     monkeypatch.setattr(canvas_client, "get_course",
                         lambda u, t, cid: {"id": cid, "name": "CS 101",
                                            "syllabus_text": "s", "teachers": ["A"]})
+    monkeypatch.setattr(canvas_client, "get_modules",
+                        lambda u, t, cid: [{"id": 1, "name": "Week 1",
+                                            "items": [{"id": 11, "title": "Lecture",
+                                                       "type": "Page",
+                                                       "url": "https://x/courses/5/pages/11"}]}])
     r = client.post("/api/course_detail",
                     json={"canvas_url": "https://x", "canvas_token": "t", "course_id": 5})
-    assert r.json() == {"ok": True, "course": {"id": 5, "name": "CS 101",
-                                               "syllabus_text": "s", "teachers": ["A"]}}
+    assert r.json() == {"ok": True,
+                        "course": {"id": 5, "name": "CS 101", "syllabus_text": "s",
+                                   "teachers": ["A"]},
+                        "modules": [{"id": 1, "name": "Week 1",
+                                     "items": [{"id": 11, "title": "Lecture", "type": "Page",
+                                                "url": "https://x/courses/5/pages/11"}]}],
+                        "modules_error": None}
+
+
+def test_course_detail_modules_failure_keeps_ok(monkeypatch):
+    """modules 拉取失败只带 modules_error，不影响详情主数据。"""
+    monkeypatch.setattr(canvas_client, "get_course",
+                        lambda u, t, cid: {"id": cid, "name": "CS 101",
+                                           "syllabus_text": "", "teachers": []})
+    def _boom(u, t, cid):
+        raise RuntimeError("modules down")
+    monkeypatch.setattr(canvas_client, "get_modules", _boom)
+    r = client.post("/api/course_detail",
+                    json={"canvas_url": "https://x", "canvas_token": "t", "course_id": 5})
+    body = r.json()
+    assert body["ok"] is True
+    assert body["course"]["name"] == "CS 101"
+    assert body["modules"] is None
+    assert "modules down" in body["modules_error"]
 
 
 def test_course_detail_error(monkeypatch):
@@ -123,14 +150,18 @@ def test_summarize_syllabus_ok(monkeypatch):
                         lambda u, t, cid: {"id": cid, "name": "CS 101",
                                            "syllabus_text": "syllabus text"})
     captured = {}
+    result = {"summary": "要点",
+              "calendar_events": [{"title": "Midterm", "start": "2026-11-12T14:00:00",
+                                   "end": "2026-11-12T17:00:00", "location": "", "notes": ""}],
+              "reminders": [{"title": "HW1", "due_date": "2026-09-15T23:59:00", "notes": ""}]}
     def fake(base, key, model, name, text, language="zh"):
         captured.update(name=name, language=language)
-        return "要点"
+        return result
     monkeypatch.setattr(llm_client, "summarize_syllabus", fake)
     r = client.post("/api/summarize_syllabus", json={
         "canvas_url": "https://x", "canvas_token": "t", "llm_base_url": "https://llm/v1",
         "llm_api_key": "k", "llm_model": "m", "course_id": 5, "language": "zh"})
-    assert r.json() == {"ok": True, "summary": "要点"}
+    assert r.json() == {"ok": True, **result}
     assert captured["name"] == "CS 101"
     assert captured["language"] == "zh"
 
@@ -185,6 +216,148 @@ def test_list_files_and_download(monkeypatch):
     dl = r.json()
     assert dl["ok"] is True
     assert dl["downloaded"] == [dest]
+
+
+def test_download_module_item_ok(tmp_path, monkeypatch):
+    """模块文件下载：落到 下载目录/课程/模块/文件名，下载一次即成功。"""
+    downloaded = []
+    monkeypatch.setattr(canvas_client, "get_file",
+                        lambda u, t, cid, fid: {"display_name": "syllabus.pdf", "url": "http://x/dl"})
+    monkeypatch.setattr(canvas_client, "download_file",
+                        lambda u, t, url, dest: downloaded.append(str(dest)))
+    r = client.post("/api/download_module_item", json={
+        "canvas_url": "https://x", "canvas_token": "t",
+        "download_dir": str(tmp_path), "course_id": 5, "course_name": "CS 101",
+        "module_name": "Week 1", "file_id": 9})
+    body = r.json()
+    assert body["ok"] is True
+    assert body["saved"] is False
+    assert body["dest_path"].endswith("CS 101/Week 1/syllabus.pdf")
+    assert downloaded == [body["dest_path"]]
+
+
+def test_download_module_item_skips_existing(tmp_path, monkeypatch):
+    """目标已存在 → saved True 且不再调 download_file。"""
+    dest = tmp_path / "CS 101" / "Week 1" / "syllabus.pdf"
+    dest.parent.mkdir(parents=True)
+    dest.write_text("old")
+    called = []
+    monkeypatch.setattr(canvas_client, "get_file",
+                        lambda u, t, cid, fid: {"display_name": "syllabus.pdf", "url": "http://x/dl"})
+    monkeypatch.setattr(canvas_client, "download_file",
+                        lambda u, t, url, d: called.append(d))
+    r = client.post("/api/download_module_item", json={
+        "canvas_url": "https://x", "canvas_token": "t",
+        "download_dir": str(tmp_path), "course_id": 5, "course_name": "CS 101",
+        "module_name": "Week 1", "file_id": 9})
+    body = r.json()
+    assert body["ok"] is True
+    assert body["saved"] is True
+    assert body["dest_path"] == str(dest)
+    assert called == []
+
+
+def test_download_module_item_get_file_fails(tmp_path, monkeypatch):
+    """get_file 异常 → ok False + 错误；不触达下载。"""
+    def boom(u, t, cid, fid):
+        raise canvas_client.CanvasError("HTTP 403")
+    monkeypatch.setattr(canvas_client, "get_file", boom)
+    called = []
+    monkeypatch.setattr(canvas_client, "download_file",
+                        lambda u, t, url, d: called.append(d))
+    r = client.post("/api/download_module_item", json={
+        "canvas_url": "https://x", "canvas_token": "t",
+        "download_dir": str(tmp_path), "course_id": 5, "course_name": "CS 101",
+        "module_name": "Week 1", "file_id": 9})
+    body = r.json()
+    assert body["ok"] is False
+    assert "403" in body["error"]
+    assert called == []
+
+
+def test_download_module_item_no_course_name_default(tmp_path, monkeypatch):
+    """course_name 缺省 → 回退 Course {course_id}；模块名中的 / 净化成 _。"""
+    monkeypatch.setattr(canvas_client, "get_file",
+                        lambda u, t, cid, fid: {"filename": "a<b>.pdf", "url": "http://x/dl"})
+    monkeypatch.setattr(canvas_client, "download_file", lambda u, t, url, dest: None)
+    r = client.post("/api/download_module_item", json={
+        "canvas_url": "https://x", "canvas_token": "t",
+        "download_dir": str(tmp_path), "course_id": 7,
+        "module_name": "A/B", "file_id": 3})
+    dest_path = r.json()["dest_path"]
+    assert str(tmp_path) in dest_path
+    assert dest_path.endswith("Course 7/A_B/a<b>.pdf")   # 文件名只净化 / \ 与前导点
+    assert "/A/B/" not in dest_path
+
+
+def test_module_file_stream_ok(monkeypatch):
+    """模块文件 inline 转发：字节 + 真实 content-type 原样回传，不落盘。"""
+    got = []
+    monkeypatch.setattr(canvas_client, "get_file",
+                        lambda u, t, cid, fid: got.append((cid, fid)) or
+                        {"url": "https://files.example/dl?sig=abc",
+                         "display_name": "x.pdf", "content-type": "application/pdf"})
+    monkeypatch.setattr(canvas_client, "stream_file",
+                        lambda u, t, url: (chunk for chunk in (b"%PDF-1.4\n", b"data")))
+    r = client.post("/api/module_file_stream", json={
+        "canvas_url": "https://x", "canvas_token": "t", "course_id": 5, "file_id": 9})
+    assert got == [(5, 9)]
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/pdf")
+    assert r.content == b"%PDF-1.4\ndata"
+
+
+def test_module_file_stream_pdf_fallback_content_type(monkeypatch):
+    """content-type 缺失但文件名 .pdf → 按 application/pdf 回传，保证浏览器内联渲染。"""
+    monkeypatch.setattr(canvas_client, "get_file",
+                        lambda u, t, cid, fid: {"url": "https://files.example/dl",
+                                                "filename": "syllabus.pdf"})
+    monkeypatch.setattr(canvas_client, "stream_file",
+                        lambda u, t, url: (chunk for chunk in (b"pdf",)))
+    r = client.post("/api/module_file_stream", json={
+        "canvas_url": "https://x", "canvas_token": "t", "course_id": 5, "file_id": 9})
+    assert r.headers["content-type"].startswith("application/pdf")
+    assert r.content == b"pdf"
+
+
+def test_module_file_stream_get_file_fails(monkeypatch):
+    """get_file 抛错 → JSON {ok:false} 而非裸 500。"""
+    monkeypatch.setattr(canvas_client, "get_file",
+                        lambda u, t, cid, fid: (_ for _ in ()).throw(canvas_client.CanvasError("HTTP 403")))
+    r = client.post("/api/module_file_stream", json={
+        "canvas_url": "https://x", "canvas_token": "t", "course_id": 5, "file_id": 9})
+    body = r.json()
+    assert body["ok"] is False
+    assert "403" in body["error"]
+
+
+def test_module_file_stream_missing_url(monkeypatch):
+    """get_file 返回无 url → JSON {ok:false}「缺少下载地址」。"""
+    monkeypatch.setattr(canvas_client, "get_file",
+                        lambda u, t, cid, fid: {"display_name": "x.pdf"})
+    r = client.post("/api/module_file_stream", json={
+        "canvas_url": "https://x", "canvas_token": "t", "course_id": 5, "file_id": 9})
+    body = r.json()
+    assert body["ok"] is False
+    assert "缺少下载地址" in body["error"]
+
+
+def test_module_file_stream_fetch_fails(monkeypatch):
+    """流式取文件阶段失败（连不上/401）→ 响应头发出前转 JSON {ok:false}。"""
+    monkeypatch.setattr(canvas_client, "get_file",
+                        lambda u, t, cid, fid: {"url": "https://files.example/dl",
+                                                "content-type": "application/pdf"})
+
+    def _boom():
+        raise canvas_client.CanvasError("HTTP 401 无权限")
+        yield b""
+
+    monkeypatch.setattr(canvas_client, "stream_file", lambda u, t, url: _boom())
+    r = client.post("/api/module_file_stream", json={
+        "canvas_url": "https://x", "canvas_token": "t", "course_id": 5, "file_id": 9})
+    body = r.json()
+    assert body["ok"] is False
+    assert "401" in body["error"]
 
 
 def test_banweb_status(monkeypatch):

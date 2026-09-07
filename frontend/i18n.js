@@ -14,6 +14,8 @@ const I18N = {
     "tab.files": "课程文件",
     "tab.schedule": "课表",
     "tab.todo": "待办",
+    "unread.announce": "{n} 条未读新公告",
+    "unread.todo": "{n} 条未读新待办",
     "tab.grades": "成绩",
     "announce.filter.label": "事件筛选",
     "announce.filter.show_all": "显示全部公告内事件",
@@ -231,6 +233,19 @@ const I18N = {
     "detail.link_assignments": "作业",
     "detail.primary": "主讲",
     "detail.banweb_only": "仅 Banweb 数据（未匹配到 Canvas 课程）",
+    "detail.modules": "Modules",
+    "detail.no_modules": "该课程暂无模块",
+    "detail.modules_fail": "模块加载失败：",
+    "module.download": "下载文件",
+    "module.open_page": "打开页面",
+    "module.open_file": "打开文件",
+    "module.fetching": "正在获取「{f}」…",
+    "module.open_file_fail": "打开失败：",
+    "module.downloading": "正在下载「{f}」…",
+    "module.downloaded": "已保存到 {p}",
+    "module.saved": "文件已存在，无需重复下载",
+    "module.fail": "下载失败：",
+    "module.hint": "文件条目：点名称选打开方式，点右侧 ⤓ 直接下载",
     "status.assignments_fail": "加载作业失败：",
     "btn.load_assignments": "加载作业 due",
     "btn.hide_assignments": "隐藏作业 due",
@@ -273,6 +288,8 @@ const I18N = {
     "tab.files": "Files",
     "tab.schedule": "Schedule",
     "tab.todo": "To-do",
+    "unread.announce": "{n} new announcements",
+    "unread.todo": "{n} new to-dos",
     "tab.grades": "Grades",
     "announce.filter.label": "Filter events",
     "announce.filter.show_all": "Show all announcement events",
@@ -490,6 +507,19 @@ const I18N = {
     "detail.link_assignments": "Assignments",
     "detail.primary": "Primary",
     "detail.banweb_only": "Banweb data only (no matching Canvas course)",
+    "detail.modules": "Modules",
+    "detail.no_modules": "No modules in this course",
+    "detail.modules_fail": "Failed to load modules: ",
+    "module.download": "Download file",
+    "module.open_page": "Open page",
+    "module.open_file": "Open file",
+    "module.fetching": "Opening “{f}”…",
+    "module.open_file_fail": "Open failed: ",
+    "module.downloading": "Downloading “{f}”…",
+    "module.downloaded": "Saved to {p}",
+    "module.saved": "File already exists locally",
+    "module.fail": "Download failed: ",
+    "module.hint": "File item: click the name to open; click ⤓ to download",
     "status.assignments_fail": "Failed to load assignments: ",
     "btn.load_assignments": "Load due dates",
     "btn.hide_assignments": "Hide due dates",
@@ -533,7 +563,7 @@ function applyLang() {
   $$("[data-i18n-aria]").forEach(el => { el.setAttribute("aria-label", t(el.dataset.i18nAria)); });
   const langBtn = $("btnLang"); if (langBtn) langBtn.textContent = LANG() === "zh" ? "EN" : "中";
   if (typeof fillAlert === "function") {
-    for (const id of ["selAlert", "selSchedAlert"]) {
+    for (const id of ["selAlert", "selSchedAlert", "selDetailAlert"]) {
       const el = $(id);
       const prev = el ? el.value : "";
       fillAlert(id);

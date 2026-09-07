@@ -209,6 +209,10 @@ let detailCourse = null;         // {id, name, syllabus_text, teachers}
 let detailAssignments = [];      // 当前打开课程的作业列表
 let detailMeetings = [];         // 从课表打开的详情：该课程的 Banweb meetings（含完整地点）
 let detailSummary = "";          // 已生成的 AI 总结（切语言后仍显示）
+let detailModules = null;        // 课程 Modules（null=未取到/不适用，[]=确实没有）
+let detailModulesError = "";     // Modules 拉取失败信息（有值时展示弱提示）
+let detailSylEvents = [];        // 总结提取的日历事件（勾选 → 写入日历）
+let detailSylReminders = [];     // 总结提取的提醒（勾选 → 写入提醒列表）
 let detailBanweb = null;         // 从课表打开的详情：Banweb 课程块（code/section/crn/credits/course）
 
 function fmtDue(iso) {
@@ -244,23 +248,35 @@ function matchCourseByCode(code){
   if (!t2) return null;
   return courseList.find(c => norm(c.name).includes(t2)) || null;
 }
-function closeDetail(){ $("detailModal").hidden = true; }
+function closeDetail(){ closeModulePop(); $("detailModal").hidden = true; }
 $("btnCloseDetail").onclick = closeDetail;
 $("detailModal").querySelector(".modal-backdrop").addEventListener("click", closeDetail);
-document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("detailModal").hidden) closeDetail(); });
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  if (modulePop && !modulePop.hidden){ closeModulePop(); return; }
+  if (!$("detailModal").hidden) closeDetail();
+});
 
 async function openCourseDetail(canvasId, banwebCourse){
   detailBanweb = banwebCourse || null;
   detailMeetings = detailBanweb ? (detailBanweb.meetings || []) : [];
   detailSummary = "";
+  detailModules = null;
+  detailModulesError = "";
+  detailSylEvents = [];
+  detailSylReminders = [];
   detailCourse = null;
   detailAssignments = [];
   const s = settings();
   if (canvasId && s.canvas_url && s.canvas_token) {
     const r = await api("course_detail", { canvas_url:s.canvas_url, canvas_token:s.canvas_token,
                                            course_id:canvasId });
-    if (r.ok === true) detailCourse = r.course;   // 失败则退化为仅 Banweb 数据
-    try { await ensureAssignments([canvasId]); }  // 详情作业区数据
+    if (r.ok === true){
+      detailCourse = r.course;                     // 失败则退化为仅 Banweb 数据
+      detailModules = Array.isArray(r.modules) ? r.modules : null;
+      detailModulesError = r.modules_error || "";
+    }
+    try { await ensureAssignments([canvasId]); }   // 详情作业区数据
     catch (e) { /* 详情仍展示，作业区留空 */ }
     detailAssignments = Array.isArray(assignmentMarks[canvasId]) ? assignmentMarks[canvasId] : [];
   }
@@ -322,6 +338,19 @@ function renderDetail(){
           `</div>`;
       })()
     : "";
+  // ⑤ Canvas Modules：模块名 + 可点 items（每项超链接到 Canvas）
+  const modulesHtml = (c && (detailModules || detailModulesError))
+    ? `<div class="detail-section"><div class="sub-label">${t("detail.modules")}</div>` +
+      (detailModulesError
+        ? `<div class="muted">${t("detail.modules_fail")}${esc(detailModulesError)}</div>`
+        : !detailModules.length
+          ? `<div class="muted">${t("detail.no_modules")}</div>`
+          : detailModules.map(m =>
+              `<div class="detail-module" data-module="${escAttr(m.name)}"><div class="detail-module-title">${esc(m.name)}</div>` +
+              m.items.map(moduleItemHtml).join("") +
+              `</div>`).join("")) +
+      `</div>`
+    : "";
   const profs = (c && c.teachers ? c.teachers : []).map(x => `<span class="chip">${esc(x)}</span>`).join("");
   const profLine = profs ? `<div class="detail-prof">${t("detail.teachers")}: ${profs}</div>` : "";
   // ③ 每节谁上课：instr 带 (P) 标记为「主讲」
@@ -343,12 +372,31 @@ function renderDetail(){
     ? `<div class="detail-summary"><div class="sub-label">${t("detail.summary_label")}</div>
          ${esc(detailSummary)}</div>`
     : "";
+  // ⑥ syllabus 提取出的可写事项：日历事件 + 提醒，勾选后经底部 write-bar 写入
+  const sylExtractHtml = (detailSylEvents.length || detailSylReminders.length)
+    ? `<div class="detail-extract">` +
+      (detailSylEvents.length
+        ? `<div class="sub-label">${t("announce.calendar_events")}（${detailSylEvents.length}）</div>` +
+          detailSylEvents.map((e, ei) =>
+            `<div class="item"><input type="checkbox" class="syl-ev" data-si="${ei}">
+              <div><div class="item-title">${esc(e.title)}</div>
+              <div class="file-path">${esc(e.start)} → ${esc(e.end)}${e.location ? ` · ${esc(e.location)}` : ""}</div></div></div>`).join("")
+        : "") +
+      (detailSylReminders.length
+        ? `<div class="sub-label">${t("announce.reminders")}（${detailSylReminders.length}）</div>` +
+          detailSylReminders.map((e, ei) =>
+            `<div class="item"><input type="checkbox" class="syl-rm" data-si="${ei}">
+              <div><div class="item-title">${esc(e.title)}</div>
+              <div class="file-path">${t("announce.due")} ${esc(e.due_date)}</div></div></div>`).join("")
+        : "") +
+      `</div>`
+    : "";
   let syl = "";
   if (c && c.syllabus_text) {
     syl = `<div class="detail-section"><div class="sub-label">${t("detail.syllabus")}</div>
          <div class="detail-syllabus">${esc(c.syllabus_text)}</div>
          <button id="btnSummarize" class="btn btn-ghost">${t("detail.summarize")}</button>
-         ${summaryHtml}</div>`;
+         ${summaryHtml}${sylExtractHtml}</div>`;
   } else if (c) {
     syl = `<div class="detail-section"><div class="sub-label">${t("detail.syllabus")}</div>
          <div class="muted">${t("detail.no_syllabus")}</div></div>`;
@@ -369,17 +417,88 @@ function renderDetail(){
     ${bwMeta ? `<div class="detail-meta">${bwMeta}</div>` : ""}
     ${paceHtml}
     ${links}
+    ${modulesHtml}
     ${profLine}
     ${banwebOnly}
     ${loc}
     ${syl}
     ${c ? `<div class="detail-section"><div class="sub-label">${t("detail.assignments")}</div>${asg}</div>` : ""}`;
+  // 有提取项才显示底部写入条（写日历/写提醒下拉与按钮在 index.html 静态区块）
+  const wb = $("detailWriteBar");
+  if (wb) wb.hidden = !(detailSylEvents.length || detailSylReminders.length);
+}
+
+/* ===== 未读徽标：跨会话“已看集合”，判定新公告/新待办（红点显示在页签右上角） ===== */
+const SEEN_KEY = "sc_seen_items";
+const SEEN_CAP = 2000;                     // 集合上限，超出丢弃最旧的已看记录
+let seenSet = { announce: new Set(), todo: new Set() };
+function announceKey(c, a){ return a && a.id != null ? `${c.course_id}:${a.id}`
+  : `${c.course_id}:${a.posted_at || ""}:${(a.title || "").slice(0, 40)}`; }
+function todoKey(it){ return it.id != null ? String(it.id)
+  : `${it.type || "todo"}:${it.html_url || it.title || ""}`; }
+function loadSeenSet(){
+  let raw = null;
+  try { raw = JSON.parse(localStorage.getItem(SEEN_KEY) || "null"); } catch (e) { raw = null; }
+  seenSet = {
+    announce: new Set(raw && Array.isArray(raw.announce) ? raw.announce : []),
+    todo: new Set(raw && Array.isArray(raw.todo) ? raw.todo : []),
+  };
+}
+function saveSeenSet(){
+  const trim = set => { const a = [...set]; return a.length > SEEN_CAP ? a.slice(-SEEN_CAP) : a; };
+  try { localStorage.setItem(SEEN_KEY, JSON.stringify({
+    announce: trim(seenSet.announce), todo: trim(seenSet.todo) })); } catch (e) {}
+}
+loadSeenSet();
+/* 当前拉到的公告/待办里还没看过的条数 */
+function countNewAnnounce(){
+  const s = seenSet.announce;
+  return summaryResults.reduce((n, c) =>
+    n + (c.announcements || []).filter(a => !s.has(announceKey(c, a))).length, 0);
+}
+function countNewTodo(){
+  const s = seenSet.todo;
+  return todoItems.reduce((n, it) => n + (s.has(todoKey(it)) ? 0 : 1), 0);
+}
+/* 把某域当前拉到的条目记入已看（仅在有新增时才写 localStorage） */
+function markAnnounceSeen(){
+  let ch = false;
+  for (const c of summaryResults) for (const a of (c.announcements || [])) {
+    const k = announceKey(c, a); if (!seenSet.announce.has(k)) { seenSet.announce.add(k); ch = true; } }
+  if (ch) saveSeenSet();
+}
+function markTodoSeen(){
+  let ch = false;
+  for (const it of todoItems) { const k = todoKey(it); if (!seenSet.todo.has(k)) { seenSet.todo.add(k); ch = true; } }
+  if (ch) saveSeenSet();
+}
+const activeTabId = () => { const b = document.querySelector(".tab.active"); return b ? b.dataset.target : ""; };
+/* 在页签按钮右上角画/收红点徽标 */
+function setTabBadge(kind, n){                 // kind: announce | todo，对应 tab target tabAnnounce/tabTodo
+  const tab = document.querySelector(`.tab[data-target="${kind === "todo" ? "tabTodo" : "tabAnnounce"}"]`);
+  if (!tab) return;
+  const b = tab.querySelector(".tab-badge");
+  if (n <= 0){ if (b) b.remove(); tab.title = ""; return; }
+  const el = b || (() => { const x = document.createElement("span"); x.className = "tab-badge"; tab.appendChild(x); return x; })();
+  el.textContent = n > 99 ? "99+" : String(n);
+  el.hidden = false;
+  tab.title = t(kind === "todo" ? "unread.todo" : "unread.announce", { n });
+}
+/* 更新两个页签的红点（纯展示）。已读动作：切走「公告总结」页 / 待办加载成功时另行触发 */
+function refreshBadges(){
+  setTabBadge("announce", countNewAnnounce());
+  setTabBadge("todo", countNewTodo());
 }
 
 /* 标签页 */
 function switchTab(target){
+  const prev = activeTabId();
   $$(".tab").forEach(x=>{ const on=x.dataset.target===target; x.classList.toggle("active",on); x.setAttribute("aria-selected",on); });
   $$(".tab-panel").forEach(p=>{ p.hidden = p.id!==target; });
+  /* 「切走即已读」：离开「公告总结」页=已看过其上内容 → 记已读、红点消失。
+     启动落在公告页不会自动已读，新公告红点会一直亮到用户切走那一刻。 */
+  if(prev === "tabAnnounce" && target !== "tabAnnounce") markAnnounceSeen();
+  refreshBadges();
 }
 $$(".tab").forEach(b=> b.addEventListener("click", ()=>{
   const target=b.dataset.target;
@@ -532,6 +651,8 @@ async function syncAnnouncements(){
   if(!$("filterEnd").value) $("filterEnd").value=rng.end_date;
   renderSummaries();
   setStatus(t("status.sync_done", {n: summaryResults.length}),"ok");
+  refreshBadges();          // 纯展示红点；公告“已读”等切走页签时记
+  bgFetchTodoBadge();       // 启动首次同步后，后台顺带查一次待办（有守卫，只跑一次）
   return true;
 }
 /* 改日期范围 / 课程勾选 → 自动重同步公告（去抖 600ms，不遮罩、不切页签） */
@@ -692,7 +813,13 @@ $("detailBody").addEventListener("click", async (e) => {
       course_id:cid, language:LANG() });
     if (!detailCourse || detailCourse.id !== cid) return;   // 已切课/关弹层 → 丢弃陈旧响应
     if (r.ok !== true) setStatus(t("detail.summarize_fail") + (r.error || ""), "err");
-    else { detailSummary = r.summary; renderDetail(); }
+    else {
+      detailSummary = r.summary || "";
+      detailSylEvents = Array.isArray(r.calendar_events) ? r.calendar_events : [];
+      detailSylReminders = Array.isArray(r.reminders) ? r.reminders : [];
+      renderDetail();
+      if (detailSylEvents.length || detailSylReminders.length) ensureDetailWriteOpts();
+    }
   } catch (err) {
     if (!detailCourse || detailCourse.id !== cid) return;
     setStatus(t("detail.summarize_fail") + (err.message || ""), "err");
@@ -732,6 +859,162 @@ $("btnWriteReminders").onclick = async () => {
       if(r.ok) n++; else setStatus(t("status.write_fail")+r.error,"err");
     }
     setStatus(t("status.reminders_done", {a:n, b:rms.length}), n===rms.length?"ok":"err");
+  });
+};
+
+/* 详情弹层 syllabus 提取结果写入条（日历 / 提醒列表），首次出现提取项时懒加载可选项 */
+async function ensureDetailWriteOpts(){
+  const cal = $("selDetailCal"), list = $("selDetailList");
+  if (!cal || !list) return;
+  if (cal.options.length > 0 && list.options.length > 0) return;   // 已加载过，保留当前选择
+  const [cres, lres] = await Promise.all([api("calendars"), api("reminder_lists")]);
+  if (cal.options.length === 0)
+    fillSelect("selDetailCal", cres.ok === true ? (cres.calendars || []) : []);
+  if (list.options.length === 0)
+    fillSelect("selDetailList", lres.ok === true ? (lres.lists || []) : []);
+}
+$("btnDetailWriteCalendar").onclick = async () => {
+  const cal = $("selDetailCal").value;
+  const amVal = $("selDetailAlert").value ? Number($("selDetailAlert").value) : null;
+  if(!cal){ setStatus(t("status.need_calendar"),"err"); return; }
+  const evs=[...document.querySelectorAll("#detailModal .syl-ev:checked")].map(i =>
+    detailSylEvents[Number(i.dataset.si)]);
+  if(!evs.length){ setStatus(t("status.no_event"),"err"); return; }
+  await withBusy(t("status.writing_events", {n: evs.length}), $("btnDetailWriteCalendar"), async ()=>{
+    let n=0;
+    for(const e of evs){
+      const r=await api("add_calendar_event",{ calendar_name:cal, title:e.title, start:e.start,
+        end:e.end, location:e.location||"", notes:e.notes||"", alert_minutes:amVal });
+      if(r.ok) n++; else setStatus(t("status.write_fail")+r.error,"err");
+    }
+    const alertLabel = amVal ? t("status.alert_set") : "";
+    setStatus(t("status.events_done", {a:n, b:evs.length})+alertLabel, n===evs.length?"ok":"err");
+  });
+};
+$("btnDetailWriteReminders").onclick = async () => {
+  const list = $("selDetailList").value;
+  if(!list){ setStatus(t("status.need_list"),"err"); return; }
+  const rms=[...document.querySelectorAll("#detailModal .syl-rm:checked")].map(i =>
+    detailSylReminders[Number(i.dataset.si)]);
+  if(!rms.length){ setStatus(t("status.no_reminder"),"err"); return; }
+  await withBusy(t("status.writing_reminders", {n: rms.length}), $("btnDetailWriteReminders"), async ()=>{
+    let n=0;
+    for(const e of rms){
+      const r=await api("add_reminder",{ list_name:list, title:e.title, due_date:e.due_date, notes:e.notes||"" });
+      if(r.ok) n++; else setStatus(t("status.write_fail")+r.error,"err");
+    }
+    setStatus(t("status.reminders_done", {a:n, b:rms.length}), n===rms.length?"ok":"err");
+  });
+};
+
+/* 模块 File 行：点名称弹「打开页面 / 打开文件」，点右侧 ⤓ 直接下载；非文件条目照旧直接打开 */
+function moduleItemHtml(it){
+  const href = it.url ? ` href="${escAttr(it.url)}" target="_blank" rel="noopener"` : "";
+  if (!it.file_id) return `<a class="module-item"${href}>${esc(it.title)}</a>`;
+  const name = it.url
+    ? `<a class="module-file-link"${href} title="${escAttr(t("module.hint"))}">${esc(it.title)}</a>`
+    : `<span class="module-file-link" title="${escAttr(t("module.hint"))}">${esc(it.title)}</span>`;
+  return `<div class="module-item module-file" data-fid="${escAttr(it.file_id)}"
+    data-title="${escAttr(it.title)}">
+    ${name}
+    <button type="button" class="module-dl-btn" title="${escAttr(t("module.download"))}"
+      aria-label="${escAttr(t("module.download"))}">⤓</button>
+  </div>`;
+}
+const modulePop = $("modulePop");
+let modulePopCtx = null;               // {fid, pageUrl, title, moduleName}
+function openModuleFilePop(itemEl){
+  const fid = Number(itemEl.dataset.fid);
+  if (!fid || !modulePop) return;
+  const modEl = itemEl.closest(".detail-module");
+  const link = itemEl.querySelector(".module-file-link");
+  const pageUrl = link ? (link.getAttribute("href") || "") : "";
+  modulePopCtx = {
+    fid, pageUrl,
+    title: itemEl.dataset.title || "",
+    moduleName: modEl ? modEl.dataset.module : "",
+  };
+  $("modulePopTitle").textContent = modulePopCtx.title;
+  const pageBtn = $("btnModuleOpenPage");
+  pageBtn.hidden = !pageUrl;           // 无 Canvas 页面链接 → 只给「打开文件」
+  if (pageUrl) pageBtn.textContent = t("module.open_page");
+  modulePop.hidden = false;            // 先显示再量尺寸，无闪动
+  const r = itemEl.getBoundingClientRect();
+  const pw = modulePop.offsetWidth || 220, ph = modulePop.offsetHeight || 120;
+  const left = Math.max(8, Math.min(r.left, window.innerWidth - pw - 8));
+  let top = r.bottom + 6;
+  if (top + ph > window.innerHeight - 8) top = r.top - ph - 6;
+  modulePop.style.left = left + "px";
+  modulePop.style.top = Math.max(8, top) + "px";
+}
+function closeModulePop(){
+  if (modulePop) modulePop.hidden = true;
+  modulePopCtx = null;
+}
+/* ⤓ 下载（右侧键）：下载到 app 下载目录/课程/模块/文件。rowEl 为所在的 .module-file 行 */
+async function downloadModuleFile(rowEl){
+  if (!rowEl) return;
+  const fid = Number(rowEl.dataset.fid), title = rowEl.dataset.title || "";
+  if (!fid) return;
+  const modEl = rowEl.closest(".detail-module");
+  const moduleName = modEl ? modEl.dataset.module : "";
+  const s = settings(), c = detailCourse;
+  const btn = rowEl.querySelector(".module-dl-btn");
+  await withBusy(t("module.downloading", {f: title}), btn, async () => {
+    const r = await api("download_module_item", {
+      canvas_url:s.canvas_url, canvas_token:s.canvas_token,
+      download_dir:downloadDir(), course_id:c ? c.id : 0,
+      course_name:(c && c.name) || "", module_name:moduleName, file_id:fid });
+    if (modulePop && !modulePop.hidden) closeModulePop();
+    if (r.ok !== true){ setStatus(t("module.fail") + (r.error || ""), "err"); return; }
+    setStatus(r.saved ? t("module.saved") : t("module.downloaded", {p: r.dest_path}), "ok");
+  });
+}
+$("detailBody").addEventListener("click", (e) => {
+  const dl = e.target.closest(".module-dl-btn");
+  if (dl){
+    e.preventDefault(); e.stopPropagation();
+    downloadModuleFile(dl.closest(".module-item.module-file"));
+    return;
+  }
+  const mf = e.target.closest(".module-item.module-file");
+  if (!mf){
+    if (modulePop && !modulePop.hidden && !e.target.closest("#modulePop")) closeModulePop();
+    return;
+  }
+  e.preventDefault(); e.stopPropagation();
+  openModuleFilePop(mf);
+});
+document.addEventListener("click", (e) => {
+  if (modulePop && !modulePop.hidden && !e.target.closest("#modulePop")) closeModulePop();
+});
+$("btnModuleOpenPage").onclick = () => {
+  if (modulePopCtx && modulePopCtx.pageUrl) window.open(modulePopCtx.pageUrl, "_blank", "noopener");
+  closeModulePop();
+};
+$("btnModuleOpenFile").onclick = async () => {
+  const ctx = modulePopCtx;
+  if (!ctx) return;
+  const s = settings(), c = detailCourse;
+  const btn = $("btnModuleOpenFile");
+  await withBusy(t("module.fetching", {f: ctx.title}), btn, async () => {
+    // 不用 Canvas 直链（download_frd 会触发下载）：后端以 inline 流式转发文件本体，
+    // 这里 fetch→blob→objectURL，浏览器内置 PDF 查看器（Adobe 引擎）内联渲染。
+    const resp = await fetch("/api/module_file_stream", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ canvas_url: s.canvas_url, canvas_token: s.canvas_token,
+                             course_id: c ? c.id : 0, file_id: ctx.fid }),
+    });
+    closeModulePop();
+    const ctype = (resp.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
+    if (!resp.ok || ctype === "application/json"){
+      let msg = "";
+      try { const j = await resp.json(); msg = j.error || ""; } catch (e) { /* 忽略解析失败 */ }
+      setStatus(t("module.open_file_fail") + msg, "err");
+      return;
+    }
+    const blob = await resp.blob();
+    window.open(URL.createObjectURL(blob), "_blank", "noopener");
   });
 };
 
@@ -869,6 +1152,23 @@ $("btnDownloadFiles").onclick = async () => {
 let todoItems = [];       // 归一化待办（/api/todo）
 let todoEvents = [];      // Canvas 一次性事件（/api/calendar_events）
 let todoTabInit = false;
+/* 启动同步公告后后台顺带查一次待办，让「待办」页签未读红点能显示（不渲染、不遮罩）。
+   只跑一次；若期间用户已打开待办页签，则交给 loadTodo，忽略本次后台结果。 */
+let bgTodoDone = false;
+async function bgFetchTodoBadge(){
+  if(bgTodoDone || todoTabInit) return;
+  const s = settings();
+  if(!s.canvas_url || !s.canvas_token) return;
+  try {
+    const r = await api("todo", { canvas_url: s.canvas_url, canvas_token: s.canvas_token });
+    if(r.ok === true && Array.isArray(r.items)){
+      if(todoTabInit) return;
+      bgTodoDone = true;
+      todoItems = r.items;                 // 占位即可：待办页签打开时会再 loadTodo 刷新
+      refreshBadges();
+    }
+  } catch (e) {}
+}
 async function initTodoTab(){
   if(todoTabInit) return;
   todoTabInit = true;
@@ -891,6 +1191,8 @@ async function loadTodo(){
       renderTodo();
       $("todoEvents").innerHTML = `<div class="muted">${t("todo.need_course")}</div>`;
       setStatus(t("todo.loaded", {a: todoItems.length, b: 0}), "ok");
+      markTodoSeen();   // 待办内容此刻已显示 → 记已读
+      refreshBadges();
       return;
     }
     const now = new Date();
@@ -902,6 +1204,8 @@ async function loadTodo(){
     todoEvents = er.events || [];
     renderTodo();
     setStatus(t("todo.loaded", {a: todoItems.length, b: todoEvents.length}), "ok");
+    markTodoSeen();   // 待办内容此刻已显示 → 记已读
+    refreshBadges();
   });
 }
 $("btnLoadTodo").onclick = () => { todoTabInit = false; initTodoTab(); };
@@ -1505,6 +1809,7 @@ $("btnLang").onclick = () => {
   applyLang();
   renderSummaries();                     // 重渲动态文案（AI 总结按钮等）
   renderFiles();                         // 重渲文件全选按钮标签
+  refreshBadges();                       // applyLang 会清掉页签内子节点，重画红点徽标
 };
 applyLang();
 loadSettings();

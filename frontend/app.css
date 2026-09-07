@@ -91,6 +91,10 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 .tab.active { color:var(--accent); }
 .tab.active::after { content:""; position:absolute; left:12px; right:12px; bottom:-1px; height:2px;
   border-radius:2px; background:var(--accent); }
+/* 页签右上角未读红点（新公告/新待办计数） */
+.tab-badge { position:absolute; top:4px; right:6px; min-width:15px; height:15px; padding:0 4px;
+  border-radius:999px; background:#e11d48; color:#fff; font-size:10.5px; font-weight:700;
+  line-height:15px; text-align:center; box-sizing:border-box; }
 .tab-panel[hidden] { display:none; }
 
 /* 筛选栏 */
@@ -189,6 +193,34 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
   border:1px solid var(--border); border-radius:999px; padding:3px 10px; background:var(--surface-2); }
 .detail-links a:hover { border-color:var(--link); }
 .detail-instr { color:var(--ink); }
+
+/* 课程详情 Modules 区：模块名 + 每项可点链接（超链接到 Canvas） */
+.detail-module { margin-bottom:6px; }
+.detail-module-title { font-size:12px; font-weight:600; color:var(--muted); margin:10px 0 2px; }
+.module-item { display:block; padding:6px 10px; margin:4px 0; color:var(--ink); text-decoration:none;
+  border:1px solid var(--border); border-radius:8px; font-size:13px; }
+.module-item:hover { background:var(--surface-2); border-color:var(--accent); }
+/* 模块 File 行：左「名称（点开弹窗选打开方式）」+ 右「⤓ 直接下载」两个命中区 */
+.module-item.module-file { display:flex; align-items:center; gap:10px; padding:2px 2px 2px 10px;
+  cursor:default; }
+.module-file-link { flex:1; min-width:0; padding:4px 6px; color:var(--ink); text-decoration:none;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; border-radius:6px; }
+.module-file-link:hover { color:var(--accent); }
+.module-dl-btn { flex:none; border:none; background:transparent; color:var(--muted);
+  font:inherit; font-size:13px; line-height:1; cursor:pointer; padding:8px 10px; border-radius:6px; }
+.module-dl-btn:hover { color:var(--accent); background:var(--accent-soft); }
+
+/* 模块 File 条目小 popup：跟随点击位置的「下载/打开」卡片 */
+.module-pop { position:fixed; z-index:60; min-width:170px; max-width:280px;
+  background:var(--surface); border:1px solid var(--border); border-radius:10px;
+  box-shadow:0 10px 32px rgba(0,0,0,.22); padding:10px 10px 12px; }
+.module-pop-title { font-size:13px; font-weight:600; color:var(--ink); margin-bottom:9px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.module-pop-actions { display:flex; gap:8px; }
+.module-pop-actions .btn { flex:1; padding:6px 8px; font-size:12.5px; }
+
+/* 详情写条（模块内 detailWriteBar）：.write-bar 是 flex，需显式覆盖 hidden */
+.write-bar[hidden] { display:none; }
 .detail-banweb-only { margin-top:10px; font-size:12px; color:var(--muted);
   border:1px dashed var(--border); border-radius:var(--radius-sm); padding:8px 10px; }
 

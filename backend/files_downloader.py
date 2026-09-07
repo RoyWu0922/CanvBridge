@@ -50,6 +50,15 @@ def plan_downloads(download_dir: str, course_name: str, files: list[dict],
     return planned
 
 
+def module_dest(download_dir: str, course_name: str, module_name: str,
+                display_name: str) -> Path:
+    """模块文件下载目标 = 下载目录/课程/模块/文件名（沿用 _safe_name 净化）。"""
+    root = Path(download_dir).expanduser() / _safe_name(course_name)
+    if module_name:
+        root = root / _safe_name(module_name)
+    return root / _safe_name(display_name)
+
+
 def download_items(canvas_url: str, token: str, files_by_id: dict[int, dict],
                    planned: list[dict]) -> dict:
     """逐文件下载；已存在的目标文件跳过，单个失败不中断其余。"""

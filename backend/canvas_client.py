@@ -141,6 +141,53 @@ def get_course(canvas_url: str, token: str, course_id: int) -> dict:
     }
 
 
+def get_modules(canvas_url: str, token: str, course_id: int) -> list[dict]:
+    """返回课程 Modules [{id, name, items: [{id, title, type, url, file_id}]}]。
+
+    include[]=items 让每个 module 内嵌其 items（否则只有数量）。url 优先取
+    html_url（Canvas 内链接，assignment/page/讨论等都指向内容页）；external
+    URL 类型的 item html_url 可能为空，退回 external_url。相对路径补全 base。
+    File 类型 item 的 content_id 即 Canvas 文件 id，记入 file_id 供前端弹窗下载；
+    这类 item 即便没有可打开链接也保留（可只下载）。其它无链接项
+    （SubHeader 等）丢弃；无可保留 items 的 module 丢弃，不展示。
+    """
+    base = canvas_url.rstrip("/")
+    with requests.Session() as s:
+        data = _paginate(
+            s, f"{base}/api/v1/courses/{course_id}/modules",
+            {"include[]": "items", "per_page": 100}, token,
+        )
+    out = []
+    for m in data:
+        items = []
+        for it in (m.get("items") or []):
+            url = it.get("html_url") or it.get("external_url") or ""
+            if url.startswith("/"):
+                url = f"{base}{url}"
+            file_id = None
+            if it.get("type") == "File":
+                try:
+                    file_id = int(it["content_id"]) if it.get("content_id") is not None else None
+                except (TypeError, ValueError):
+                    file_id = None
+            if not url and not file_id:
+                continue                      # 无可打开链接也非文件 → 丢弃
+            items.append({
+                "id": it.get("id"),
+                "title": it.get("title", "(untitled)"),
+                "type": it.get("type", ""),
+                "url": url,
+                "file_id": file_id,
+            })
+        if items:
+            out.append({
+                "id": m.get("id"),
+                "name": m.get("name", f"Module {m.get('id')}"),
+                "items": items,
+            })
+    return out
+
+
 def get_assignments(canvas_url: str, token: str, course_id: int) -> list[dict]:
     """返回未截止作业 [{id, name, due_at, points_possible, html_url}]。
 
@@ -287,6 +334,21 @@ def download_file(canvas_url: str, token: str, file_url: str, dest_path: str) ->
         for chunk in resp.iter_content(chunk_size=65536):
             if chunk:
                 fh.write(chunk)
+
+
+def stream_file(canvas_url: str, token: str, file_url: str, chunk_size: int = 65536):
+    """流式 yield file_url 的原始字节（供后端以 inline 头转发做内联预览）。
+
+    仅逐块产出内容，不落盘；401/其他 HTTP 错误抛 CanvasError。
+    """
+    resp = requests.get(file_url, headers=_headers(token), stream=True, timeout=60)
+    with resp:
+        if resp.status_code == 401:
+            raise CanvasError("Canvas token 无效或已过期 (HTTP 401)")
+        resp.raise_for_status()
+        for chunk in resp.iter_content(chunk_size=chunk_size):
+            if chunk:
+                yield chunk
 
 
 def get_assignments_full(canvas_url: str, token: str, course_id: int) -> list[dict]:

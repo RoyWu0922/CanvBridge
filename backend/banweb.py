@@ -756,7 +756,7 @@ def _kill_zombie_chrome() -> None:
     for _ in range(30):
         try:
             out = subprocess.run(
-                ["lsof", "-nP", "-i", f":{CDP_PORT}"],
+                ["lsof", "-nP", "-i", f":{CDP_PORT}"], 
                 capture_output=True, text=True, check=False, timeout=2)
             if not out.stdout.strip():
                 return

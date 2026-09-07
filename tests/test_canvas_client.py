@@ -161,6 +161,48 @@ def test_download_file_writes(tmp_path, monkeypatch):
     assert dest.read_bytes() == b"abcdef"
 
 
+def test_stream_file_yields_chunks(monkeypatch):
+    """stream_file 逐块 yield 文件字节，可整体拼回原文。"""
+
+    class _StreamResp(_Resp):
+        def __init__(self):
+            super().__init__({})
+            self._chunks = [b"%PDF-", b"1.4\n", b"abc"]
+
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+        def iter_content(self, chunk_size):
+            return iter(self._chunks)
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _StreamResp())
+    got = b"".join(canvas_client.stream_file("https://x", "tok", "http://x/files/9/download"))
+    assert got == b"%PDF-1.4\nabc"
+
+
+def test_stream_file_raises_on_401(monkeypatch):
+    """Canvas 401 → stream_file 抛 CanvasError（而非 yield 空）。"""
+
+    class _Denied(_Resp):
+        def __init__(self):
+            super().__init__({})
+            self.status_code = 401
+
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+        def iter_content(self, chunk_size):
+            return iter(())
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Denied())
+    try:
+        list(canvas_client.stream_file("https://x", "tok", "http://x/files/9/download"))
+    except canvas_client.CanvasError as exc:
+        assert "401" in str(exc)
+        return
+    assert False, "应当抛 CanvasError"
+
+
 def test_get_course_maps_fields(monkeypatch):
     """单课程 GET 返回 dict（非列表），须直接取 resp.json()，teachers 走 users 端点。"""
     course = {"id": 42, "name": "CS 101",
@@ -195,6 +237,75 @@ def test_get_course_no_syllabus(monkeypatch):
     result = canvas_client.get_course("https://x.instructure.com", "tok", 42)
     assert result["syllabus_text"] == ""
     assert result["teachers"] == []
+
+
+def test_get_modules_maps_drops_and_prefixes(monkeypatch):
+    """modules 映射：无链接 item 丢弃、空 module 丢弃、相对 html_url 补全 base。"""
+    data = [
+        {"id": 1, "name": "Week 1", "items": [
+            {"id": 11, "title": "Lecture", "type": "Page",
+             "html_url": "https://x.instructure.com/courses/42/pages/11", "external_url": ""},
+            {"id": 12, "title": "Sub heading", "type": "SubHeader",
+             "html_url": None, "external_url": None},
+            {"id": 13, "title": "Tool", "type": "ExternalTool",
+             "html_url": "/courses/42/modules/items/13", "external_url": "https://tool.example/x"},
+        ]},
+        {"id": 2, "name": "Empty", "items": []},
+    ]
+    monkeypatch.setattr(canvas_client, "_paginate", lambda s, u, p, t: data)
+    out = canvas_client.get_modules("https://x.instructure.com", "tok", 42)
+    assert len(out) == 1                                     # 空 module 丢弃
+    assert out[0]["name"] == "Week 1"
+    assert [i["title"] for i in out[0]["items"]] == ["Lecture", "Tool"]
+    assert out[0]["items"][0]["url"] == "https://x.instructure.com/courses/42/pages/11"
+    assert out[0]["items"][1]["url"] == "https://x.instructure.com/courses/42/modules/items/13"
+
+
+def test_get_modules_none_have_linkable_items(monkeypatch):
+    """只有 SubHeader/无链接项的 modules → 全丢弃返回 []。"""
+    data = [{"id": 1, "name": "Week 1",
+             "items": [{"id": 12, "title": "Sub heading", "type": "SubHeader",
+                        "html_url": None, "external_url": None}]}]
+    monkeypatch.setattr(canvas_client, "_paginate", lambda s, u, p, t: data)
+    assert canvas_client.get_modules("https://x.instructure.com", "tok", 42) == []
+
+
+def test_get_modules_file_items_carry_file_id(monkeypatch):
+    """File item 从 content_id 取 file_id；无 URL 但有 content_id 仍保留；其余类型 file_id 为 None。"""
+    data = [{"id": 1, "name": "Week 1", "items": [
+        {"id": 11, "title": "syllabus.pdf", "type": "File",
+         "html_url": "https://x.instructure.com/courses/42/modules/items/11",
+         "content_id": 77},
+        {"id": 12, "title": "no-page.pdf", "type": "File",
+         "html_url": None, "content_id": 88},
+        {"id": 13, "title": "Lecture", "type": "Page",
+         "html_url": "https://x.instructure.com/courses/42/pages/13", "content_id": None},
+    ]}]
+    monkeypatch.setattr(canvas_client, "_paginate", lambda s, u, p, t: data)
+    out = canvas_client.get_modules("https://x.instructure.com", "tok", 42)
+    items = out[0]["items"]
+    assert len(items) == 3                                   # 无 URL 的 File 也保留
+    assert items[0] == {"id": 11, "title": "syllabus.pdf", "type": "File",
+                        "url": "https://x.instructure.com/courses/42/modules/items/11",
+                        "file_id": 77}
+    assert items[1]["file_id"] == 88
+    assert items[1]["url"] == ""
+    assert items[2]["file_id"] is None                       # 非 File 不设 file_id
+
+
+def test_get_modules_file_content_id_bad(monkeypatch):
+    """content_id 缺失或非数字 → file_id 回退 None，File 项不崩。"""
+    data = [{"id": 1, "name": "Week 1", "items": [
+        {"id": 11, "title": "f1", "type": "File",
+         "html_url": "https://x.instructure.com/courses/42/modules/items/11",
+         "content_id": "not-a-number"},
+        {"id": 12, "title": "f2", "type": "File",
+         "html_url": "https://x.instructure.com/courses/42/modules/items/12",
+         "content_id": None},
+    ]}]
+    monkeypatch.setattr(canvas_client, "_paginate", lambda s, u, p, t: data)
+    out = canvas_client.get_modules("https://x.instructure.com", "tok", 42)
+    assert [i["file_id"] for i in out[0]["items"]] == [None, None]
 
 
 def test_get_assignments_filters_and_builds(monkeypatch):

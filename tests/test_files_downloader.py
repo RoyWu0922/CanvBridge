@@ -19,6 +19,16 @@ def test_build_folder_path():
     assert files_downloader.build_folder_path(999, folders) == ""
 
 
+def test_module_dest_builds_path(tmp_path):
+    """module_dest = 下载目录/课程/模块/文件名；名称净化 / 与前导点，无模块名则省略一层。"""
+    dest = files_downloader.module_dest(str(tmp_path), "CS 101", "Week 1", "syllabus.pdf")
+    assert dest == tmp_path / "CS 101" / "Week 1" / "syllabus.pdf"
+    assert files_downloader.module_dest(str(tmp_path), "CS 101", "", "syllabus.pdf") == \
+        tmp_path / "CS 101" / "syllabus.pdf"
+    assert files_downloader.module_dest(str(tmp_path), "A/B", "../Week", "x.pdf") == \
+        tmp_path / "A_B" / "_Week" / "x.pdf"
+
+
 def test_plan_downloads_path_and_rename(tmp_path):
     files = [
         {"id": 1, "display_name": "a.pdf", "folder_id": 2},
