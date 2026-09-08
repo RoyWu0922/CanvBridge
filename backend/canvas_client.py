@@ -1,6 +1,7 @@
 """Canvas REST API 客户端（本应用只用读操作）。"""
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timezone  # 放到文件顶部现有 import 区
 from html.parser import HTMLParser
@@ -42,7 +43,8 @@ def _paginate(session: requests.Session, url: str, params: dict[str, Any],
     next_url: str | None = url
     current_params: dict[str, Any] = params
     while next_url:
-        resp = session.get(next_url, params=current_params, headers=_headers(token))
+        resp = session.get(next_url, params=current_params, headers=_headers(token),
+                           timeout=30)
         if resp.status_code == 401:
             raise CanvasError("Canvas token 无效或已过期 (HTTP 401)")
         if resp.status_code == 403:
@@ -323,17 +325,31 @@ def get_file(canvas_url: str, token: str, course_id: int, file_id: int) -> dict:
 
 
 def download_file(canvas_url: str, token: str, file_url: str, dest_path: str) -> None:
-    """流式下载 file_url 到 dest_path（自动建父目录）。"""
+    """流式下载 file_url 到 dest_path（自动建父目录）。
+
+    先写 <dest>.part 临时文件、成功后再 os.replace 原子改名；失败清理临时文件。
+    避免把半截下载留在目标路径，被上层当成「已存在」而跳过（M3）。
+    """
     dest = Path(dest_path)
     resp = requests.get(file_url, headers=_headers(token), stream=True, timeout=60)
-    if resp.status_code == 401:
-        raise CanvasError("Canvas token 无效或已过期 (HTTP 401)")
-    resp.raise_for_status()
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with open(dest, "wb") as fh:
-        for chunk in resp.iter_content(chunk_size=65536):
-            if chunk:
-                fh.write(chunk)
+    tmp = dest.with_name(dest.name + ".part")
+    try:
+        with resp:
+            if resp.status_code == 401:
+                raise CanvasError("Canvas token 无效或已过期 (HTTP 401)")
+            resp.raise_for_status()
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp, "wb") as fh:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        fh.write(chunk)
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 def stream_file(canvas_url: str, token: str, file_url: str, chunk_size: int = 65536):

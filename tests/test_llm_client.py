@@ -13,29 +13,45 @@ def test_parse_json_handles_code_fence():
 def test_extract_success(monkeypatch):
     payload = json.dumps({
         "course_name": "CS 101",
-        "summary": "本周要点。",
+        "summaries": ["本周要点。"],
         "calendar_events": [{"title": "Quiz", "start": "2026-08-31T14:00:00",
                              "end": "2026-08-31T15:00:00", "location": "A101", "notes": ""}],
         "reminders": [{"title": "HW3", "due_date": "2026-09-02T23:59:00", "notes": ""}],
     })
     monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: payload)
     result = llm_client.extract_course_summary("https://llm/v1", "key", "m", "CS 101", [{"title": "x", "message": "y", "posted_at": ""}])
-    assert result["summary"] == "本周要点。"
+    assert result["summaries"] == ["本周要点。"]
     assert result["calendar_events"][0]["location"] == "A101"
     assert result["reminders"][0]["due_date"] == "2026-09-02T23:59:00"
 
 
-def test_extract_returns_summary_field(monkeypatch):
+def test_extract_returns_summaries_field(monkeypatch):
     payload = json.dumps({
         "course_name": "CS 101",
-        "summary": "Weekly summary.",
+        "summaries": ["Weekly summary."],
         "calendar_events": [], "reminders": [],
     })
     monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: payload)
     result = llm_client.extract_course_summary(
         "https://llm/v1", "key", "m", "CS 101", [{"title": "x", "message": "y", "posted_at": ""}])
-    assert result["summary"] == "Weekly summary."
-    assert "summary_cn" not in result
+    assert result["summaries"] == ["Weekly summary."]
+    assert "summary" not in result      # 不再有旧的单一 summary 键
+
+
+def test_summaries_align_with_announcements(monkeypatch):
+    """模型漏条时用原文摘录补齐，保证 summaries 与公告逐条对齐（顺序一致）。"""
+    payload = json.dumps({
+        "course_name": "CS 101",
+        "summaries": ["第一条的总结"],
+        "calendar_events": [], "reminders": [],
+    })
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: payload)
+    anns = [{"title": "A", "message": "msgA", "posted_at": ""},
+            {"title": "B", "message": "msgB", "posted_at": ""}]
+    result = llm_client.extract_course_summary("https://llm/v1", "key", "m", "CS 101", anns)
+    assert result["summaries"][0] == "第一条的总结"
+    assert "B" in result["summaries"][1]      # 缺失的第二条 → 原文摘录兜底
+    assert len(result["summaries"]) == len(anns)
 
 
 def test_extract_fallback_on_persistent_failure(monkeypatch):
@@ -45,7 +61,7 @@ def test_extract_fallback_on_persistent_failure(monkeypatch):
     result = llm_client.extract_course_summary("https://llm/v1", "key", "m", "CS 101", [{"title": "T", "message": "M", "posted_at": ""}])
     assert result["warning"] == "总结失败，已展示公告原文"
     assert result["calendar_events"] == []
-    assert "T" in result["summary"]
+    assert "T" in result["summaries"][0]
 
 
 def test_build_prompt_includes_announcements():
@@ -123,3 +139,60 @@ def test_summarize_syllabus_non_json_raises(monkeypatch):
     monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: "not json at all")
     with pytest.raises(RuntimeError):
         llm_client.summarize_syllabus("u", "k", "m", "C", "text")
+
+
+# ---- DeepSeek 第一方 API：旧模型名 2026-07-24 下线迁移 + V4 思考模式显式关闭 ----
+
+class _FakeResp:
+    ok = True
+    text = ""
+    status_code = 200
+    reason = "OK"
+    def raise_for_status(self):
+        pass
+    def json(self):
+        return {"choices": [{"message": {"content": json.dumps(
+            {"summary": "ok", "calendar_events": [], "reminders": []})}}]}
+
+
+def test_deepseek_alias_migrated_and_thinking_off(monkeypatch):
+    """第一方 deepseek 上旧名 deepseek-chat → 请求发 deepseek-v4-flash 并显式关思考。"""
+    captured = {}
+    def fake_post(url, json, headers, timeout):
+        captured["payload"] = json
+        return _FakeResp()
+    monkeypatch.setattr(llm_client.requests, "post", fake_post)
+    llm_client.summarize_syllabus(
+        "https://api.deepseek.com/v1", "key", "deepseek-chat", "CS 101", "syllabus")
+    p = captured["payload"]
+    assert p["model"] == "deepseek-v4-flash"
+    assert p["thinking"] == {"type": "disabled"}
+    assert p["response_format"] == {"type": "json_object"}
+
+
+def test_deepseek_reasoner_alias_migrated(monkeypatch):
+    captured = {}
+    def fake_post(url, json, headers, timeout):
+        captured["payload"] = json
+        return _FakeResp()
+    monkeypatch.setattr(llm_client.requests, "post", fake_post)
+    llm_client.extract_course_summary(
+        "https://api.deepseek.com", "key", "deepseek-reasoner", "CS 101",
+        [{"title": "T", "message": "M", "posted_at": ""}])
+    assert captured["payload"]["model"] == "deepseek-v4-flash"
+    assert captured["payload"]["thinking"] == {"type": "disabled"}
+
+
+def test_non_deepseek_host_untouched(monkeypatch):
+    """非 deepseek 第一方主机：模型名原样、不加 thinking 字段（第三方网关语义保留）。"""
+    captured = {}
+    def fake_post(url, json, headers, timeout):
+        captured["payload"] = json
+        return _FakeResp()
+    monkeypatch.setattr(llm_client.requests, "post", fake_post)
+    llm_client.extract_course_summary(
+        "https://llm.example/v1", "key", "deepseek-chat", "CS 101",
+        [{"title": "T", "message": "M", "posted_at": ""}])
+    p = captured["payload"]
+    assert p["model"] == "deepseek-chat"
+    assert "thinking" not in p

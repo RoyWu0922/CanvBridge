@@ -280,6 +280,48 @@ def test_require_logged_in_passes_normal_schedule_page():
     banweb._require_logged_in(page)  # 不应抛异常
 
 
+def test_is_login_page_detects_sso_logout():
+    """会话失效后浏览器停在 CityU SSO 登出页（banids /ssomanager/）→ 判为未登录。"""
+    assert banweb._is_login_page(
+        "https://banids.cityu.edu.hk/ssomanager/ui/samlLogout.jsp") is True
+    assert banweb._is_login_page("https://auth.cityu.edu.hk/app/banweb/x/") is True
+    assert banweb._is_login_page(
+        "https://banweb.cityu.edu.hk/pls/PROD/bwskfshd.P_CrseSchdDetl") is False
+
+
+def test_require_logged_in_raises_on_sso_logout_page():
+    """浏览器停在 samlLogout（URL/标题都非 "User Login"）→ 也必须判未登录并抛错。"""
+    page = _FakePage("https://banids.cityu.edu.hk/ssomanager/ui/samlLogout.jsp",
+                     "CityU AIMS Sign out")
+    with pytest.raises(banweb.BanwebError):
+        banweb._require_logged_in(page)
+
+
+class _El:
+    """query_selector 命中元素的替身（Playwright 元素句柄只需真值）。"""
+
+
+class _QPPage:
+    def __init__(self, has_term: bool, boom: bool = False):
+        self._has, self._boom = has_term, boom
+    def query_selector(self, sel):
+        if self._boom:
+            raise RuntimeError("context destroyed")
+        return _El() if self._has and sel == "select[name=term_in]" else None
+
+
+def test_term_ready_true_when_dropdown_present():
+    assert banweb._term_ready(_QPPage(has_term=True)) is True
+
+
+def test_term_ready_false_when_no_dropdown():
+    assert banweb._term_ready(_QPPage(has_term=False)) is False
+
+
+def test_term_ready_false_when_navigation_exception():
+    assert banweb._term_ready(_QPPage(has_term=True, boom=True)) is False
+
+
 def test_is_driver_error():
     """driver（node 子进程）崩溃的特征识别：区别于目标关闭。"""
     assert banweb._is_driver_error(RuntimeError(

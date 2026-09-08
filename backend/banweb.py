@@ -60,6 +60,7 @@ _lock = threading.RLock()
 # Playwright 步骤的超时（goto≤60s、load≤60s 等）封顶，180s 是安全上界。
 BROWSER_OP_TIMEOUT = 180
 _pw = None
+_pw_thread: int | None = None           # 创建/持有 _pw 驱动的线程 id（sync API 绑定线程）
 _ctx = None
 _page = None
 _browser_headless: bool | None = None   # 当前浏览器是否无头（None=附着到外部实例）
@@ -577,8 +578,15 @@ def reconcile_block(specs: list[dict], existing: list[dict]) -> dict:
 
 # ---------------- 浏览器与会话 ----------------
 
+# CityU SSO 管理器域：会话失效/登出后浏览器常停在 /ssomanager/…（如 samlLogout.jsp）。
+# URL 不是 auth.*、标题也不是 "User Login"，但绝不是已登录内容页，必须按未登录处理，
+# 否则 auto_login 会假报 logged_in、抓课表在空学期下拉上干等 30s 超时。
+_SSO_HOST = "https://banids.cityu.edu.hk"
+
+
 def _is_login_page(url: str) -> bool:
-    return url.startswith(LOGIN_HOST) or "twgkpswd" in url
+    return (url.startswith(LOGIN_HOST) or "twgkpswd" in url
+            or url.startswith(_SSO_HOST) or "/ssomanager/" in url)
 
 
 def _is_embedded_login(page) -> bool:
@@ -593,6 +601,18 @@ def _is_embedded_login(page) -> bool:
 def _require_logged_in(page) -> None:
     if _is_login_page(page.url) or _is_embedded_login(page):
         raise BanwebError("尚未登录 AIMS：请在新打开的浏览器窗口登录后再试")
+
+
+def _term_ready(page) -> bool:
+    """学期选择页是否真的渲染出了 term 下拉（Registration Term 内容）。
+
+    「已登录」必须用这个肯定信号判定：会话失效时 Banner/SSO 可能停在
+    banids 登出页或过期中间页，URL/标题都像已登录，但根本没有可选的学期。
+    """
+    try:
+        return page.query_selector("select[name=term_in]") is not None
+    except Exception:
+        return False
 
 
 def _find_page(ctx) -> object:
@@ -637,6 +657,28 @@ def _recover_browser_subprocess() -> None:
             pass
 
 
+def _ensure_driver_on_this_thread() -> None:
+    """确保 Playwright 驱动由当前线程持有，否则在本线程重起。
+
+    sync 驱动绑定在第一次 start() 它的线程上。看门狗恢复（_recover_browser_
+    subprocess）会换一个全新 executor（新线程），但 _pw 仍是旧 worker 线程
+    创建的 —— 之后新线程用它 launch 必抛 "cannot switch to a different
+    thread"，快速失败并报「无法打开浏览器」，且 _is_driver_error 匹配不到而
+    不自愈（要等整个进程重启）。这里在真正使用驱动的 executor 线程上兜底：
+    发现持有者不是本线程，就停掉旧驱动（跨线程 stop 会抛错，容错忽略）并在
+    本线程重起一个。登录会话存在 Chrome profile 里，重起驱动不丢登录态。
+    """
+    global _pw, _pw_thread
+    if _pw is None or _pw_thread == threading.get_ident():
+        return
+    try:
+        _pw.stop()
+    except Exception:
+        pass  # 跨线程 stop 抛 "cannot switch" → 旧驱动弃用（node 子进程残留，可接受）
+    _pw = sync_playwright().start()
+    _pw_thread = threading.get_ident()
+
+
 def _on_browser_thread(fn):
     """在专属线程上运行 fn，返回其返回值。
 
@@ -651,11 +693,13 @@ def _on_browser_thread(fn):
     中毒 → _recover_browser_subprocess 整体重建 → 在全新 executor 上重试一次。
     若恢复已被别的并发请求抢先完成（全局 executor 已不是我们提交的那个），
     则直接在新 executor 上重试，不再重复重建。
+    恢复换过 executor 后，驱动持有线程与新的 worker 线程不一致——提交的任务
+    先经 _ensure_driver_on_this_thread 在新线程上把驱动重起好，再跑 fn。
     """
     for attempt in range(2):
         ex = _browser_executor_instance()
         try:
-            fut = ex.submit(fn)
+            fut = ex.submit(lambda: (_ensure_driver_on_this_thread(), fn())[1])
         except Exception:
             fut = None  # executor 刚被别的恢复 shutdown（竞态）→ 直接走重试
         if fut is not None:
@@ -720,12 +764,13 @@ def _restart_driver() -> None:
     必须先 stop 再 start：旧实例没停就新建会触发
     "using Playwright Sync API inside the asyncio loop"。
     """
-    global _pw
+    global _pw, _pw_thread
     try:
         _pw.stop()
     except Exception:
         pass
     _pw = sync_playwright().start()
+    _pw_thread = threading.get_ident()
 
 
 def _kill_zombie_chrome() -> None:
@@ -774,7 +819,7 @@ def _ensure_browser(launch: bool = True, headless: bool = True):
     headless=False 供手动登录用：若当前是无头浏览器，先关掉换有头窗口，
     让用户能看见登录页。
     """
-    global _pw, _ctx, _page, _browser_headless
+    global _pw, _pw_thread, _ctx, _page, _browser_headless
     with _lock:
         if sync_playwright is None:
             raise BanwebError("未安装 Playwright，无法抓取课表（pip install playwright）")
@@ -786,12 +831,17 @@ def _ensure_browser(launch: bool = True, headless: bool = True):
                 if headless or _browser_headless is not True:
                     # 请求无头（默认）或当前已是有头窗口 → 直接用
                     return _page
-                # 请求有头但当前是无头 → 关掉无头，走下方重建有头窗口
+                # 请求有头但当前是无头 → 真关掉无头 Chrome，走下方重建有头窗口。
+                # 只 _reset_browser() 不够：无头 Chrome 还活着，connect_over_cdp 会
+                # 连回它复用，手动窗口永远不会出现（老 bug：报「已打开」却无窗）。
                 _reset_browser()
+                _browser_headless = None
+                _kill_zombie_chrome()   # 杀残留并等端口释放，确保下方连回失败 → 开真窗口
             except Exception:
                 _reset_browser()
         if _pw is None:
             _pw = sync_playwright().start()
+            _pw_thread = threading.get_ident()
         # 1) 附着仍在运行的实例（登录态得以保留）
         try:
             browser = _pw.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
@@ -919,6 +969,15 @@ def open_login() -> None:
                 page.goto(TERM_PAGE, timeout=30000, wait_until="domcontentloaded")
             except Exception:
                 pass  # 未登录会跳转 Okta，属正常
+            # 已登录 → 停在 Registration Term 可直接用；登出态则会落在 Banner 的
+            # "User Login" 壳页——没有表单、只有 "Click here to login AIMS" 链接，
+            # 用户无从输入。此时导航到真正的 Okta widget（P_WWWLOGIN）供手动登录。
+            if not _term_ready(page) and not _is_login_page(page.url):
+                try:
+                    page.goto(P_WWWLOGIN, timeout=30000, wait_until="domcontentloaded")
+                    page.wait_for_load_state("load", timeout=30000)
+                except Exception:
+                    pass  # widget 没起来时至少给到壳页，用户可点上面的登录链接
             try:
                 page.bring_to_front()
             except Exception:
@@ -985,11 +1044,12 @@ def auto_login(username: str, password: str) -> str:
                 page.wait_for_load_state("load", timeout=30000)
             except Exception:
                 pass  # 未登录会跳到 Okta / 中转页，属正常
-            if not (_is_login_page(page.url) or _is_embedded_login(page)):
-                return "logged_in"  # 已是登录态（附着了有会话的浏览器/外部实例）
-            # 中转页：TERM_PAGE 上只有标题 "User Login"、无表单。真正的 Okta
-            # 登录页在 P_WWWLogin，先导航过去再走两步表单。
-            if page.url.startswith(BANWEB) and not page.url.startswith(LOGIN_HOST):
+            if _term_ready(page):
+                return "logged_in"  # 学期下拉真在 → 会话有效，直接可抓
+            # 下拉不在 = 会话已过期/登出（SSO 登出页、Banner 过期中间页或登录页）。
+            # 导航到真正的 Okta 登录入口（P_WWWLOGIN 会转跳到 auth 域 widget）；
+            # 已在 widget 页（auth 域）则保持不动，避免重载清掉待填表单。
+            if not page.url.startswith(LOGIN_HOST):
                 try:
                     page.goto(P_WWWLOGIN, timeout=30000, wait_until="domcontentloaded")
                     # 等 Okta widget 真正加载完，否则 fill 的值会被初始化清掉
@@ -1006,13 +1066,20 @@ def auto_login(username: str, password: str) -> str:
                 _raise_login_error(page)
             page.fill(_OKTA_PASSCODE, password)
             page.click(_OKTA_SUBMIT, timeout=10000)
-            # 提交后：等待跳出 Okta 域（成功会重定向回 banweb）
+            # 提交后：等跳出 SSO 域（成功会经 banids 中转回到 banweb）
             try:
                 page.wait_for_url(lambda u: not _is_login_page(u),
-                                  timeout=20000, wait_until="domcontentloaded")
-                page.wait_for_load_state("load", timeout=30000)
+                                  timeout=25000, wait_until="domcontentloaded")
             except Exception:
                 _raise_login_error(page)  # 密码错误等：Okta 页面上的错误
+            # 登录落点不保证是学期页（可能停在 SSB 菜单）→ 统一再导航到 TERM_PAGE
+            # 并等学期下拉真正就绪，确保「返回 logged_in」即可抓课表。
+            try:
+                page.goto(TERM_PAGE, timeout=60000, wait_until="domcontentloaded")
+                page.wait_for_selector("select[name=term_in]", timeout=30000)
+            except Exception as exc:
+                _require_logged_in(page)  # 若其实还在登录页 → 给明确未登录错误
+                raise BanwebError("AIMS 登录成功但学期页未就绪：" + str(exc)[:120]) from exc
             _require_logged_in(page)
             return "logged_in"
     return _on_browser_thread(lambda: _retry_once(_run))

@@ -54,7 +54,7 @@ def test_summarize_course(monkeypatch):
     captured = {}
     def fake(base, key, model, name, anns, language="zh"):
         captured.update(base=base, key=key, model=model, name=name, anns=anns, language=language)
-        return {"course_name": name, "summary": "要点", "calendar_events": [{"title": "E"}],
+        return {"course_name": name, "summaries": ["要点"], "calendar_events": [{"title": "E"}],
                 "reminders": [], "warning": ""}
     monkeypatch.setattr(llm_client, "extract_course_summary", fake)
     body = {"canvas_url": "https://x", "canvas_token": "t", "llm_base_url": "https://llm/v1",
@@ -63,7 +63,7 @@ def test_summarize_course(monkeypatch):
     r = client.post("/api/summarize_course", json=body)
     data = r.json()
     assert data["ok"] is True
-    assert data["summary"] == "要点"
+    assert data["summaries"] == ["要点"]
     assert data["course_id"] == 5
     assert captured["language"] == "en"
     assert captured["anns"] == [{"title": "T", "message": "M"}]

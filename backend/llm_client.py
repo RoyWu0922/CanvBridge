@@ -23,13 +23,17 @@ def _schema_instructions(language: str) -> str:
         'Produce a JSON object with EXACTLY this structure:\n'
         '{\n'
         '  "course_name": "<course_name>",\n'
-        f'  "summary": "<{lang} summary>",\n'
+        f'  "summaries": ["<{lang} summary of the 1st announcement>", '
+        '"<{lang} summary of the 2nd announcement>", ...],\n'
         '  "calendar_events": [{"title": "...", "start": "YYYY-MM-DDTHH:MM:SS", '
         '"end": "YYYY-MM-DDTHH:MM:00", "location": "...", "notes": "..."}],\n'
         '  "reminders": [{"title": "...", "due_date": "YYYY-MM-DDTHH:MM:SS", "notes": "..."}]\n'
         '}\n'
         'Rules:\n'
-        f'- summary: write in {lang}, covering the key points in a few sentences.\n'
+        f'- summaries: write in {lang}; an ARRAY with EXACTLY ONE entry per announcement, '
+        'in the same order the announcements are listed above (entry 1 ↔ announcement [1], '
+        'entry 2 ↔ announcement [2], and so on). Each entry summarizes ONLY its own '
+        'announcement in a few sentences.\n'
         '- calendar_events: ONLY items with a concrete date/time (a class, review session, '
         'exam, office hours). If only a date is given, use 23:59:00 as the end time. '
         'Location in English if mentioned, else "".\n'
@@ -54,9 +58,28 @@ def _build_prompt(course_name: str, announcements: list[dict], language: str = "
     return "\n".join(lines)
 
 
+# DeepSeek 第一方 API。官方 2026-07-24 停用旧模型名 deepseek-chat / deepseek-reasoner，
+# 需改叫 deepseek-v4-flash；V4 思考模式默认开启会让 temperature 失效、json_object 不稳
+# （可空内容），结构化提取宜显式关闭。第三方网关（OpenRouter 等）目录名不在其列，原样保留。
+_DEEPSEEK_HOST = "api.deepseek.com"
+_LEGACY_DS_MODELS = {"deepseek-chat", "deepseek-reasoner"}
+
+
+def _is_deepseek(base_url: str) -> bool:
+    return _DEEPSEEK_HOST in (base_url or "").lower()
+
+
+def _effective_model(base_url: str, model: str) -> str:
+    model = (model or "").strip()
+    if _is_deepseek(base_url) and model in _LEGACY_DS_MODELS:
+        return "deepseek-v4-flash"
+    return model
+
+
 def _call_chat(base_url: str, api_key: str, model: str, prompt: str,
                json_mode: bool = True) -> str:
     url = base_url.rstrip("/") + "/chat/completions"
+    model = _effective_model(base_url, model)
     payload = {
         "model": model,
         "messages": [
@@ -67,10 +90,17 @@ def _call_chat(base_url: str, api_key: str, model: str, prompt: str,
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    if _is_deepseek(base_url):
+        # 显式关掉思考，保持旧 deepseek-chat 的非思考语义，采样参数与 json_object 才可靠。
+        payload["thinking"] = {"type": "disabled"}
     resp = requests.post(
         url, json=payload,
         headers={"Authorization": f"Bearer {api_key}"}, timeout=120,
     )
+    if not resp.ok:
+        # 把上游真实原因带进报错：400 多为模型别名被退役 / 参数不被支持，正文有说明
+        body = (resp.text or "")[:400]
+        raise requests.HTTPError(f"{resp.status_code} {resp.reason} from {url} — {body}")
     resp.raise_for_status()
     data = resp.json()
     if not data.get("choices"):
@@ -85,18 +115,23 @@ def _parse_json(text: str) -> dict:
     return json.loads(text)
 
 
+def _per_summaries(announcements: list[dict]) -> list[str]:
+    """逐条回退摘要：每条公告一行「标题: 原文摘录」，无公告给占位。"""
+    out = [f"- {a.get('title', '')}: {a.get('message', '')[:300]}" for a in announcements]
+    return out or ["(无公告)"]
+
+
 def extract_course_summary(base_url: str, api_key: str, model: str,
                            course_name: str, announcements: list[dict],
                            language: str = "zh") -> dict:
-    """返回 {course_name, summary, calendar_events, reminders}。
+    """返回 {course_name, summaries, calendar_events, reminders}。
 
-    输出无法解析时（重试一次后）回退到公告原文，并附 warning 标记。
+    summaries 与 announcements 逐条一一对应（顺序相同）；calendar_events/reminders
+    仍按整门课聚合。输出无法解析时（重试一次后）回退到公告原文摘录并附 warning。
     """
     fallback = {
         "course_name": course_name,
-        "summary": "\n".join(
-            f"- {a.get('title', '')}: {a.get('message', '')[:300]}" for a in announcements
-        ) or "(无公告)",
+        "summaries": _per_summaries(announcements),
         "calendar_events": [],
         "reminders": [],
         "warning": "总结失败，已展示公告原文",
@@ -109,9 +144,19 @@ def extract_course_summary(base_url: str, api_key: str, model: str,
             if not isinstance(parsed, dict):
                 raise ValueError("LLM 返回非 JSON 对象")
             parsed.setdefault("course_name", course_name)
-            parsed.setdefault("summary", "")
             parsed.setdefault("calendar_events", [])
             parsed.setdefault("reminders", [])
+            # summaries 需与公告对齐：模型漏条/非字符串时用原文摘录补齐
+            base = _per_summaries(announcements)
+            got = parsed.get("summaries")
+            if isinstance(got, list) and announcements:
+                parsed["summaries"] = [
+                    got[i].strip() if (i < len(got) and isinstance(got[i], str) and got[i].strip())
+                    else base[i]
+                    for i in range(len(announcements))
+                ]
+            else:
+                parsed["summaries"] = base
             return parsed
         except (requests.RequestException, ValueError, KeyError, TypeError, RuntimeError):
             continue

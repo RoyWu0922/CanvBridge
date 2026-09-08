@@ -27,7 +27,7 @@ class _Session:
     def __exit__(self, *a):
         return False
 
-    def get(self, url, params=None, headers=None):
+    def get(self, url, params=None, headers=None, timeout=None):
         self.calls.append((url, params))
         data, link = self.pages[len(self.calls) - 1]
         return _Resp(data, link)
@@ -58,12 +58,24 @@ def test_paginate_raises_canvas_error_on_401():
             self.status_code = 401
 
     class _BadSession:
-        def get(self, url, params=None, headers=None):
+        def get(self, url, params=None, headers=None, timeout=None):
             return _BadResp([])
 
     import pytest
     with pytest.raises(canvas_client.CanvasError):
         canvas_client._paginate(_BadSession(), "http://x/api/v1/courses", {}, "tok")
+
+
+def test_paginate_sets_timeout():
+    seen = {}
+
+    class _T:
+        def get(self, url, params=None, headers=None, timeout=None):
+            seen["timeout"] = timeout
+            return _Resp([])
+
+    canvas_client._paginate(_T(), "http://x/api/v1/courses", {}, "tok")
+    assert seen["timeout"] == 30
 
 
 def test_list_courses_maps_fields(monkeypatch):
@@ -146,19 +158,46 @@ def test_get_file_returns_url(monkeypatch):
     assert info["url"] == "http://x/files/9/download"
 
 
+class _StreamResp(_Resp):
+    """流式响应：支持 with 上下文，逐块吐字节，可中途抛错模拟断网。"""
+
+    def __init__(self, chunks, fail_after=None):
+        super().__init__({})
+        self._chunks = chunks
+        self._fail_after = fail_after
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def iter_content(self, chunk_size):
+        for i, chunk in enumerate(self._chunks):
+            if self._fail_after is not None and i >= self._fail_after:
+                raise RuntimeError("connection reset")
+            yield chunk
+
+
 def test_download_file_writes(tmp_path, monkeypatch):
-    class _StreamResp(_Resp):
-        def __init__(self):
-            super().__init__({})
-            self._chunks = [b"abc", b"def"]
-
-        def iter_content(self, chunk_size):
-            return iter(self._chunks)
-
-    monkeypatch.setattr(requests, "get", lambda *a, **k: _StreamResp())
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _StreamResp([b"abc", b"def"]))
     dest = tmp_path / "out" / "a.pdf"
     canvas_client.download_file("https://x", "tok", "http://x/files/9/download", str(dest))
     assert dest.read_bytes() == b"abcdef"
+    # 原子改名后不留 .part 临时文件
+    assert not (tmp_path / "out" / "a.pdf.part").exists()
+
+
+def test_download_file_atomic_no_partial_on_failure(tmp_path, monkeypatch):
+    """中途断流：不落任何半截文件到目标路径，临时文件也被清理（M3）。"""
+    monkeypatch.setattr(requests, "get",
+                        lambda *a, **k: _StreamResp([b"abc", b"def"], fail_after=1))
+    dest = tmp_path / "out" / "a.pdf"
+    import pytest
+    with pytest.raises(RuntimeError):
+        canvas_client.download_file("https://x", "tok", "http://x/files/9/download", str(dest))
+    assert not dest.exists()
+    assert not (tmp_path / "out" / "a.pdf.part").exists()
 
 
 def test_stream_file_yields_chunks(monkeypatch):

@@ -508,28 +508,6 @@ $$(".tab").forEach(b=> b.addEventListener("click", ()=>{
   if(target==="tabGrades") initGradesTab();
 }));
 
-/* 事件日期筛选 */
-function filterVisible(){
-  if($("chkShowAll").checked) return null;          // 显示全部
-  const st=$("filterStart").value, en=$("filterEnd").value;
-  if(!st && !en) return null;
-  return { st, en };
-}
-function dayWithin(iso, f){
-  if(!f) return true;
-  const d=(iso||"").slice(0,10);
-  if(!d) return false;
-  if(f.st && d<f.st) return false;
-  if(f.en && d>f.en) return false;
-  return true;
-}
-function refreshFilterState(){
-  const all=$("chkShowAll").checked;
-  $("filterStart").disabled = all;
-  $("filterEnd").disabled = all;
-  renderSummaries();
-}
-
 $("btnTest").onclick = async () => {
   const s=settings();
   if(!s.canvas_url||!s.canvas_token){ setStatus(t("status.need_canvas"),"err"); return; }
@@ -645,10 +623,8 @@ async function syncAnnouncements(){
   if(!r.ok){ setStatus(t("status.sync_fail")+r.error,"err"); return false; }
   summaryResults=(r.courses||[]).map(c=>({
     course_id:c.course_id, course_name:c.course_name, announcements:c.announcements||[],
-    _summarized:false, _showRaw:false, _summarizing:false,
-    summary:"", calendar_events:[], reminders:[], warning:"", error:"" }));
-  if(!$("filterStart").value) $("filterStart").value=rng.start_date;
-  if(!$("filterEnd").value) $("filterEnd").value=rng.end_date;
+    _summarized:false, _summarizing:false,
+    summaries:[], calendar_events:[], reminders:[], warning:"", error:"" }));
   renderSummaries();
   setStatus(t("status.sync_done", {n: summaryResults.length}),"ok");
   refreshBadges();          // 纯展示红点；公告“已读”等切走页签时记
@@ -686,64 +662,70 @@ async function summarizeAnnouncement(orig){
   if(summaryResults[orig]!==c) return;            // 已重新同步 → 丢弃陈旧响应
   c._summarizing=false;
   if(r.ok!==true){ c.error=r.error||""; renderSummaries(); setStatus(t("status.summarize_fail")+(r.error||""),"err"); return; }
-  c._summarized=true; c._showRaw=false;
-  c.summary=r.summary||""; c.calendar_events=r.calendar_events||[];
+  c._summarized=true;
+  c.summaries=Array.isArray(r.summaries)?r.summaries:[];
+  c.calendar_events=r.calendar_events||[];
   c.reminders=r.reminders||[]; c.warning=r.warning||"";
   renderSummaries();
   setStatus(t("status.summarized", {n:c.course_name}),"ok");
 }
 
 function renderSummaries(){
-  const f = filterVisible();
   fillCourseFilter("selAnnounceCourse", summaryResults.map(c => c.course_name));
   const courseSel = $("selAnnounceCourse").value;
   let src = summaryResults;
   if (courseSel) src = summaryResults.filter(c => c.course_name === courseSel);
-  displayResults = src.map((c) => {
-    const orig = summaryResults.indexOf(c);
-    return { ...c, _orig: orig,
-      calendar_events:(c.calendar_events||[]).filter(e=>dayWithin(e.start,f)),
-      reminders:(c.reminders||[]).filter(e=>dayWithin(e.due_date,f)) };
-  });
+  displayResults = src.map((c) => ({ ...c, _orig: summaryResults.indexOf(c) }));
   if(!displayResults.length){
     $("summaries").innerHTML = `<div class="empty">${t("announce.empty")}</div>`;
     return;
   }
-  const evCount = (shown,total) => (f && total>0) ? `${shown}<span class="count"> / ${total}</span>` : `${shown}`;
   $("summaries").innerHTML = displayResults.map((c,ci)=>{
     const orig=c._orig, st=summaryResults[orig];
-    const evs=c.calendar_events, rms=c.reminders;
-    const evTotal=(st.calendar_events||[]).length;
-    const rmTotal=(st.reminders||[]).length;
-    // 原始公告块（标题可跳转 Canvas，消息默认折叠可展开）
+    const evs=c.calendar_events||[], rms=c.reminders||[];
     const cvUrl=(settings().canvas_url||"").replace(/\/+$/,"");
-    const rawHtml = (st.announcements&&st.announcements.length)
-      ? st.announcements.map(a=>`
-        <div class="item"><div><div class="item-title">${(cvUrl&&a.id)
-            ? `<a class="announce-link" href="${escAttr(cvUrl)}/courses/${escAttr(c.course_id)}/announcements/${escAttr(a.id)}" target="_blank" rel="noopener">${esc(a.title)}</a>`
-            : esc(a.title)} <span class="muted">${esc((a.posted_at||"").slice(0,10))}</span></div>
-        <div class="announce-msg-wrap"><div class="announce-msg"><div class="announce-msg-inner">${esc(a.message)}</div></div>
-          <button class="btn-announce-expand" hidden>${t("announce.expand")}</button></div></div></div>`).join("")
+    // 逐条公告：原文在下、该条 AI 总结紧随其后（.ai-summary 与原文样式区分）；
+    // 未总结时只显示原文
+    const anns=st.announcements||[];
+    const sums=st._summarized ? (Array.isArray(st.summaries)?st.summaries:[]) : [];
+    const itemsHtml = anns.length ? anns.map((a,i)=>{
+        const ai = sums[i] && sums[i].trim()
+          ? `<div class="ai-summary"><span class="ai-summary-tag">${esc(t("announce.ai_summary"))}</span>
+              <div class="ai-summary-body">${esc(sums[i])}</div></div>`
+          : "";
+        const titleHtml = (cvUrl && a.id)
+          ? `<a class="announce-link" href="${escAttr(cvUrl)}/courses/${escAttr(c.course_id)}/announcements/${escAttr(a.id)}" target="_blank" rel="noopener">${esc(a.title)}</a>`
+          : esc(a.title);
+        return `<div class="item"><div><div class="item-title">${titleHtml} <span class="muted">${esc((a.posted_at||"").slice(0,10))}</span></div>
+          <div class="announce-msg-wrap"><div class="announce-msg"><div class="announce-msg-inner">${esc(a.message)}</div></div>
+            <button class="btn-announce-expand" hidden>${t("announce.expand")}</button></div>
+          ${ai}</div>`;
+      }).join("")
       : `<div class="muted" style="padding:4px 0 8px">${t("announce.no_announce")}</div>`;
-    // AI 总结块（总结后展示）
-    const summaryHtml = `
-      ${st.warning?`<div style="color:var(--err);font-size:12.5px;margin-bottom:6px">${esc(st.warning)}</div>`:""}
-      <div class="summary">${esc(st.summary)}</div>
-      <div class="sub-label">${t("announce.calendar_events")}（${evCount(evs.length,evTotal)}）</div>
-      ${evs.map((e,ei)=>`
-        <div class="item"><input type="checkbox" class="ev" data-ci="${ci}" data-ei="${ei}">
-          <div><div class="item-title">${esc(e.title)}</div>
-          <div class="file-path">${esc(e.start)} → ${esc(e.end)}${e.location?` · ${esc(e.location)}`:""}</div></div></div>`).join("")}
-      <div class="sub-label">${t("announce.reminders")}（${evCount(rms.length,rmTotal)}）</div>
-      ${rms.map((e,ei)=>`
-        <div class="item"><input type="checkbox" class="rm" data-ci="${ci}" data-ei="${ei}">
-          <div><div class="item-title">${esc(e.title)}</div><div class="file-path">${t("announce.due")} ${esc(e.due_date)}</div></div></div>`).join("")}`;
+    // AI 提取出的可写事项：事件 / 提醒。整门课聚合一份，有结果即以折叠块显示
+    // （默认收起），展开勾选可写回；下标与 c.calendar_events / c.reminders 完整数组对齐
+    const extractBlock = (label, list, mk) => list.length
+      ? `<details class="extract-block"><summary><span class="sub-label">${label}</span></summary>
+          <div class="extract-body">${list.map(mk).join("")}</div></details>`
+      : "";
+    const eventsBlock = extractBlock(
+      `${t("announce.calendar_events")}（${evs.length}）`, evs,
+      (e, ei) => `<div class="item"><input type="checkbox" class="ev" data-ci="${ci}" data-ei="${ei}">
+        <div><div class="item-title">${esc(e.title)}</div>
+        <div class="file-path">${esc(e.start)} → ${esc(e.end)}${e.location ? ` · ${esc(e.location)}` : ""}</div></div></div>`);
+    const remindersBlock = extractBlock(
+      `${t("announce.reminders")}（${rms.length}）`, rms,
+      (e, ei) => `<div class="item"><input type="checkbox" class="rm" data-ci="${ci}" data-ei="${ei}">
+        <div><div class="item-title">${esc(e.title)}</div><div class="file-path">${t("announce.due")} ${esc(e.due_date)}</div></div></div>`);
+    const body = `
+      ${st.warning ? `<div style="color:var(--err);font-size:12.5px;margin-bottom:6px">${esc(st.warning)}</div>` : ""}
+      ${itemsHtml}
+      ${st._summarized ? `${eventsBlock}${remindersBlock}` : ""}`;
     // 每课操作按钮
     const actions = st._summarizing
       ? `<span class="btn btn-ghost" disabled>${t("announce.summarizing")}</span>`
       : st._summarized
-        ? `<button class="btn btn-ghost btn-summarize" data-orig="${orig}">${t("announce.resummarize")}</button>
-           <button class="btn btn-ghost btn-toggle-raw" data-orig="${orig}">${st._showRaw?t("announce.hide_raw"):t("announce.show_raw")}</button>`
+        ? `<button class="btn btn-ghost btn-summarize" data-orig="${orig}">${t("announce.resummarize")}</button>`
         : `<button class="btn btn-primary btn-summarize" data-orig="${orig}">${t("announce.summarize")}</button>`;
     return `
     <div class="course-card">
@@ -751,7 +733,7 @@ function renderSummaries(){
           ? `<a href="#" class="course-detail-link" data-cid="${c.course_id}">${esc(c.course_name)}</a>`
           : esc(c.course_name)}
         <span class="course-actions">${actions}</span></div>
-      ${st._summarized && !st._showRaw ? summaryHtml : rawHtml}
+      ${body}
     </div>`;
   }).join("");
   wireAnnounceExpands();
@@ -773,20 +755,11 @@ function wireAnnounceExpands(){
     if(full > msg.clientHeight + 2) btn.hidden=false;
   });
 }
-$("chkShowAll").addEventListener("change", refreshFilterState);
-$("filterStart").addEventListener("change", refreshFilterState);
-$("filterEnd").addEventListener("change", refreshFilterState);
 $("selAnnounceCourse").addEventListener("change", renderSummaries);
 
 $("summaries").addEventListener("click", (e) => {
   const sum = e.target.closest(".btn-summarize");
   if (sum){ summarizeAnnouncement(Number(sum.dataset.orig)); return; }
-  const tog = e.target.closest(".btn-toggle-raw");
-  if (tog){
-    const c = summaryResults[Number(tog.dataset.orig)];
-    if (c){ c._showRaw = !c._showRaw; renderSummaries(); }
-    return;
-  }
   const exp = e.target.closest(".btn-announce-expand");
   if (exp){
     const msg = exp.closest(".announce-msg-wrap").querySelector(".announce-msg");
@@ -1385,10 +1358,25 @@ async function checkBanwebStatus(){
   }
 }
 $("btnBanwebLogin").onclick = async () => {
-  await withBusy(t("status.opening_login"), $("btnBanwebLogin"), async ()=>{
-    const r=await api("banweb/open_login");
-    if(r.ok===true) setStatus(t("status.login_opened"),"ok",6000);
-    else setStatus(t("status.login_fail")+(r.error||""),"err");
+  // 「重新登录」一律先无头自动登录：已存凭据即静默完成、不弹窗；
+  // 失败（未存凭据/密码错误/后端忙）才弹手动窗口兜底，而不是一上来就开窗。
+  aimsAutoTried = true;   // 抑制 3s 轮询重复触发，避免并发双登录
+  const loginBtn = $("btnBanwebLogin");
+  await withBusy(t("status.aims_logging_in"), loginBtn, async ()=>{
+    const auto = await api("banweb/auto_login");
+    if(auto.ok === true){
+      aimsAutoTried = false;               // 成功 → 直接进入已登录态
+      if(loginBtn) loginBtn.hidden = true;
+      setBanwebStatusText(t("status.banweb_ok"), "ok");
+      stopBanwebPoll();
+      loadTerms();
+      setStatus(t("status.banweb_ok"), "ok", 4000);
+      return;
+    }
+    // 无头失败 → 落回弹手动登录窗口，用户可自行输入
+    const w = await api("banweb/open_login");
+    if(w.ok === true) setStatus(t("status.login_opened"), "ok", 6000);
+    else setStatus(t("status.login_fail") + (w.error || auto.error || ""), "err");
     checkBanwebStatus();
   });
 };
@@ -1819,16 +1807,12 @@ fillAlert();
 renderSchedule();
 function onTopRangeChange(){
   refreshPill();
-  $("filterStart").value = $("inpStart").value;   // 公告总结的显示范围跟着同步窗口走
-  $("filterEnd").value = $("inpEnd").value;
   scheduleAutoSync();
 }
 $("inpStart").addEventListener("change", onTopRangeChange);
 $("inpEnd").addEventListener("change", onTopRangeChange);
 refreshPill();
-$("filterStart").value=$("inpStart").value;
-$("filterEnd").value=$("inpEnd").value;
-refreshFilterState();
+renderSummaries();
 
 /* 页面打开：已保存 Canvas 配置 → 自动加载课程 + 同步公告（静默，不遮罩） */
 async function autoLoadOnOpen(){

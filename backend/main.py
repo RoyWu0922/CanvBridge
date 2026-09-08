@@ -83,6 +83,7 @@ class ListFilesRequest(CanvasConfig):
 
 
 class DownloadRequest(CanvasConfig):
+    download_dir: str  # 落盘锚点：每条 dest_path 都会被重新锚定到该目录内
     items: list[dict]  # [{course_id, file_id, dest_path}]
 
 
@@ -496,7 +497,8 @@ def download_files(req: DownloadRequest):
         except Exception:
             continue
     planned = [{"file_id": i["file_id"], "dest_path": i["dest_path"]} for i in req.items]
-    return files_downloader.download_items(req.canvas_url, req.canvas_token, files_by_id, planned)
+    return files_downloader.download_items(req.canvas_url, req.canvas_token,
+                                           files_by_id, planned, req.download_dir)
 
 
 @app.post("/api/download_module_item")
