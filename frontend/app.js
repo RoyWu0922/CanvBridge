@@ -4,6 +4,44 @@ const $$ = (sel) => [...document.querySelectorAll(sel)];
 const KEY = ["canvasUrl","canvasToken","llmBaseUrl","llmApiKey","llmModel","downloadDir"];
 const ALERTS = [[0,"alert.none"],[5,"alert.min5"],[10,"alert.min10"],[30,"alert.min30"],[60,"alert.hour1"],[120,"alert.hour2"],[360,"alert.hour6"],[720,"alert.hour12"],[1440,"alert.day1"]];
 
+/* ===== 桌面窗口壳桥（pywebview 内嵌窗口模式）=====
+   窗口里没有“新标签页”：外部 http(s) 链接 / target=_blank / window.open
+   交给系统默认浏览器（pywebview 注入的 window.pywebview.api.openExternal）。
+   普通浏览器访问 localhost 时无桥 → 本块完全不起作用，保持原浏览器行为。 */
+(function(){
+  function shellApi(){
+    try {
+      const a = window.pywebview && window.pywebview.api;
+      return (a && typeof a.openExternal === "function") ? a : null;
+    } catch (e) { return null; }
+  }
+  window.CanvBridgeShell = {
+    isWebview(){ return !!shellApi(); },
+    openExternal(url){
+      const a = shellApi();
+      if (a && url && /^https?:/i.test(url)){ try { a.openExternal(url); return true; } catch (e) {} }
+      return false;
+    }
+  };
+  const nativeOpen = window.open.bind(window);
+  window.open = function(url){
+    if (url && window.CanvBridgeShell.openExternal(url)) return null;   // 壳接管 → 系统浏览器
+    return nativeOpen.apply(window, arguments);                          // 无桥 → 原样
+  };
+  document.addEventListener("click", (e)=>{                              // 捕获阶段，先于业务 handler
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const el = e.target && e.target.closest ? e.target.closest("a[href]") : null;
+    if (!el) return;
+    const href = el.getAttribute("href") || "";
+    if (href.charAt(0) === "#") return;                                  // 页内锚点交回原逻辑
+    let abs = "";
+    try { abs = new URL(href, location.href).href; } catch (err) { return; }
+    const external = new URL(abs).origin !== location.origin || el.target === "_blank";
+    if (!external) return;
+    if (window.CanvBridgeShell.openExternal(abs)) e.preventDefault();    // 有桥并接管→阻止默认；无桥→放行
+  }, true);
+})();
+
 /* 外观主题：light / dark / system（跟随系统），写 localStorage 的 sc_theme。
    首绘前的解析由 index.html 头部内联脚本负责，这里负责持久化 + 实时跟随系统 + 下拉同步。 */
 const THEME_KEY = "sc_theme";
@@ -918,6 +956,13 @@ function openModuleFilePop(itemEl){
   const pageBtn = $("btnModuleOpenPage");
   pageBtn.hidden = !pageUrl;           // 无 Canvas 页面链接 → 只给「打开文件」
   if (pageUrl) pageBtn.textContent = t("module.open_page");
+  if (window.CanvBridgeShell && window.CanvBridgeShell.isWebview()){
+    // 内嵌窗口没有“新标签页内联 PDF”：页内预览不可用。
+    // 有 Canvas 链接 → 走系统浏览器「打开页面」；纯文件项 → 直接下载到本地，不弹空 popover。
+    const fbtn = $("btnModuleOpenFile");
+    if (fbtn) fbtn.hidden = true;
+    if (!pageUrl){ closeModulePop(); downloadModuleFile(itemEl); return; }
+  }
   modulePop.hidden = false;            // 先显示再量尺寸，无闪动
   const r = itemEl.getBoundingClientRect();
   const pw = modulePop.offsetWidth || 220, ph = modulePop.offsetHeight || 120;

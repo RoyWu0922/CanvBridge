@@ -22,6 +22,14 @@ fi
   --icon "$(pwd)/docs/icon.icns" \
   --add-data "frontend:frontend" \
   --collect-all playwright \
+  --collect-all webview \
+  --hidden-import "webview.platforms.cocoa" \
+  --hidden-import "objc" \
+  --hidden-import "Cocoa" \
+  --hidden-import "Foundation" \
+  --hidden-import "WebKit" \
+  --hidden-import "Quartz" \
+  --hidden-import "UniformTypeIdentifiers" \
   --hidden-import "uvicorn.logging" \
   --hidden-import "uvicorn.loops.auto" \
   --hidden-import "uvicorn.protocols.http.auto" \

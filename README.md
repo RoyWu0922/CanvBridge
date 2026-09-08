@@ -54,17 +54,17 @@ cd School_Calendar
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python run_app.py          # 起服务(127.0.0.1:8331)，等服务就绪后自动打开浏览器
+python run_app.py          # 起服务(127.0.0.1:8331) + 弹出内嵌原生窗口；关窗即退出
 ```
 
-或手动起服务再访问：
+不想用原生窗口、想退回浏览器标签页：
 
 ```bash
-uvicorn backend.main:app --host 127.0.0.1 --port 8331
-# 浏览器打开 http://127.0.0.1:8331
+CANVBRIDGE_WEBVIEW=0 python run_app.py    # 或 python run_app.py --browser
+# 服务就绪后自动用系统默认浏览器打开 http://127.0.0.1:8331
 ```
 
-> 依赖仅 `fastapi / uvicorn[standard] / requests / httpx / pytest / playwright`（见 `requirements.txt`）。
+> 依赖：`fastapi / uvicorn[standard] / requests / httpx / pytest / playwright / pywebview`（见 `requirements.txt`）。
 > AIMS 登录用的是**系统安装的 Google Chrome**，无需 `playwright install` 下载自带浏览器；若提示找不到 Chrome，先安装 Google Chrome。
 
 首次使用：右上「设置」按下面的表填好 → 写日历/提醒时放行 macOS 权限 → 完事。
@@ -143,7 +143,7 @@ python -m pytest          # 全量：backend 单测 + API 冒烟（不触网）
 ./build_app.sh            # PyInstaller：打包 backend + frontend + playwright → dist/CanvBridge.app
 ```
 
-- 产物双击即用：自动起服务并打开 `http://127.0.0.1:8331`。
+- 产物双击即用：自动起本地服务并**弹出内嵌原生窗口**（不再占用浏览器标签页）；设置存于窗口内，首次使用需在窗口里重填一次 Canvas/LLM 设置。
 - App 未做 Apple 公证，首次打开被 Gatekeeper 拦截属正常：右键 → 打开（或系统设置 → 隐私与安全性 → 仍要打开）。完整指引见 [`打开步骤.md`](./打开步骤.md)。
 - 若报「已损坏」：终端执行 `xattr -cr /Applications/CanvBridge.app`。
 
@@ -160,7 +160,7 @@ backend/             FastAPI 后端
   credentials.py     AIMS 凭据 → macOS 钥匙串
 frontend/            无框架单页（index.html / app.js / i18n.js / app.css）
 tests/               pytest 单测
-run_app.py           源码入口：起服务 + 自动开浏览器
+run_app.py           源码入口：起服务 + 内嵌原生窗口（pywebview），外链交系统浏览器
 CanvBridge.spec      PyInstaller 打包描述
 build_app.sh         打包脚本
 ```
