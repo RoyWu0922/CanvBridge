@@ -498,6 +498,11 @@ function switchTab(target){
   /* 「切走即已读」：离开「公告总结」页=已看过其上内容 → 记已读、红点消失。
      启动落在公告页不会自动已读，新公告红点会一直亮到用户切走那一刻。 */
   if(prev === "tabAnnounce" && target !== "tabAnnounce") markAnnounceSeen();
+  else if(target === "tabAnnounce" && !countNewAnnounce()){
+    // 已全部转已读→清掉遗留的高亮框与「新」角标（避免回到本页仍显示旧未读）
+    $$("#summaries .item.is-new").forEach(el => el.classList.remove("is-new"));
+    $$("#summaries .badge-new").forEach(el => el.remove());
+  }
   refreshBadges();
 }
 $$(".tab").forEach(b=> b.addEventListener("click", ()=>{
@@ -696,10 +701,12 @@ function renderSummaries(){
         const titleHtml = (cvUrl && a.id)
           ? `<a class="announce-link" href="${escAttr(cvUrl)}/courses/${escAttr(c.course_id)}/announcements/${escAttr(a.id)}" target="_blank" rel="noopener">${esc(a.title)}</a>`
           : esc(a.title);
-        return `<div class="item"><div><div class="item-title">${titleHtml} <span class="muted">${esc((a.posted_at||"").slice(0,10))}</span></div>
+        const isNew = !seenSet.announce.has(announceKey(c, a));    // 与页签红点同口径：跨会话没读过
+        const newTag = isNew ? `<span class="badge-new">${esc(t("announce.new_tag"))}</span>` : "";
+        return `<div class="item${isNew ? " is-new" : ""}"><div><div class="item-title">${newTag}${titleHtml} <span class="muted">${esc((a.posted_at||"").slice(0,10))}</span></div>
           <div class="announce-msg-wrap"><div class="announce-msg"><div class="announce-msg-inner">${esc(a.message)}</div></div>
             <button class="btn-announce-expand" hidden>${t("announce.expand")}</button></div>
-          ${ai}</div>`;
+          ${ai}</div></div>`;
       }).join("")
       : `<div class="muted" style="padding:4px 0 8px">${t("announce.no_announce")}</div>`;
     // AI 提取出的可写事项：事件 / 提醒。整门课聚合一份，有结果即以折叠块显示

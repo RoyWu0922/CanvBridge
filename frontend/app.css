@@ -150,6 +150,13 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
   display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
 .announce-msg.expanded { -webkit-line-clamp:unset; }
 .announce-msg-inner { white-space:pre-wrap; }
+/* 未读新公告逐条高亮：红框+浅红底+「新」角标（口径同页签红点；切走公告页即已读，重渲染后消失） */
+.item.is-new { border:1px solid var(--err-border); border-left:3px solid var(--err); border-radius:8px;
+  background:var(--err-bg); padding:6px 10px; margin:6px 0; }
+.item.is-new .announce-link, .item.is-new .item-title { color:var(--err); }
+.badge-new { display:inline-block; margin-right:6px; padding:0 6px; border:1px solid var(--err-border);
+  border-radius:4px; background:var(--err-bg); color:var(--err); font-size:10.5px; font-weight:700;
+  line-height:16px; vertical-align:1px; }
 /* AI 逐条总结：与原文明显示的区分样式（浅底 + 主题色左边条 + 角标） */
 .ai-summary { margin:8px 0 2px; padding:8px 12px; border-left:3px solid var(--accent);
   background:var(--accent-soft); border-radius:0 8px 8px 0; font-size:12.5px; line-height:1.7; }
