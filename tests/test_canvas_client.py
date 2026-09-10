@@ -860,6 +860,12 @@ def test_get_planner_date_fallback_chain(monkeypatch):
         {"plannable_id": 4, "plannable_type": "assignment", "course_id": 5,
          "plannable": {"title": "全缺"}, "html_url": "/a/4",
          "submissions": {"submitted": False}},
+        {"plannable_id": 5, "plannable_type": "quiz", "course_id": 5,
+         "plannable": {"title": "退 due_at(quiz)", "due_at": "2026-09-22T00:00:00Z"},
+         "html_url": "/a/5", "submissions": {"submitted": False}},
+        {"plannable_id": 6, "plannable_type": "planner_note", "course_id": None,
+         "plannable": {"title": "退 todo_date(note)", "todo_date": "2026-09-23T00:00:00Z"},
+         "html_url": "/a/6", "submissions": False},
     ], "")])
     monkeypatch.setattr(requests, "Session", lambda: s)
     out = canvas_client.get_planner_items("https://x", "tok", "2026-09-10", "2026-09-30")
@@ -867,6 +873,8 @@ def test_get_planner_date_fallback_chain(monkeypatch):
         (1, "2026-09-19T00:00:00Z"),
         (2, "2026-09-20T00:00:00Z"),
         (3, "2026-09-21T00:00:00Z"),
+        (5, "2026-09-22T00:00:00Z"),
+        (6, "2026-09-23T00:00:00Z"),
     ]      # id=4 无任何日期 → 丢弃
 
 

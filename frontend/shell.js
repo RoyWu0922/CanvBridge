@@ -54,11 +54,11 @@ function setNavBadge(page, n){
   if (!b){ b = document.createElement("span"); b.className = "nav-badge"; item.appendChild(b); }
   b.textContent = n > 99 ? "99+" : String(n);
   b.hidden = false;
-  const KEY = { announce: "unread.announce", todo: "unread.todo", discuss: "unread.discuss" };
-  item.title = t(KEY[page] || "unread.announce", { n });
+  const BADGE_KEY = { announce: "unread.announce", todo: "unread.todo", discuss: "unread.discuss" };
+  item.title = t(BADGE_KEY[page] || "unread.announce", { n });
 }
 
-/* 更新两个侧栏项的未读徽章（纯展示）。已读动作由 switchPage / loadTodo 触发 */
+/* 更新三个侧栏项的未读徽章（纯展示）。已读动作由 switchPage / loadTodo 触发 */
 function refreshBadges(){
   setNavBadge("announce", countNewAnnounce());
   setNavBadge("todo", countNewTodo());
@@ -126,9 +126,11 @@ async function initHome(){
         start_date: fmt(now), end_date: fmt(end) });
       if(r.ok === true && Array.isArray(r.items)){
         const weekEnd = new Date(now); weekEnd.setDate(now.getDate() + 7);
+        const sel = new Set(selectedCourses());
         const week = r.items.filter(it => {
           if (it.type === "announcement") return false;   // 冗余保险：后端已丢弃
           if (it.submitted === true) return false;        // 已交不计入
+          if (it.course_id != null && !sel.has(it.course_id)) return false;  // 尊重课程勾选/忽略
           const d = new Date(it.date);                    // submitted === null 计入
           return !isNaN(d) && d >= now && d <= weekEnd;
         });
@@ -211,7 +213,7 @@ function renderHomeDdlList(){
        <em>${esc(short(String(it.date || "").slice(0, 10)))}</em></div>`).join("");
 }
 
-/* 成绩速览：**只读内存**里 gradesData（app.js:1220），用户访问过成绩页后才有内容。
+/* 成绩速览：**只读内存**里 gradesData（app.js:1360），用户访问过成绩页后才有内容。
    首页启动阶段不得为它发起 /api/grades —— 那会逐课程拉全部作业，代价与其余卡不在
    一个量级，放上首页会显著拖慢首屏。 */
 function renderHomeGradeCard(){
