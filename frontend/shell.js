@@ -75,7 +75,9 @@ async function autoLoadOnOpen(){
 }
 
 /* 首页：卡片式首页（统计卡 + 速览卡），并发拉取且会话内只拉一次 */
-let homeLoaded = false;   // 本次会话是否已拉过首页数据
+let homeLoaded = false;      // 本次会话是否已拉过首页数据
+let homeDdlCount = null;     // DDL 计数缓存（null = 尚未拉取，卡片保持「—」）
+let homeExamCount = null;    // 考试计数缓存（同上）
 
 /* 点统计卡 / 「更多」跳到对应板块 */
 $("page-home").addEventListener("click", e => {
@@ -83,17 +85,25 @@ $("page-home").addEventListener("click", e => {
   if (go) switchPage(go.dataset.goto);
 });
 
+/* 显隐首页两张速览卡：未配置 Canvas 时隐藏，配置后恢复（幂等） */
+function setHomeListCards(visible){
+  $$("#page-home .list-card").forEach(el => { el.hidden = !visible; });
+}
+
 async function initHome(){
   const s = settings();
   if(!s.canvas_url || !s.canvas_token){
     $("homeNeedCanvas").hidden = false;
     $("homeStats").hidden = true;
+    setHomeListCards(false);
     return;
   }
   $("homeNeedCanvas").hidden = true;
   $("homeStats").hidden = false;
+  setHomeListCards(true);
 
   renderHomeFromCache();          // 先用内存里已有的数据填一遍
+  if (!courseList.length) return; // 课程还没加载 → 不拉数据，等 autoLoadOnOpen 加载完再回来（homeLoaded 保持 false）
   if (homeLoaded) return;         // 本次会话已拉过 → 不重复请求
   homeLoaded = true;
 
@@ -112,13 +122,16 @@ async function initHome(){
         course_ids: selectedCourses(), start_date: fmt(now), end_date: fmt(end) });
       if(r.ok === true && Array.isArray(r.events)){
         const weekEnd = new Date(now); weekEnd.setDate(now.getDate() + 7);
-        $("statDdl").textContent = String(
-          r.events.filter(ev => { const d = new Date(ev.start || ev.due); return d >= now && d <= weekEnd; }).length);
+        homeDdlCount = r.events.filter(ev => { const d = new Date(ev.start || ev.due); return d >= now && d <= weekEnd; }).length;
+        $("statDdl").textContent = String(homeDdlCount);
       }
     })(),
-    (async () => {                                   // 本周考试
+    (async () => {                                   // 本学期考试
       const r = await api("banweb/exams", {});
-      if(r.ok === true && Array.isArray(r.exams)) $("statExam").textContent = String(r.exams.length);
+      if(r.ok === true && Array.isArray(r.exams)){
+        homeExamCount = r.exams.length;
+        $("statExam").textContent = String(homeExamCount);
+      }
     })(),
   ]);
 
@@ -154,6 +167,8 @@ function renderHomeToday(){
 /* 用内存里已有的结果填（切回首页时立即有内容，不等网络） */
 function renderHomeFromCache(){
   $("statAnnounce").textContent = String(countNewAnnounce());
+  if (homeDdlCount  !== null) $("statDdl").textContent  = String(homeDdlCount);
+  if (homeExamCount !== null) $("statExam").textContent = String(homeExamCount);
   renderHomeAnnounceList();
   renderHomeToday();
 }
