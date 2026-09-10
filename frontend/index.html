@@ -30,6 +30,7 @@
     <nav class="nav" id="nav">
       <button class="nav-item" data-page="home"><span data-i18n="nav.home"></span></button>
       <button class="nav-item" data-page="announce"><span data-i18n="nav.announce"></span></button>
+      <button class="nav-item" data-page="discuss"><span data-i18n="nav.discuss"></span></button>
       <button class="nav-item" data-page="schedule"><span data-i18n="nav.schedule"></span></button>
       <button class="nav-item" data-page="todo"><span data-i18n="nav.todo"></span></button>
       <button class="nav-item" data-page="files"><span data-i18n="nav.files"></span></button>
@@ -83,6 +84,16 @@
         <label class="field"><span data-i18n="announce.alert"></span><select id="selAlert"></select></label>
         <button id="btnWriteReminders" class="btn btn-accent" data-i18n="btn.write_reminders"></button>
       </div>
+    </div>
+
+    <div id="page-discuss" class="page" hidden>
+      <div class="page-head"><h2 data-i18n="nav.discuss"></h2></div>
+      <div class="filter-bar">
+        <span class="filter-label" data-i18n="discuss.filter_label"></span>
+        <button id="btnReloadDiscuss" class="btn btn-ghost" data-i18n="discuss.reload"></button>
+        <span id="discussStatus" class="muted"></span>
+      </div>
+      <div id="discussGroups"></div>
     </div>
 
     <div id="page-schedule" class="page" hidden>

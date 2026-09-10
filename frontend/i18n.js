@@ -9,6 +9,7 @@ const I18N = {
     "nav.grades": "成绩",
     "nav.courses": "课程",
     "nav.settings": "设置",
+    "nav.discuss": "讨论",
     "range.placeholder": "请选择起止日期",
     "range.invalid": "开始日期晚于结束日期",
     "range.days": "共 {n} 天",
@@ -28,6 +29,7 @@ const I18N = {
     "tab.todo": "待办",
     "unread.announce": "{n} 条未读新公告",
     "unread.todo": "{n} 条未读新待办",
+    "unread.discuss": "有未读讨论",
     "tab.grades": "成绩",
     "announce.filter.course": "课程筛选",
     "announce.filter.all": "全部课程",
@@ -300,6 +302,20 @@ const I18N = {
     "home.need_canvas": "还没配置 Canvas，去设置里填上地址和 Token。",
     "home.need_aims": "尚未登录 AIMS，去课表页登录后即可看到今日课程。",
     "home.no_class": "今日无课",
+    "discuss.filter_label": "讨论区",
+    "discuss.reload": "刷新讨论",
+    "discuss.loading": "正在加载讨论…",
+    "discuss.loaded": "已加载 {n} 门课程的讨论",
+    "discuss.fail": "加载讨论失败：",
+    "discuss.empty": "暂无讨论",
+    "discuss.not_loaded": "点「刷新讨论」加载",
+    "discuss.course_empty": "该课程暂无讨论",
+    "discuss.course_fail": "该课程加载失败：",
+    "discuss.new": "新",
+    "discuss.replies": "{n} 回复",
+    "discuss.unread": "{n} 未读",
+    "discuss.need_canvas": "还没配置 Canvas，去设置里填上地址和 Token。",
+    "discuss.need_course": "请先在课程页勾选要同步的课程。",
   },
   en: {
     "app.title": "Canvas Course Assistant",
@@ -311,6 +327,7 @@ const I18N = {
     "nav.grades": "Grades",
     "nav.courses": "Courses",
     "nav.settings": "Settings",
+    "nav.discuss": "Discussions",
     "range.placeholder": "Select a date range",
     "range.invalid": "Start date is after end date",
     "range.days": "{n} days",
@@ -330,6 +347,7 @@ const I18N = {
     "tab.todo": "To-do",
     "unread.announce": "{n} new announcements",
     "unread.todo": "{n} new to-dos",
+    "unread.discuss": "Unread discussions",
     "tab.grades": "Grades",
     "announce.filter.course": "Course filter",
     "announce.filter.all": "All courses",
@@ -602,6 +620,20 @@ const I18N = {
     "home.need_canvas": "Canvas isn't configured yet — add the URL and token in Settings.",
     "home.need_aims": "Not signed in to AIMS — sign in from the Schedule page to see today's classes.",
     "home.no_class": "No classes today",
+    "discuss.filter_label": "Discussions",
+    "discuss.reload": "Refresh discussions",
+    "discuss.loading": "Loading discussions…",
+    "discuss.loaded": "Loaded discussions for {n} course(s)",
+    "discuss.fail": "Failed to load discussions: ",
+    "discuss.empty": "No discussions yet",
+    "discuss.not_loaded": "Click \"Refresh discussions\" to load",
+    "discuss.course_empty": "No discussions in this course",
+    "discuss.course_fail": "Failed to load this course: ",
+    "discuss.new": "NEW",
+    "discuss.replies": "{n} replies",
+    "discuss.unread": "{n} unread",
+    "discuss.need_canvas": "Canvas isn't configured yet — add the URL and token in Settings.",
+    "discuss.need_course": "Select the courses to sync on the Courses page first.",
   },
 };
 
@@ -629,5 +661,6 @@ function applyLang() {
   renderSummaries(); renderFiles(); renderSchedule();
   if (typeof renderTodo === "function") renderTodo();
   if (typeof renderGrades === "function") renderGrades();
+  if (typeof renderDiscussions === "function") renderDiscussions();
   if (typeof renderDetail === "function") renderDetail();   // 详情弹层语言切换后重渲
 }

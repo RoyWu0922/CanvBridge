@@ -383,3 +383,9 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
   .spinner, .modal-card { animation-duration:1.6s; }
   * { transition:none !important; }
 }
+
+/* 讨论页：每条一行的可点链接 */
+.discuss-row { display:block; padding:9px 12px; margin-bottom:6px; border-radius:var(--radius-sm);
+  text-decoration:none; color:var(--ink); border:1px solid transparent; }
+.discuss-row:hover { background:var(--surface-2); }
+.discuss-row.is-unread { border-color:var(--err-border); background:var(--err-bg); }

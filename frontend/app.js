@@ -1107,6 +1107,76 @@ async function bgFetchTodoBadge(){
     }
   } catch (e) {}
 }
+/* ===== 讨论区（只读：点条目交系统浏览器打开）===== */
+let discussData = null;        // {by_course:{cid:[topic]}, errors:{cid:msg}} | null = 尚未加载
+let discussTabInit = false;
+
+function initDiscussTab(){
+  if(discussTabInit) return;
+  discussTabInit = true;
+  loadDiscussions();
+}
+
+async function loadDiscussions(){
+  const s = settings();
+  if(!s.canvas_url || !s.canvas_token){ setStatus(t("discuss.need_canvas"), "err"); return; }
+  const ids = selectedCourses();
+  if(!ids.length){ setStatus(t("discuss.need_course"), "err"); return; }
+  const el = $("discussStatus");
+  el.textContent = t("discuss.loading");
+  const r = await api("discussions", { canvas_url:s.canvas_url, canvas_token:s.canvas_token,
+                                       course_ids: ids });
+  if(r.ok !== true){ el.textContent = t("discuss.fail") + (r.error || ""); return; }
+  discussData = { by_course: r.by_course || {}, errors: r.errors || {} };
+  renderDiscussions();
+  refreshBadges();
+}
+
+/* 未读口径：根帖未读 **或** 有未读回复。两个维度独立（实测 read_state="read" 而
+   unread_count=8 确实存在），只数 read_state 会漏掉最该看的那一类。 */
+function topicUnread(tp){ return tp.read_state === "unread" || Number(tp.unread_count) > 0; }
+
+function topicRowHtml(tp){
+  const unread = topicUnread(tp);
+  const when = String(tp.last_reply_at || tp.posted_at || "");
+  const bits = [tp.author || "", t("discuss.replies", { n: tp.replies_count })];
+  if(tp.unread_count) bits.push(t("discuss.unread", { n: tp.unread_count }));
+  if(when) bits.push(short(when.slice(0, 10)));
+  return `<a class="discuss-row${unread ? " is-unread" : ""}" href="${escAttr(tp.html_url || "")}" target="_blank" rel="noopener">
+    <div class="item-title">${unread ? `<span class="badge-new">${t("discuss.new")}</span>` : ""}${esc(tp.title || "")}</div>
+    <div class="file-path">${esc(bits.filter(Boolean).join(" · "))}</div>
+  </a>`;
+}
+
+function renderDiscussions(){
+  const box = $("discussGroups");
+  if(!discussData){ box.innerHTML = `<div class="muted">${t("discuss.not_loaded")}</div>`; return; }
+  const by = discussData.by_course, errs = discussData.errors;
+  const names = {};
+  (courseList || []).forEach(c => { names[c.id] = c.name; });
+  const keys = Object.keys(by).concat(Object.keys(errs).filter(k => !(k in by)));
+  if(!keys.length){ box.innerHTML = `<div class="muted">${t("discuss.empty")}</div>`; return; }
+  box.innerHTML = keys.map(k => {
+    const list = by[k] || [], err = errs[k] || "";
+    const body = err
+      ? `<div class="muted">${t("discuss.course_fail")}${esc(err)}</div>`
+      : !list.length
+        ? `<div class="muted">${t("discuss.course_empty")}</div>`
+        : list.map(topicRowHtml).join("");
+    return `<div class="glass-card ann-grp"><div class="sub-label">${esc(names[k] || ("#" + k))}</div>${body}</div>`;
+  }).join("");
+  $("discussStatus").textContent = t("discuss.loaded", { n: keys.length });
+}
+
+/* 侧栏徽章用。首次加载讨论之前恒为 0 —— 本轮不为讨论加启动期后台预取。 */
+function countUnreadDiscussions(){
+  if(!discussData) return 0;
+  return Object.keys(discussData.by_course || {}).reduce((n, k) =>
+    n + (discussData.by_course[k] || []).filter(topicUnread).length, 0);
+}
+
+$("btnReloadDiscuss").onclick = () => loadDiscussions();
+
 async function initTodoTab(){
   if(todoTabInit) return;
   todoTabInit = true;

@@ -2,7 +2,7 @@
    依赖 util.js（$ / api / setStatus …）与 app.js（各板块的 init* 函数）。
    必须最后加载。 */
 
-const PAGES = ["home","announce","schedule","todo","files","grades","courses","settings"];
+const PAGES = ["home","announce","discuss","schedule","todo","files","grades","courses","settings"];
 
 /* 各板块的首次进入初始化（app.js 提供，均为函数声明，运行时可见）。
    注意 settings 也在这里 —— 见 Step 4 第 2 条：openSettings() 不能自己调
@@ -12,6 +12,7 @@ const PAGE_INIT = {
   schedule: () => initScheduleTab(),
   todo:     () => initTodoTab(),
   grades:   () => initGradesTab(),
+  discuss:  () => initDiscussTab(),
   home:     () => initHome(),
   settings: () => openSettings(),
 };
@@ -53,13 +54,15 @@ function setNavBadge(page, n){
   if (!b){ b = document.createElement("span"); b.className = "nav-badge"; item.appendChild(b); }
   b.textContent = n > 99 ? "99+" : String(n);
   b.hidden = false;
-  item.title = t(page === "todo" ? "unread.todo" : "unread.announce", { n });
+  const KEY = { announce: "unread.announce", todo: "unread.todo", discuss: "unread.discuss" };
+  item.title = t(KEY[page] || "unread.announce", { n });
 }
 
 /* 更新两个侧栏项的未读徽章（纯展示）。已读动作由 switchPage / loadTodo 触发 */
 function refreshBadges(){
   setNavBadge("announce", countNewAnnounce());
   setNavBadge("todo", countNewTodo());
+  setNavBadge("discuss", countUnreadDiscussions());
 }
 
 /* 启动引导：先落首页，再静默拉数据（不遮罩、失败不报错） */
