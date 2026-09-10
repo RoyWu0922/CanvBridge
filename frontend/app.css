@@ -372,12 +372,23 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 .exam-tag{ display:inline-block; font-size:10px; font-weight:700; letter-spacing:.5px;
   background:#ef4444; color:#fff; border-radius:3px; padding:1px 5px; margin-bottom:3px; }
 
+/* 首页仪表盘：今日课程小卡组 + 三张速览卡 */
+.today-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+.today-card { padding:10px 12px; border-radius:var(--radius-sm);
+  background:var(--surface-2); border:1px solid var(--panel-border); }
+.today-card b { display:block; font-size:12.5px; font-variant-numeric:tabular-nums;
+  color:var(--accent); }
+.today-card span { display:block; font-size:12.5px; font-weight:600; }
+.today-card em { font-style:normal; font-size:11.5px; color:var(--muted); }
+.home-cards { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+
 @media (max-width:900px){
   /* 侧栏不再收成 64px 图标条：图标已删（见 .nav-item），图标条会变成空白。
      保持文字形态，只收紧内容区。 */
   .content { padding:18px 16px 96px; }
   .stat-row { grid-template-columns:repeat(2,1fr); }
   .set-grid { grid-template-columns:1fr; }
+  .home-cards { grid-template-columns:1fr; }
 }
 @media (prefers-reduced-motion: reduce) {
   .spinner, .modal-card { animation-duration:1.6s; }

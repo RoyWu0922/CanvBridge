@@ -81,6 +81,7 @@ async function autoLoadOnOpen(){
 let homeLoaded = false;      // 本次会话是否已拉过首页数据
 let homeDdlCount = null;     // DDL 计数缓存（null = 尚未拉取，卡片保持「—」）
 let homeExamCount = null;    // 考试计数缓存（同上）
+let homeDdlItems = null;     // 本周 DDL 条目（来自 /api/planner），null = 尚未拉取
 
 /* 点统计卡 / 「更多」跳到对应板块 */
 $("page-home").addEventListener("click", e => {
@@ -117,17 +118,25 @@ async function initHome(){
       $("statAnnounce").textContent = String(countNewAnnounce());
       renderHomeAnnounceList();
     })(),
-    (async () => {                                   // 本周 DDL
+    (async () => {                                   // 本周 DDL（Canvas Planner 聚合流）
       const now = new Date();
-      const end = new Date(now); end.setDate(end.getDate() + 30);
-      const r = await api("calendar_events", {
+      const end = new Date(now); end.setDate(end.getDate() + 7);
+      const r = await api("planner", {
         canvas_url: s.canvas_url, canvas_token: s.canvas_token,
-        course_ids: selectedCourses(), start_date: fmt(now), end_date: fmt(end) });
-      if(r.ok === true && Array.isArray(r.events)){
+        start_date: fmt(now), end_date: fmt(end) });
+      if(r.ok === true && Array.isArray(r.items)){
         const weekEnd = new Date(now); weekEnd.setDate(now.getDate() + 7);
-        homeDdlCount = r.events.filter(ev => { const d = new Date(ev.start || ev.due); return d >= now && d <= weekEnd; }).length;
+        const week = r.items.filter(it => {
+          if (it.type === "announcement") return false;   // 冗余保险：后端已丢弃
+          if (it.submitted === true) return false;        // 已交不计入
+          const d = new Date(it.date);                    // submitted === null 计入
+          return !isNaN(d) && d >= now && d <= weekEnd;
+        });
+        homeDdlItems = week;
+        homeDdlCount = week.length;
         $("statDdl").textContent = String(homeDdlCount);
       }
+      renderHomeDdlList();
     })(),
     (async () => {                                   // 本学期考试
       const r = await api("banweb/exams", {});
@@ -163,8 +172,8 @@ function renderHomeToday(){
   $("statToday").textContent = String(slots.length);
   if (!slots.length){ $("homeTodayList").innerHTML = `<div class="muted">${t("home.no_class")}</div>`; return; }
   $("homeTodayList").innerHTML = slots.map(s =>
-    `<div class="home-row"><span>${esc(fmtTime(s.start))}–${esc(fmtTime(s.end))}</span>
-       <span class="hr-name">${esc(s.label)}</span><em>${esc(s.room || "")}</em></div>`).join("");
+    `<div class="today-card"><b>${esc(fmtTime(s.start))}–${esc(fmtTime(s.end))}</b>
+       <span>${esc(s.label)}</span><em>${esc(s.room || "")}</em></div>`).join("");
 }
 
 /* 用内存里已有的结果填（切回首页时立即有内容，不等网络） */
@@ -173,6 +182,8 @@ function renderHomeFromCache(){
   if (homeDdlCount  !== null) $("statDdl").textContent  = String(homeDdlCount);
   if (homeExamCount !== null) $("statExam").textContent = String(homeExamCount);
   renderHomeAnnounceList();
+  renderHomeDdlList();
+  renderHomeGradeCard();
   renderHomeToday();
 }
 
@@ -188,6 +199,28 @@ function renderHomeAnnounceList(){
   box.innerHTML = rows.map(a =>
     `<div class="home-row"><span class="hr-name">${esc(a.title || "")}</span>
        <em>${esc(short(String(a.posted_at || "").slice(0, 10)))}</em></div>`).join("");
+}
+
+/* 本周 DDL 列表：数据来自 /api/planner（后端已丢弃 announcement，这里不再过滤） */
+function renderHomeDdlList(){
+  const box = $("homeDdlList");
+  const items = Array.isArray(homeDdlItems) ? homeDdlItems : [];
+  if(!items.length){ box.innerHTML = `<div class="muted">${t("home.ddl_empty")}</div>`; return; }
+  box.innerHTML = items.slice(0, 5).map(it =>
+    `<div class="home-row"><span class="hr-name">${esc(it.title || "")}</span>
+       <em>${esc(short(String(it.date || "").slice(0, 10)))}</em></div>`).join("");
+}
+
+/* 成绩速览：**只读内存**里 gradesData（app.js:1220），用户访问过成绩页后才有内容。
+   首页启动阶段不得为它发起 /api/grades —— 那会逐课程拉全部作业，代价与其余卡不在
+   一个量级，放上首页会显著拖慢首屏。 */
+function renderHomeGradeCard(){
+  const box = $("homeGradeList");
+  const rows = Array.isArray(gradesData) ? gradesData : [];
+  if(!rows.length){ box.innerHTML = `<div class="muted">${t("home.grade_empty")}</div>`; return; }
+  box.innerHTML = rows.slice(0, 5).map(g =>
+    `<div class="home-row"><span class="hr-name">${esc(g.course_name || "")}</span>
+       <em>${g.current_score != null ? esc(String(g.current_score)) : "—"}</em></div>`).join("");
 }
 
 switchPage("home");

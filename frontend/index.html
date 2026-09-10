@@ -62,15 +62,29 @@
       </div>
 
       <div class="glass-card list-card">
-        <div class="list-head"><span data-i18n="home.recent_announce"></span>
-          <button class="link-btn" data-goto="announce" data-i18n="home.more"></button></div>
-        <div id="homeAnnounceList" class="muted" data-i18n="home.loading"></div>
-      </div>
-
-      <div class="glass-card list-card">
         <div class="list-head"><span data-i18n="home.today_schedule"></span>
           <button class="link-btn" data-goto="schedule" data-i18n="home.more"></button></div>
-        <div id="homeTodayList" class="muted" data-i18n="home.loading"></div>
+        <div id="homeTodayList" class="today-grid"></div>
+      </div>
+
+      <div class="home-cards">
+        <div class="glass-card list-card">
+          <div class="list-head"><span data-i18n="home.recent_announce"></span>
+            <button class="link-btn" data-goto="announce" data-i18n="home.more"></button></div>
+          <div id="homeAnnounceList" class="muted" data-i18n="home.loading"></div>
+        </div>
+
+        <div class="glass-card list-card">
+          <div class="list-head"><span data-i18n="home.ddl_card"></span>
+            <button class="link-btn" data-goto="todo" data-i18n="home.more"></button></div>
+          <div id="homeDdlList" class="muted" data-i18n="home.loading"></div>
+        </div>
+
+        <div class="glass-card list-card">
+          <div class="list-head"><span data-i18n="home.grade_card"></span>
+            <button class="link-btn" data-goto="grades" data-i18n="home.more"></button></div>
+          <div id="homeGradeList" class="muted" data-i18n="home.loading"></div>
+        </div>
       </div>
     </div>
 
