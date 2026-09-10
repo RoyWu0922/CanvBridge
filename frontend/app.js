@@ -431,7 +431,7 @@ function renderDetail(){
           <div class="item-title">${esc(a.name)}</div>
           <div class="file-path">${a.due_at
               ? t("announce.due") + " " + esc(fmtDue(a.due_at))
-              : t("detail.no_due")}${a.points_possible != null ? ` · ${esc(String(a.points_possible))} pts` : ""}</div>
+              : t("detail.no_due")}${a.points_possible != null ? ` · ${esc(t("common.points", { n: a.points_possible }))}` : ""}</div>
         </a>`).join("")
     : c ? `<div class="muted">${t("detail.no_assignments")}</div>`
         : "";
@@ -1321,7 +1321,7 @@ function renderTodo(){
               ? `<a href="${escAttr(it.html_url)}" target="_blank" rel="noopener">${esc(it.title)}</a>`
               : esc(it.title)}
               ${it.overdue ? `<span class="sched-badge err">${esc(t("todo.overdue_badge"))}</span>` : ""}</div>
-            <div class="file-path">${esc(it.course_name || "")}${it.due_at ? " · " + esc(t("announce.due")) + " " + esc(fmtDue(it.due_at)) : ""}${it.points_possible != null ? " · " + esc(String(it.points_possible)) + " pts" : ""}</div>
+            <div class="file-path">${esc(it.course_name || "")}${it.due_at ? " · " + esc(t("announce.due")) + " " + esc(fmtDue(it.due_at)) : ""}${it.points_possible != null ? " · " + esc(t("common.points", { n: it.points_possible })) : ""}</div>
           </div>
         </div>`).join("");
     }).join("");
@@ -1395,7 +1395,7 @@ function renderGrades(){
             : esc(a.name)}
             ${a.submitted ? `<span class="file-saved">${esc(t("grades.submitted"))}</span>` : `<span class="muted">${esc(t("grades.unsubmitted"))}</span>`}</div>
           <div class="file-path">${a.due_at ? esc(t("announce.due")) + " " + esc(fmtDue(a.due_at)) : ""}
-            ${a.points_possible != null ? " · " + esc(String(a.points_possible)) + " pts" : ""}
+            ${a.points_possible != null ? " · " + esc(t("common.points", { n: a.points_possible })) : ""}
             ${a.score != null ? " · <b>" + esc(String(a.score)) + "</b>" : ""}</div>
         </div>
       </div>`).join("");
@@ -1905,7 +1905,7 @@ function renderQuizzes(){
       if(q.due_at) bits.push(t("schedule.quiz_due") + " " + fmtDue(q.due_at));
       if(q.question_count != null) bits.push(t("schedule.quiz_questions", { n: q.question_count }));
       if(q.time_limit != null) bits.push(t("schedule.quiz_limit", { n: q.time_limit }));
-      if(q.points_possible != null) bits.push(String(q.points_possible) + " pts");
+      if(q.points_possible != null) bits.push(t("common.points", { n: q.points_possible }));
       return `<a class="quiz-row" href="${escAttr(q.html_url || "")}" target="_blank" rel="noopener">
         <div class="item-title">${esc(q.title || "")}</div>
         <div class="file-path">${esc(q.course + (bits.length ? " · " + bits.join(" · ") : ""))}</div>

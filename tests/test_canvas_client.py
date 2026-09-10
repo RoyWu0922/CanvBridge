@@ -807,7 +807,7 @@ def test_get_planner_keeps_every_known_type(monkeypatch):
     out = canvas_client.get_planner_items("https://x", "tok", "2026-09-10", "2026-09-17")
     assert [i["id"] for i in out] == [101, 102, 103, 104, 105, 106, 107]
     types = {i["id"]: i["type"] for i in out}
-    assert types[107] == "unknown_future_type"      # 未知类型走兜底，不丢弃
+    assert types[107] == "unknown_future_type"      # 自带日期故存活；未知类型若自身无日期会在 :430 被丢弃
     assert out[0]["course_name"] == "DSC1001 Introduction to Data Science"
     assert s.calls[0][1] == {"start_date": "2026-09-10", "end_date": "2026-09-17",
                              "per_page": 100}
