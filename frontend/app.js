@@ -182,6 +182,11 @@ let detailModulesError = "";     // Modules 拉取失败信息（有值时展示
 let detailSylEvents = [];        // 总结提取的日历事件（勾选 → 写入日历）
 let detailSylReminders = [];     // 总结提取的提醒（勾选 → 写入提醒列表）
 let detailBanweb = null;         // 从课表打开的详情：Banweb 课程块（code/section/crn/credits/course）
+let detailPages = null;        // 该课程的 Pages 列表 | null = 尚未取
+let detailPagesError = "";
+/* Page 正文本地缓存：键 `${course_id}:${page_url}`，会话内不失效。
+   内存态，不落 localStorage —— 刷新页面即清空。 */
+const pageBodyCache = {};
 
 function fmtDue(iso) {
   const d = new Date(iso);
@@ -225,12 +230,49 @@ document.addEventListener("keydown", e => {
   if (!$("detailModal").hidden) closeDetail();
 });
 
+/* 拉课程 Pages 列表（不含正文）。失败只影响该板块，不拖垮 Modules / 文件。 */
+async function fetchDetailPages(canvasId){
+  try {
+    const s = settings();
+    const r = await api("pages", { canvas_url:s.canvas_url, canvas_token:s.canvas_token,
+                                   course_id: canvasId });
+    detailPages = Array.isArray(r.pages) ? r.pages : [];
+    detailPagesError = r.ok === true ? "" : (r.error || "");
+  } catch (e) {
+    detailPages = [];
+    detailPagesError = String((e && e.message) || e);
+  }
+}
+
+/* 展开单条 Page 时才拉正文；pageBodyCache 命中则直接渲染，不发请求。 */
+async function loadPageBody(courseId, pageUrl, hostEl){
+  const key = `${courseId}:${pageUrl}`;
+  if(!(key in pageBodyCache)){
+    hostEl.innerHTML = `<div class="muted">${t("courses.page_loading")}</div>`;
+    const s = settings();
+    try {
+      const r = await api("page_body", { canvas_url:s.canvas_url, canvas_token:s.canvas_token,
+                                         course_id:courseId, page_url:pageUrl });
+      pageBodyCache[key] = r.ok === true ? { page: r.page } : { error: r.error || "" };
+    } catch (e) {
+      pageBodyCache[key] = { error: String((e && e.message) || e) };
+    }
+  }
+  const hit = pageBodyCache[key];
+  hostEl.innerHTML = hit.error
+    ? `<div class="muted">${t("courses.page_fail")}${esc(hit.error)}</div>`
+    // 纯文本插入：不注入 Canvas 返回的原始 HTML
+    : `<div class="detail-syllabus">${esc((hit.page && hit.page.body_text) || "")}</div>`;
+}
+
 async function openCourseDetail(canvasId, banwebCourse){
   detailBanweb = banwebCourse || null;
   detailMeetings = detailBanweb ? (detailBanweb.meetings || []) : [];
   detailSummary = "";
   detailModules = null;
   detailModulesError = "";
+  detailPages = null;
+  detailPagesError = "";
   detailSylEvents = [];
   detailSylReminders = [];
   detailCourse = null;
@@ -244,8 +286,9 @@ async function openCourseDetail(canvasId, banwebCourse){
       detailModules = Array.isArray(r.modules) ? r.modules : null;
       detailModulesError = r.modules_error || "";
     }
-    try { await ensureAssignments([canvasId]); }   // 详情作业区数据
-    catch (e) { /* 详情仍展示，作业区留空 */ }
+    // 两个请求并发，避免详情弹层打开被串行拖慢
+    try { await Promise.all([ensureAssignments([canvasId]), fetchDetailPages(canvasId)]); }
+    catch (e) { /* 详情仍展示，作业区 / 页面区留空 */ }
     detailAssignments = Array.isArray(assignmentMarks[canvasId]) ? assignmentMarks[canvasId] : [];
   }
   renderDetail();
@@ -319,6 +362,20 @@ function renderDetail(){
               `</div>`).join("")) +
       `</div>`
     : "";
+  // ⑦ Canvas Pages：列表来自 /api/pages；正文展开时才拉（懒加载 + 内存缓存）
+  const pagesHtml = (c && (detailPages || detailPagesError))
+    ? `<div class="detail-section"><div class="sub-label">${t("courses.pages")}</div>` +
+      (detailPagesError
+        ? `<div class="muted">${t("courses.pages_fail")}${esc(detailPagesError)}</div>`
+        : !detailPages.length
+          ? `<div class="muted">${t("courses.pages_empty")}</div>`
+          : detailPages.map(p =>
+              `<div class="detail-page-row" data-cid="${c.id}" data-purl="${escAttr(p.url)}">
+                 <div class="detail-page-head"><span class="detail-page-caret">▸</span>${esc(p.title || p.url)}${p.front_page ? ` <span class="chip">${t("courses.page_front")}</span>` : ""}</div>
+                 <div class="detail-page-body" hidden></div>
+               </div>`).join("")) +
+      `</div>`
+    : "";
   const profs = (c && c.teachers ? c.teachers : []).map(x => `<span class="chip">${esc(x)}</span>`).join("");
   const profLine = profs ? `<div class="detail-prof">${t("detail.teachers")}: ${profs}</div>` : "";
   // ③ 每节谁上课：instr 带 (P) 标记为「主讲」
@@ -386,6 +443,7 @@ function renderDetail(){
     ${paceHtml}
     ${links}
     ${modulesHtml}
+    ${pagesHtml}
     ${profLine}
     ${banwebOnly}
     ${loc}
@@ -922,6 +980,19 @@ $("detailBody").addEventListener("click", (e) => {
   }
   e.preventDefault(); e.stopPropagation();
   openModuleFilePop(mf);
+});
+/* Pages 条目展开：展开时才拉正文；缓存命中则直接渲染（二次展开不重复请求） */
+$("detailBody").addEventListener("click", (e) => {
+  const head = e.target.closest(".detail-page-head");
+  if(!head) return;
+  const row = head.parentElement;
+  const body = row && row.querySelector(".detail-page-body");
+  if(!body) return;
+  const opening = body.hidden;
+  body.hidden = !opening;
+  const caret = head.querySelector(".detail-page-caret");
+  if(caret) caret.textContent = opening ? "▾" : "▸";
+  if(opening) loadPageBody(Number(row.dataset.cid), row.dataset.purl, body);
 });
 document.addEventListener("click", (e) => {
   if (modulePop && !modulePop.hidden && !e.target.closest("#modulePop")) closeModulePop();

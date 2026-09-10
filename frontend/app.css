@@ -389,3 +389,12 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
   text-decoration:none; color:var(--ink); border:1px solid transparent; }
 .discuss-row:hover { background:var(--surface-2); }
 .discuss-row.is-unread { border-color:var(--err-border); background:var(--err-bg); }
+
+/* 课程详情 · Pages 板块 */
+.detail-page-row { border-top:1px dashed var(--panel-border); }
+.detail-page-row:first-of-type { border-top:none; }
+.detail-page-head { padding:7px 0; font-size:13.5px; cursor:pointer; display:flex;
+  align-items:center; gap:6px; }
+.detail-page-head:hover { color:var(--accent); }
+.detail-page-caret { color:var(--muted); flex:none; font-size:11px; }
+.detail-page-body { padding:2px 0 10px; }
