@@ -83,6 +83,7 @@
 | `--panel-border` | **新增** | `rgba(255,255,255,.095)` | 玻璃面板描边 |
 | `--panel-blur` | **新增** | `18px` | `backdrop-filter` 模糊半径 |
 | `--panel-saturate` | **新增** | `130%` | `backdrop-filter` 饱和度 |
+| `--accent-brd` | **新增** | 深色 `rgba(110,168,254,.30)` / 浅色 `rgba(59,130,246,.35)` | 侧栏激活项的内描边环（`--accent-soft` 14% alpha 画不出可见的 1px 环） |
 
 玻璃面板统一配方：
 
@@ -111,12 +112,14 @@ frontend/
   index.html    重写  壳层骨架：侧栏 + 8 个页面容器 + 沿用现有三个弹层
   util.js       新增  $ / $$ / api() / withBusy() / setStatus() / esc() / escAttr() / 日期格式化
   app.js        瘦身  五个板块渲染 + 业务；函数体不动，只改挂载点
-  shell.js      新增  导航、首页、设置页、主题
+  shell.js      新增  导航、首页、设置页、主题、打开时自动加载（`autoLoadOnOpen()`）
   i18n.js       保留  新增文案补键
   app.css       重写  色板 + 壳层 + 卡片
 ```
 
 **加载顺序**：`i18n.js → util.js → app.js → shell.js`，全部置于 `<body>` 末尾。
+
+`autoLoadOnOpen()`（打开 app 时的首页并发拉取入口）随拆分从 `app.js` 迁入 `shell.js`：它必须放在最后加载的脚本里，执行时才能拿到已定义的 `switchPage` / `refreshBadges`。
 
 这条顺序是硬约束：`app.js` 现有多处**解析时即执行**的语句（例如 `app.js:1236` 的 `$("btnLoadTodo").onclick = …`、`app.js:1864-1867` 的 `addEventListener` 与 `refreshPill()`），依赖「脚本在 body 末尾 → DOM 已就绪」。拆文件后该约定必须保持，否则这些语句会在 DOM 就绪前执行而报错。
 
@@ -216,6 +219,8 @@ frontend/
 6. **AI 总结** —— 接口地址 / API Key / 模型
 7. **忽略的课程** —— chips 列表 + 全部恢复（跨两列）
 
+7 组卡片以 `.set-grid` 两列网格排布，每组一张 `.set-card`；第 7 组「忽略的课程」用 `.set-card.set-wide` 横跨两列（窗口缩窄时 `.set-grid` 退化为单列）。
+
 **关键约束：复用现有 input 的 id** —— `canvasUrl`、`canvasToken`、`llmBaseUrl`、`llmApiKey`、`llmModel`、`downloadDir`、`aimsUsername`、`aimsPassword`、`selTheme`、`selCalendar`、`selList`、`ignoreCourses` 等全部保持不变。这样 `loadSettings()` / `saveSettings()` / `settings()`（`app.js:66-73`）及 `KEY` 数组（`app.js:4`）**一个字都不用改**。
 
 `openSettings()` / `closeSettings()`（`app.js:168-169`）改为 `switchPage("settings")`。原「改动即时保存」语义保留（`saveSettings()` 由 `change` 事件驱动）。
@@ -253,7 +258,7 @@ frontend/
 | 风险 | 缓解 |
 |---|---|
 | `app.js` 顶层立即执行语句因加载顺序变化而报错 | 严格保持 `i18n → util → app → shell` 且全部在 body 末尾（§6） |
-| 删掉 DOM 元素却留下引用它的顶层语句 → `null` 抛错，**该行之后的 `app.js` 全部不执行** | 已识别具体实例：`refreshPill()` 与 `#rangePill`（§9）。改前先 grep 每个被删元素的 id，确认无顶层引用；同理适用于 `#btnSettings`、`#btnLang`、`.tabs` 相关元素 |
+| 删掉 DOM 元素却留下引用它的顶层语句 → `null` 抛错，**该行之后的 `app.js` 全部不执行** | 已识别具体实例：`refreshPill()` 与 `#rangePill`（§9）。改前先 grep 每个被删元素的 id，确认无顶层引用；同理适用于 `#btnSettings`、`#btnLang`、`.tabs` 相关元素。已新增 `tools/check_dom_ids.mjs` 做自动拦截：扫描所有 `$("id")` 引用，凡 `index.html` 中不存在的 id 即报错，把这条风险从「靠自觉 grep」变成「自动拦截」 |
 | 页面容器 id 改名后遗漏引用点 | 全量 grep `tabAnnounce\|tabFiles\|tabSchedule\|tabTodo\|tabGrades` 逐个改 |
 | 玻璃效果（`backdrop-filter`）在 WKWebView 性能不佳 | 模糊半径限制在 18px；如遇卡顿降级为纯色面板（token 换值即可，不改结构） |
 | 拆文件后全局符号冲突或丢失 | 拆分时逐个函数确认归属；用 `node --check` 做语法校验 |
