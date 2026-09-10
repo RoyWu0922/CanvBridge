@@ -147,50 +147,85 @@
     </div>
 
     <div id="page-settings" class="page" hidden>
-      <button id="btnLang" class="lang-btn" data-i18n-aria="lang.switch"></button>
-      <div class="grid">
-        <label class="field"><span data-i18n="settings.theme"></span><select id="selTheme">
-          <option value="system" data-i18n="settings.theme_system"></option>
-          <option value="light" data-i18n="settings.theme_light"></option>
-          <option value="dark" data-i18n="settings.theme_dark"></option>
-        </select></label>
-        <label class="field"><span data-i18n="settings.canvas_url"></span><input id="canvasUrl" type="text" placeholder="https://canvas.cityu.edu.hk"></label>
-        <label class="field"><span data-i18n="settings.canvas_token"></span><input id="canvasToken" type="password" placeholder="…"></label>
-        <label class="field"><span data-i18n="settings.llm_base"></span><input id="llmBaseUrl" type="text" placeholder="https://api.deepseek.com/v1"></label>
-        <label class="field"><span data-i18n="settings.llm_key"></span><input id="llmApiKey" type="password" placeholder="sk-…"></label>
-        <label class="field"><span data-i18n="settings.llm_model"></span><input id="llmModel" type="text" placeholder="deepseek-chat"></label>
-        <div class="field"><span data-i18n="settings.download_dir"></span>
-          <div class="row" style="gap:8px">
-            <input id="downloadDir" type="text" placeholder="~/Downloads/Canvas课程文件" style="flex:1">
-            <button id="btnBrowseDir" type="button" class="btn btn-ghost" data-i18n="settings.browse_dir"></button>
+      <div class="set-grid">
+
+        <section class="set-card">
+          <span class="eyebrow" data-i18n="settings.group.appearance"></span>
+          <div class="grid">
+            <label class="field"><span data-i18n="settings.theme"></span><select id="selTheme">
+              <option value="system" data-i18n="settings.theme_system"></option>
+              <option value="light" data-i18n="settings.theme_light"></option>
+              <option value="dark" data-i18n="settings.theme_dark"></option>
+            </select></label>
+            <div class="field"><span data-i18n="settings.language"></span>
+              <button id="btnLang" class="lang-btn" data-i18n-aria="lang.switch"></button>
+            </div>
           </div>
-        </div>
-      </div>
-      <div style="margin-top:20px">
-        <span class="eyebrow" data-i18n="settings.ignore_heading"></span>
-        <div id="ignoreCourses" class="chips" style="margin-bottom:6px"></div>
-        <div class="row" style="gap:10px;flex-wrap:wrap">
-          <button id="btnClearIgnore" class="btn btn-ghost" data-i18n="settings.clear_ignore"></button>
-          <span class="muted" data-i18n="settings.ignore_hint"></span>
-        </div>
-      </div>
-      <div style="margin-top:20px">
-        <span class="eyebrow" data-i18n="settings.aims_heading"></span>
-        <div class="grid">
-          <label class="field"><span data-i18n="settings.aims_user"></span><input id="aimsUsername" type="text" autocomplete="username" placeholder="CityUHK EID"></label>
-          <label class="field"><span data-i18n="settings.aims_pass"></span><input id="aimsPassword" type="password" autocomplete="current-password" placeholder="••••••••"></label>
-        </div>
-        <div class="row" style="margin-top:10px">
-          <button id="btnSaveAims" class="btn btn-primary" data-i18n="btn.save_auto_login"></button>
-          <button id="btnClearAims" class="btn btn-ghost" data-i18n="btn.clear_aims" hidden></button>
-          <span id="aimsSavedHint" class="muted"></span>
-        </div>
-      </div>
-      <div class="row" style="margin-top:16px">
-        <button id="btnTest" class="btn btn-primary" data-i18n="btn.test"></button>
-        <label class="field"><span data-i18n="settings.calendar"></span><select id="selCalendar"></select></label>
-        <label class="field"><span data-i18n="settings.list"></span><select id="selList"></select></label>
-        <button id="btnLoadCalendars" class="btn btn-ghost" data-i18n="btn.refresh_calendars"></button>
+        </section>
+
+        <section class="set-card">
+          <span class="eyebrow" data-i18n="settings.group.canvas"></span>
+          <div class="grid">
+            <label class="field"><span data-i18n="settings.canvas_url"></span><input id="canvasUrl" type="text" placeholder="https://canvas.cityu.edu.hk"></label>
+            <label class="field"><span data-i18n="settings.canvas_token"></span><input id="canvasToken" type="password" placeholder="…"></label>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button id="btnTest" class="btn btn-primary" data-i18n="btn.test"></button>
+          </div>
+        </section>
+
+        <section class="set-card">
+          <span class="eyebrow" data-i18n="settings.group.aims"></span>
+          <div class="grid">
+            <label class="field"><span data-i18n="settings.aims_user"></span><input id="aimsUsername" type="text" autocomplete="username" placeholder="CityUHK EID"></label>
+            <label class="field"><span data-i18n="settings.aims_pass"></span><input id="aimsPassword" type="password" autocomplete="current-password" placeholder="••••••••"></label>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <button id="btnSaveAims" class="btn btn-primary" data-i18n="btn.save_auto_login"></button>
+            <button id="btnClearAims" class="btn btn-ghost" data-i18n="btn.clear_aims" hidden></button>
+            <span id="aimsSavedHint" class="muted"></span>
+          </div>
+        </section>
+
+        <section class="set-card">
+          <span class="eyebrow" data-i18n="settings.group.download"></span>
+          <div class="field"><span data-i18n="settings.download_dir"></span>
+            <div class="row" style="gap:8px">
+              <input id="downloadDir" type="text" placeholder="~/Downloads/Canvas课程文件" style="flex:1">
+              <button id="btnBrowseDir" type="button" class="btn btn-ghost" data-i18n="settings.browse_dir"></button>
+            </div>
+          </div>
+        </section>
+
+        <section class="set-card">
+          <span class="eyebrow" data-i18n="settings.group.calendar"></span>
+          <div class="grid">
+            <label class="field"><span data-i18n="settings.calendar"></span><select id="selCalendar"></select></label>
+            <label class="field"><span data-i18n="settings.list"></span><select id="selList"></select></label>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button id="btnLoadCalendars" class="btn btn-ghost" data-i18n="btn.refresh_calendars"></button>
+          </div>
+        </section>
+
+        <section class="set-card">
+          <span class="eyebrow" data-i18n="settings.group.llm"></span>
+          <div class="grid">
+            <label class="field"><span data-i18n="settings.llm_base"></span><input id="llmBaseUrl" type="text" placeholder="https://api.deepseek.com/v1"></label>
+            <label class="field"><span data-i18n="settings.llm_key"></span><input id="llmApiKey" type="password" placeholder="sk-…"></label>
+            <label class="field"><span data-i18n="settings.llm_model"></span><input id="llmModel" type="text" placeholder="deepseek-chat"></label>
+          </div>
+        </section>
+
+        <section class="set-card set-wide">
+          <span class="eyebrow" data-i18n="settings.group.ignore"></span>
+          <div id="ignoreCourses" class="chips" style="margin-bottom:6px"></div>
+          <div class="row" style="gap:10px;flex-wrap:wrap">
+            <button id="btnClearIgnore" class="btn btn-ghost" data-i18n="settings.clear_ignore"></button>
+            <span class="muted" data-i18n="settings.ignore_hint"></span>
+          </div>
+        </section>
+
       </div>
     </div>
   </main>
