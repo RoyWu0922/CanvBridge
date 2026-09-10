@@ -132,18 +132,23 @@
     </div>
 
     <div id="page-courses" class="page" hidden>
-      <section class="card">
-        <div class="card-head">
-          <span class="eyebrow" data-i18n="sync.eyebrow"></span>
-          <h2 data-i18n="sync.heading"></h2>
-        </div>
-        <div class="row">
-          <label class="field"><span data-i18n="sync.start"></span><input id="inpStart" type="date"></label>
-          <label class="field"><span data-i18n="sync.end"></span><input id="inpEnd" type="date"></label>
-          <button id="btnLoadCourses" class="btn btn-ghost" data-i18n="btn.load_courses"></button>
-        </div>
-        <div id="courseCheckboxes" class="chips"></div>
-      </section>
+      <div class="page-head">
+        <h2 data-i18n="nav.courses"></h2>
+        <span class="sp"></span>
+        <button id="btnLoadCourses" class="btn btn-primary" data-i18n="btn.load_courses"></button>
+      </div>
+
+      <div class="range-row">
+        <label class="field"><span data-i18n="courses.range_label"></span></label>
+        <input id="inpStart" type="date">
+        <span class="range-dash">–</span>
+        <input id="inpEnd" type="date">
+        <span class="sp"></span>
+        <span class="muted" data-i18n="courses.hint_selected"></span>
+      </div>
+
+      <!-- 原有课程勾选容器：id 不变，renderCourseCheckboxes() 直接往里写 -->
+      <div id="courseCheckboxes" class="course-list"></div>
     </div>
 
     <div id="page-settings" class="page" hidden>

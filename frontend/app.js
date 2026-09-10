@@ -485,6 +485,14 @@ function savedCourseSel(){
   } catch (e) { return null; }
 }
 function saveCourseSel(){ localStorage.setItem(COURSE_SEL_KEY, JSON.stringify(selectedCourses())); }
+/* 行尾操作按钮：详情（复用 openCourseDetail）/ 忽略（复用忽略机制）。
+   用内联 t() 而非 data-i18n —— 动态插入的节点不会被 applyLang() 处理。 */
+function courseRowActionsHtml(c){
+  return `<span class="cr-actions">
+    <button type="button" class="btn btn-ghost btn-xs cr-detail" data-id="${c.id}">${t("courses.detail")}</button>
+    <button type="button" class="btn btn-ghost btn-xs cr-ignore" data-id="${c.id}">${t("courses.ignore")}</button>
+  </span>`;
+}
 function renderCourseCheckboxes(courses){
   const saved = savedCourseSel();
   const ignored = savedCourseIgnored();
@@ -495,9 +503,24 @@ function renderCourseCheckboxes(courses){
   }
   $("courseCheckboxes").innerHTML = shown.map(c => {
     const on = !saved || saved.has(c.id);           // 无记忆 / 新课程 → 默认勾选
-    return `<label class="chip"><input type="checkbox"${on ? " checked" : ""} data-id="${c.id}"> ${esc(c.name)}</label>`;
+    return `<label class="chip"><input type="checkbox"${on ? " checked" : ""} data-id="${c.id}"> ${esc(c.name)}${courseRowActionsHtml(c)}</label>`;
   }).join("");
 }
+/* 课程行「详情 / 忽略」委托：只在顶层绑定一次（放进 renderCourseCheckboxes 会随每次渲染叠加监听）。
+   按钮落在勾选框 <label> 内，preventDefault + stopPropagation 防止连带切换勾选状态。 */
+$("courseCheckboxes").addEventListener("click", async (e) => {
+  const d = e.target.closest(".cr-detail");
+  if (d){ e.preventDefault(); e.stopPropagation();
+    openCourseDetail(Number(d.dataset.id)); return; }
+  const ig = e.target.closest(".cr-ignore");
+  if (ig){ e.preventDefault(); e.stopPropagation();
+    const id = Number(ig.dataset.id);
+    const cur = savedCourseIgnored() || new Set();
+    if (!cur.has(id)) saveCourseIgnored([...cur, id]);
+    fillIgnoreCourses();
+    renderCourseCheckboxes(courseList);
+    return; }
+});
 $("courseCheckboxes").addEventListener("change", e => {
   if (e.target && e.target.matches("input[data-id]")) { saveCourseSel(); scheduleAutoSync(); }
 });
