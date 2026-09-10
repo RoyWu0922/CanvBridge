@@ -8,13 +8,13 @@
   --ok:#15803d; --ok-bg:#eefbf1; --ok-border:#bbe3c8;
   --err:#b91c1c; --err-bg:#fdf0f0; --err-border:#f2c6c6;
   --warn:#b45309; --warn-bg:#fdf6ec; --warn-border:#f0d8b0;
-  --shadow-sm:0 1px 2px rgba(16,24,40,.06);
-  --shadow-md:0 12px 32px rgba(16,24,40,.14);
+  --shadow-sm:0 2px 6px rgba(16,24,40,.07);
+  --shadow-md:0 18px 44px rgba(16,24,40,.18);
   --radius:13px; --radius-sm:8px;
-  --panel:rgba(255,255,255,.72);
-  --panel-border:rgba(16,24,40,.10);
-  --panel-blur:14px;
-  --panel-saturate:115%;
+  --panel:rgba(255,255,255,.62);
+  --panel-border:rgba(16,24,40,.14);
+  --panel-blur:18px;
+  --panel-saturate:125%;
   --accent-brd:rgba(59,130,246,.35);
 }
 /* 深色主题：由 <html data-theme="dark"> 触发（head 内联脚本在首绘前解析 sc_theme，
@@ -31,13 +31,13 @@
   --ok:#4ade80; --ok-bg:rgba(18,48,30,.75); --ok-border:rgba(74,222,128,.30);
   --err:#f87171; --err-bg:rgba(51,25,27,.75); --err-border:rgba(248,113,113,.35);
   --warn:#fbbf24; --warn-bg:rgba(50,39,15,.75); --warn-border:rgba(251,191,36,.30);
-  --shadow-sm:0 1px 2px rgba(0,0,0,.4);
-  --shadow-md:0 24px 60px rgba(0,0,0,.55);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.45);
+  --shadow-md:0 28px 68px rgba(0,0,0,.62);
   --radius:13px; --radius-sm:8px;
-  --panel:rgba(255,255,255,.052);
-  --panel-border:rgba(255,255,255,.095);
-  --panel-blur:18px;
-  --panel-saturate:130%;
+  --panel:rgba(255,255,255,.038);
+  --panel-border:rgba(255,255,255,.085);
+  --panel-blur:26px;
+  --panel-saturate:150%;
   --accent-brd:rgba(110,168,254,.30);
 }
 
@@ -81,12 +81,20 @@ a { color:var(--link); }
 .page-head h2 { margin:0; font-size:19px; font-weight:700; letter-spacing:-.02em; }
 .page-head .sp, .range-row .sp { flex:1; }
 
-/* 玻璃卡片 */
-.glass-card, .set-card, .filter-bar, .course-card, .schedule-grid, .ann-grp {
+/* 玻璃卡片：更透的底 + 顶部内高光 + 更强的模糊/饱和度。
+   内高光用 color-mix 会拖低 WKWebView 性能，这里给浅深两套各写一条固定值。 */
+.glass-card, .set-card, .filter-bar, .course-card, .schedule-grid, .ann-grp,
+.list-card, .stat-card {
   background:var(--panel); border:1px solid var(--panel-border);
   border-radius:var(--radius);
   backdrop-filter:blur(var(--panel-blur)) saturate(var(--panel-saturate));
-  -webkit-backdrop-filter:blur(var(--panel-blur)) saturate(var(--panel-saturate)); }
+  -webkit-backdrop-filter:blur(var(--panel-blur)) saturate(var(--panel-saturate));
+  box-shadow:var(--shadow-sm), inset 0 1px 0 rgba(255,255,255,.55); }
+:root[data-theme="dark"] .glass-card, :root[data-theme="dark"] .set-card,
+:root[data-theme="dark"] .filter-bar, :root[data-theme="dark"] .course-card,
+:root[data-theme="dark"] .schedule-grid, :root[data-theme="dark"] .ann-grp,
+:root[data-theme="dark"] .list-card, :root[data-theme="dark"] .stat-card {
+  box-shadow:var(--shadow-sm), inset 0 1px 0 rgba(255,255,255,.08); }
 
 /* 设置页：7 组卡片，两列网格，第 7 组跨列 */
 .set-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; align-items:start; }
