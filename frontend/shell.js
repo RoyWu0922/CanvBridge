@@ -46,7 +46,7 @@ $("nav").addEventListener("click", e => {
 
 /* 在侧栏项右侧画/收未读徽标 */
 function setNavBadge(page, n){
-  const item = $(`#nav .nav-item[data-page="${page}"]`);
+  const item = document.querySelector(`#nav .nav-item[data-page="${page}"]`);
   if (!item) return;
   let b = item.querySelector(".nav-badge");
   if (n <= 0){ if (b) b.remove(); item.removeAttribute("title"); return; }
