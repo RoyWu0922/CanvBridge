@@ -286,9 +286,8 @@ async function openCourseDetail(canvasId, banwebCourse){
       detailModules = Array.isArray(r.modules) ? r.modules : null;
       detailModulesError = r.modules_error || "";
     }
-    // 两个请求并发，避免详情弹层打开被串行拖慢
-    try { await Promise.all([ensureAssignments([canvasId]), fetchDetailPages(canvasId)]); }
-    catch (e) { /* 详情仍展示，作业区 / 页面区留空 */ }
+    // 两个请求并发；allSettled 保证任一失败也等另一个落地，页面区不会整块消失
+    await Promise.allSettled([ensureAssignments([canvasId]), fetchDetailPages(canvasId)]);
     detailAssignments = Array.isArray(assignmentMarks[canvasId]) ? assignmentMarks[canvasId] : [];
   }
   renderDetail();
