@@ -1,6 +1,14 @@
 const I18N = {
   zh: {
     "app.title": "Canvas 课程助手",
+    "nav.home": "首页",
+    "nav.announce": "公告",
+    "nav.schedule": "课表",
+    "nav.todo": "待办",
+    "nav.files": "文件",
+    "nav.grades": "成绩",
+    "nav.courses": "课程",
+    "nav.settings": "设置",
     "range.placeholder": "请选择起止日期",
     "range.invalid": "开始日期晚于结束日期",
     "range.days": "共 {n} 天",
@@ -271,6 +279,14 @@ const I18N = {
   },
   en: {
     "app.title": "Canvas Course Assistant",
+    "nav.home": "Home",
+    "nav.announce": "Announcements",
+    "nav.schedule": "Schedule",
+    "nav.todo": "To-do",
+    "nav.files": "Files",
+    "nav.grades": "Grades",
+    "nav.courses": "Courses",
+    "nav.settings": "Settings",
     "range.placeholder": "Select a date range",
     "range.invalid": "Start date is after end date",
     "range.days": "{n} days",
@@ -566,5 +582,4 @@ function applyLang() {
   if (typeof renderTodo === "function") renderTodo();
   if (typeof renderGrades === "function") renderGrades();
   if (typeof renderDetail === "function") renderDetail();   // 详情弹层语言切换后重渲
-  refreshPill();
 }

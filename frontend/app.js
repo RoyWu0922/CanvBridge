@@ -64,13 +64,6 @@ function defaultRange(){
   $("inpStart").value = fmt(start);
   $("inpEnd").value = fmt(now);
 }
-function refreshPill(){
-  const st=$("inpStart").value, en=$("inpEnd").value;
-  if(!st || !en){ $("rangePill").textContent = t("range.placeholder"); return; }
-  if(st>en){ $("rangePill").textContent = t("range.invalid"); return; }
-  const days = Math.round((new Date(en)-new Date(st))/86400000)+1;
-  $("rangePill").textContent = `${short(st)} → ${short(en)} · ${t("range.days", {n: days})}`;
-}
 function range(){
   const st=$("inpStart").value, en=$("inpEnd").value;
   if(!st || !en){ setStatus(t("status.need_date"),"err"); return null; }
@@ -102,13 +95,12 @@ function fillProfessorFilter(){
   sel.value = prev && [...sel.options].some(o => o.value === prev) ? prev : "";
 }
 
-/* 设置弹窗 */
-function openSettings(){ $("settingsModal").hidden=false; $("selTheme").value = themeMode; setTimeout(()=>$("canvasUrl").focus(), 60); refreshAimsUi(); fillIgnoreCourses(); }
-function closeSettings(){ $("settingsModal").hidden=true; }
-$("btnSettings").onclick = openSettings;
-$("btnCloseSettings").onclick = closeSettings;
-$("settingsModal").querySelector(".modal-backdrop").addEventListener("click", closeSettings);
-document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("settingsModal").hidden) closeSettings(); });
+/* 设置页：进入时同步一次控件状态（页面切换由 shell.js 的 switchPage 负责，这里不再切） */
+function openSettings(){
+  $("selTheme").value = themeMode;
+  refreshAimsUi();
+  fillIgnoreCourses();
+}
 $("selTheme").addEventListener("change", e => applyTheme(e.target.value));
 
 /* 下载目录：点「浏览」弹系统文件夹选择框，选中后直接填入（取消则无操作） */
@@ -448,46 +440,6 @@ function markTodoSeen(){
   for (const it of todoItems) { const k = todoKey(it); if (!seenSet.todo.has(k)) { seenSet.todo.add(k); ch = true; } }
   if (ch) saveSeenSet();
 }
-const activeTabId = () => { const b = document.querySelector(".tab.active"); return b ? b.dataset.target : ""; };
-/* 在页签按钮右上角画/收红点徽标 */
-function setTabBadge(kind, n){                 // kind: announce | todo，对应 tab target tabAnnounce/tabTodo
-  const tab = document.querySelector(`.tab[data-target="${kind === "todo" ? "tabTodo" : "tabAnnounce"}"]`);
-  if (!tab) return;
-  const b = tab.querySelector(".tab-badge");
-  if (n <= 0){ if (b) b.remove(); tab.title = ""; return; }
-  const el = b || (() => { const x = document.createElement("span"); x.className = "tab-badge"; tab.appendChild(x); return x; })();
-  el.textContent = n > 99 ? "99+" : String(n);
-  el.hidden = false;
-  tab.title = t(kind === "todo" ? "unread.todo" : "unread.announce", { n });
-}
-/* 更新两个页签的红点（纯展示）。已读动作：切走「公告总结」页 / 待办加载成功时另行触发 */
-function refreshBadges(){
-  setTabBadge("announce", countNewAnnounce());
-  setTabBadge("todo", countNewTodo());
-}
-
-/* 标签页 */
-function switchTab(target){
-  const prev = activeTabId();
-  $$(".tab").forEach(x=>{ const on=x.dataset.target===target; x.classList.toggle("active",on); x.setAttribute("aria-selected",on); });
-  $$(".tab-panel").forEach(p=>{ p.hidden = p.id!==target; });
-  /* 「切走即已读」：离开「公告总结」页=已看过其上内容 → 记已读、红点消失。
-     启动落在公告页不会自动已读，新公告红点会一直亮到用户切走那一刻。 */
-  if(prev === "tabAnnounce" && target !== "tabAnnounce") markAnnounceSeen();
-  else if(target === "tabAnnounce" && !countNewAnnounce()){
-    // 已全部转已读→清掉遗留的高亮框与「新」角标（避免回到本页仍显示旧未读）
-    $$("#summaries .item.is-new").forEach(el => el.classList.remove("is-new"));
-    $$("#summaries .badge-new").forEach(el => el.remove());
-  }
-  refreshBadges();
-}
-$$(".tab").forEach(b=> b.addEventListener("click", ()=>{
-  const target=b.dataset.target;
-  switchTab(target);
-  if(target==="tabSchedule") initScheduleTab();
-  if(target==="tabTodo") initTodoTab();
-  if(target==="tabGrades") initGradesTab();
-}));
 
 $("btnTest").onclick = async () => {
   const s=settings();
@@ -520,7 +472,7 @@ $("btnLoadCourses").onclick = async () => {
     setStatus(t("status.courses_loaded", {n: courseList.length}),"ok");
   });
   // 测试连接 → 顺带同步公告（只拉原文，不调 AI）
-  if(await syncAnnouncements()) switchTab("tabAnnounce");
+  if(await syncAnnouncements()) switchPage("announce");
 };
 function selectedCourses(){ return [...document.querySelectorAll("#courseCheckboxes input:checked")].map(i=>Number(i.dataset.id)); }
 
@@ -984,7 +936,7 @@ $("btnModuleOpenFile").onclick = async () => {
 $("btnListFiles").onclick = async () => {
   const s=settings(), ids=selectedCourses();
   if(!ids.length){ setStatus(t("status.need_course"),"err"); return; }
-  switchTab("tabFiles");
+  switchPage("files");
   await withBusy(t("status.loading_files"), $("btnListFiles"), async ()=>{
     const r=await api("list_files",{ ...s, course_ids:ids, download_dir:downloadDir() });
     if(!r.ok){ setStatus(t("status.files_fail")+r.error,"err"); return; }
@@ -1796,22 +1748,8 @@ fillSelect("selCalendar", []); fillSelect("selList", []);
 fillAlert();
 renderSchedule();
 function onTopRangeChange(){
-  refreshPill();
   scheduleAutoSync();
 }
 $("inpStart").addEventListener("change", onTopRangeChange);
 $("inpEnd").addEventListener("change", onTopRangeChange);
-refreshPill();
 renderSummaries();
-
-/* 页面打开：已保存 Canvas 配置 → 自动加载课程 + 同步公告（静默，不遮罩） */
-async function autoLoadOnOpen(){
-  const s=settings();
-  const r=await api("courses", s);
-  if(!r.ok) return;                                 // 静默失败，用户可点「加载课程」重试
-  courseList=r.courses;
-  renderCourseCheckboxes(courseList);
-  await syncAnnouncements();
-  switchTab("tabAnnounce");
-}
-if($("canvasUrl").value && $("canvasToken").value) autoLoadOnOpen();
