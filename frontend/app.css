@@ -374,6 +374,9 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 
 /* 首页仪表盘：今日课程小卡组 + 三张速览卡 */
 .today-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+/* 空态（renderHomeToday 写的裸 .muted）要横跨整行，否则 auto-fill 建出的整排
+   轨道只被它占第一条，提示会挤在左侧 150px 里 */
+#homeTodayList > .muted { grid-column:1/-1; }
 .today-card { padding:10px 12px; border-radius:var(--radius-sm);
   background:var(--surface-2); border:1px solid var(--panel-border); }
 .today-card b { display:block; font-size:12.5px; font-variant-numeric:tabular-nums;

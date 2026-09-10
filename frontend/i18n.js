@@ -696,4 +696,9 @@ function applyLang() {
   if (typeof renderDiscussions === "function") renderDiscussions();
   if (typeof renderDetail === "function") renderDetail();   // 详情弹层语言切换后重渲
   if (typeof renderQuizzes === "function") renderQuizzes();   // 语言切换后重渲测验分组
+  /* 首页三张卡：上面那轮 data-i18n 重设会把它们的行内容打回 home.loading 占位，
+     必须重渲（均只在内存数据上工作，不触发网络）。 */
+  if (typeof renderHomeAnnounceList === "function") renderHomeAnnounceList();
+  if (typeof renderHomeDdlList === "function") renderHomeDdlList();
+  if (typeof renderHomeGradeCard === "function") renderHomeGradeCard();
 }
