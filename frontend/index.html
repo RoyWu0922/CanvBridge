@@ -41,7 +41,37 @@
   </aside>
 
   <main class="content">
-    <div id="page-home" class="page" hidden></div>
+    <div id="page-home" class="page" hidden>
+      <div class="page-head"><h2 data-i18n="nav.home"></h2></div>
+
+      <div id="homeNeedCanvas" class="glass-card home-guide" hidden>
+        <p data-i18n="home.need_canvas"></p>
+        <button class="btn btn-primary" data-goto="settings" data-i18n="nav.settings"></button>
+      </div>
+
+      <div id="homeStats" class="stat-row">
+        <div class="glass-card stat-card" data-goto="announce">
+          <b id="statAnnounce">—</b><span data-i18n="home.stat.announce"></span></div>
+        <div class="glass-card stat-card" data-goto="schedule">
+          <b id="statToday">—</b><span data-i18n="home.stat.today"></span></div>
+        <div class="glass-card stat-card" data-goto="todo">
+          <b id="statDdl">—</b><span data-i18n="home.stat.ddl"></span></div>
+        <div class="glass-card stat-card" data-goto="schedule">
+          <b id="statExam">—</b><span data-i18n="home.stat.exam"></span></div>
+      </div>
+
+      <div class="glass-card list-card">
+        <div class="list-head"><span data-i18n="home.recent_announce"></span>
+          <button class="link-btn" data-goto="announce" data-i18n="home.more"></button></div>
+        <div id="homeAnnounceList" class="muted" data-i18n="home.loading"></div>
+      </div>
+
+      <div class="glass-card list-card">
+        <div class="list-head"><span data-i18n="home.today_schedule"></span>
+          <button class="link-btn" data-goto="schedule" data-i18n="home.more"></button></div>
+        <div id="homeTodayList" class="muted" data-i18n="home.loading"></div>
+      </div>
+    </div>
 
     <div id="page-announce" class="page">
       <div class="filter-bar">

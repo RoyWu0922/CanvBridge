@@ -74,8 +74,103 @@ async function autoLoadOnOpen(){
   if (typeof initHome === "function") initHome();
 }
 
-/* 首页：Task 6 实现 */
-function initHome(){}
+/* 首页：卡片式首页（统计卡 + 速览卡），并发拉取且会话内只拉一次 */
+let homeLoaded = false;   // 本次会话是否已拉过首页数据
+
+/* 点统计卡 / 「更多」跳到对应板块 */
+$("page-home").addEventListener("click", e => {
+  const go = e.target.closest("[data-goto]");
+  if (go) switchPage(go.dataset.goto);
+});
+
+async function initHome(){
+  const s = settings();
+  if(!s.canvas_url || !s.canvas_token){
+    $("homeNeedCanvas").hidden = false;
+    $("homeStats").hidden = true;
+    return;
+  }
+  $("homeNeedCanvas").hidden = true;
+  $("homeStats").hidden = false;
+
+  renderHomeFromCache();          // 先用内存里已有的数据填一遍
+  if (homeLoaded) return;         // 本次会话已拉过 → 不重复请求
+  homeLoaded = true;
+
+  /* 并发拉取；某张卡失败只让那张卡保持「—」，不弹错、不阻断其他卡 */
+  await Promise.allSettled([
+    (async () => {                                   // 未读公告 + 最新公告列表
+      await syncAnnouncements();                     // 内部会 refreshBadges()
+      $("statAnnounce").textContent = String(countNewAnnounce());
+      renderHomeAnnounceList();
+    })(),
+    (async () => {                                   // 本周 DDL
+      const now = new Date();
+      const end = new Date(now); end.setDate(end.getDate() + 30);
+      const r = await api("calendar_events", {
+        canvas_url: s.canvas_url, canvas_token: s.canvas_token,
+        course_ids: selectedCourses(), start_date: fmt(now), end_date: fmt(end) });
+      if(r.ok === true && Array.isArray(r.events)){
+        const weekEnd = new Date(now); weekEnd.setDate(now.getDate() + 7);
+        $("statDdl").textContent = String(
+          r.events.filter(ev => { const d = new Date(ev.start || ev.due); return d >= now && d <= weekEnd; }).length);
+      }
+    })(),
+    (async () => {                                   // 本周考试
+      const r = await api("banweb/exams", {});
+      if(r.ok === true && Array.isArray(r.exams)) $("statExam").textContent = String(r.exams.length);
+    })(),
+  ]);
+
+  renderHomeToday();              // 今日课表（本地缓存，无需网络）
+}
+
+/* 今日课程：来自 banwebSchedule 本地缓存（无需网络）。
+   AIMS 未登录 → 缓存为空 → 提示去登录；已登录但今日无课 → 另一句提示 */
+function renderHomeToday(){
+  const today = new Date();
+  const letter = ["U","M","T","W","R","F","S"][today.getDay()];   // 0 = 周日，与 DAY_INDEX 同一字母表
+  const courses = (banwebSchedule && banwebSchedule.courses) || [];
+  if (!courses.length){                       // AIMS 未登录：缓存为空
+    $("homeTodayList").innerHTML = `<div class="muted">${t("home.need_aims")}</div>`;
+    $("statToday").textContent = "0";
+    return;
+  }
+  const slots = [];
+  for (const c of courses)
+    for (const m of (c.meetings || [])){
+      if (!(m.days_list || []).includes(letter)) continue;
+      slots.push({ start: m.start_min, end: m.end_min, room: m.room_short || m.room,
+                   label: `${c.code} ${c.section}` });
+    }
+  slots.sort((a, b) => a.start - b.start);
+  $("statToday").textContent = String(slots.length);
+  if (!slots.length){ $("homeTodayList").innerHTML = `<div class="muted">${t("home.no_class")}</div>`; return; }
+  $("homeTodayList").innerHTML = slots.map(s =>
+    `<div class="home-row"><span>${esc(fmtTime(s.start))}–${esc(fmtTime(s.end))}</span>
+       <span class="hr-name">${esc(s.label)}</span><em>${esc(s.room || "")}</em></div>`).join("");
+}
+
+/* 用内存里已有的结果填（切回首页时立即有内容，不等网络） */
+function renderHomeFromCache(){
+  $("statAnnounce").textContent = String(countNewAnnounce());
+  renderHomeAnnounceList();
+  renderHomeToday();
+}
+
+/* 最新 3 条公告：取自 app.js 的 summaryResults（syncAnnouncements 的产物） */
+function renderHomeAnnounceList(){
+  const box = $("homeAnnounceList");
+  const groups = Array.isArray(summaryResults) ? summaryResults : [];
+  const rows = groups
+    .flatMap(g => (g.announcements || []).map(a => ({ ...a, course: g.course_name })))
+    .sort((a, b) => String(b.posted_at || "").localeCompare(String(a.posted_at || "")))
+    .slice(0, 3);
+  if (!rows.length){ box.innerHTML = `<div class="muted">${t("home.empty")}</div>`; return; }
+  box.innerHTML = rows.map(a =>
+    `<div class="home-row"><span class="hr-name">${esc(a.title || "")}</span>
+       <em>${esc(short(String(a.posted_at || "").slice(0, 10)))}</em></div>`).join("");
+}
 
 switchPage("home");
 if($("canvasUrl").value && $("canvasToken").value) autoLoadOnOpen();
