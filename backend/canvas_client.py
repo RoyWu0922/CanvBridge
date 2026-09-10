@@ -297,6 +297,7 @@ def get_quizzes(canvas_url: str, token: str, course_id: int) -> list[dict]:
             "time_limit": q.get("time_limit"),
             "question_count": q.get("question_count"),
             "html_url": q.get("html_url") or "",
+            "published": True,                        # 上面已过滤，此处恒为 True（契约字段）
         })
     out.sort(key=lambda x: (x["due_at"] == "", x["due_at"]))   # 无截止排最后
     return out

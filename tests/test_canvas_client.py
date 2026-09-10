@@ -502,6 +502,7 @@ def test_get_quizzes_maps_and_sorts(monkeypatch):
     assert out[0]["question_count"] == 20
     assert out[0]["time_limit"] == 60
     assert out[1]["time_limit"] is None
+    assert out[0]["published"] is True
     # 请求参数
     assert s.calls[0][0] == "https://x/api/v1/courses/1/quizzes"
     assert s.calls[0][1] == {"per_page": 100}
