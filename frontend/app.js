@@ -41,7 +41,7 @@
    首绘前的解析由 index.html 头部内联脚本负责，这里负责持久化 + 实时跟随系统 + 下拉同步。 */
 const THEME_KEY = "sc_theme";
 const _themeMQ = window.matchMedia("(prefers-color-scheme: dark)");
-let themeMode = "system";
+let themeMode = "dark";
 try { const _v = localStorage.getItem(THEME_KEY); if (_v === "light" || _v === "dark" || _v === "system") themeMode = _v; } catch (e) {}
 function applyThemeAttr(){
   const dark = themeMode === "dark" || (themeMode === "system" && _themeMQ.matches);
@@ -1423,8 +1423,9 @@ function schedBadge(res){
   if(st==="error") return `<span class="sched-badge err">${t("badge.error")}</span>`;
   return "";
 }
-const PALETTE = ["#2563eb","#0891b2","#7c3aed","#db2777","#ea580c",
-                 "#16a34a","#ca8a04","#dc2626","#4f46e5","#0d9488"];
+/* 低饱和柔和色板：配深色玻璃底不刺眼，相邻课程仍可区分 */
+const PALETTE = ["#7aa7d8","#6fb8c4","#9d8fd0","#c98fae","#d9a273",
+                 "#8fbf9a","#a8a06f","#7f9fc9"];
 function scheduleColor(code){
   let h = 0; for (const ch of String(code)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return PALETTE[h % PALETTE.length];
