@@ -398,3 +398,10 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 .detail-page-head:hover { color:var(--accent); }
 .detail-page-caret { color:var(--muted); flex:none; font-size:11px; }
 .detail-page-body { padding:2px 0 10px; }
+
+/* 课表页 · Canvas 测验分组（与考试红块并列但一眼可区分） */
+.quiz-list { display:flex; flex-direction:column; gap:6px; margin-top:10px; }
+.quiz-row { display:block; padding:9px 12px; border-radius:var(--radius-sm);
+  background:rgba(129,140,248,.10); border:1px solid rgba(129,140,248,.30);
+  text-decoration:none; color:var(--ink); }
+.quiz-row:hover { background:rgba(129,140,248,.18); }

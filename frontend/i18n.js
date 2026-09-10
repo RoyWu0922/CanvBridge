@@ -296,6 +296,12 @@ const I18N = {
     "schedule.exam_fail": "加载考试时间表失败：",
     "schedule.exam_badge": "考试",
     "schedule.exam_done": "已写入考试：新建 {a} · 已存在 {b} · 失败 {e}",
+    "schedule.quiz_label": "课程测验",
+    "schedule.quiz_loaded": "已加载 {n} 项测验",
+    "schedule.quiz_none": "暂无测验",
+    "schedule.quiz_due": "截止",
+    "schedule.quiz_questions": "{n} 题",
+    "schedule.quiz_limit": "限时 {n} 分钟",
     "home.stat.announce": "未读公告",
     "home.stat.today": "今日课程",
     "home.stat.ddl": "本周 DDL",
@@ -620,6 +626,12 @@ const I18N = {
     "schedule.exam_fail": "Failed to load exams: ",
     "schedule.exam_badge": "EXAM",
     "schedule.exam_done": "Exams written: created {a} · exists {b} · failed {e}",
+    "schedule.quiz_label": "Course quizzes",
+    "schedule.quiz_loaded": "{n} quiz(es) loaded",
+    "schedule.quiz_none": "No quizzes",
+    "schedule.quiz_due": "Due",
+    "schedule.quiz_questions": "{n} questions",
+    "schedule.quiz_limit": "{n} min limit",
     "home.stat.announce": "Unread announcements",
     "home.stat.today": "Classes today",
     "home.stat.ddl": "Due this week",
@@ -675,4 +687,5 @@ function applyLang() {
   if (typeof renderGrades === "function") renderGrades();
   if (typeof renderDiscussions === "function") renderDiscussions();
   if (typeof renderDetail === "function") renderDetail();   // 详情弹层语言切换后重渲
+  if (typeof renderQuizzes === "function") renderQuizzes();   // 语言切换后重渲测验分组
 }

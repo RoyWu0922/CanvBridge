@@ -1834,6 +1834,7 @@ $("btnClearSchedule").onclick = () => {
 };
 /* ===== 考试时间表叠加 ===== */
 let banwebExams = null;   // {term_label, exams} | null
+let canvasQuizzes = null;      // {by_course:{cid:[quiz]}, errors:{cid:msg}} | null = 未加载
 function examMinutes(hhmm){
   const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm || "");
   return m ? Number(m[1]) * 60 + Number(m[2]) : null;
@@ -1853,6 +1854,63 @@ async function loadExams(){
     ? t("schedule.exam_loaded", {term: banwebExams.term_label})
     : t("schedule.exam_none");
   renderSchedule();
+}
+/* 测验来自 Canvas，与 AIMS 登录无关 —— 未登录也要能看。整体失败就静默不显示分组。 */
+async function loadQuizzes(){
+  const s = settings();
+  if(!s.canvas_url || !s.canvas_token) return;
+  const ids = selectedCourses();
+  if(!ids.length) return;
+  try {
+    const r = await api("quizzes", { canvas_url:s.canvas_url, canvas_token:s.canvas_token,
+                                     course_ids: ids });
+    canvasQuizzes = r.ok === true
+      ? { by_course: r.by_course || {}, errors: r.errors || {} }
+      : null;
+  } catch (e) {
+    canvasQuizzes = null;
+  }
+  renderQuizzes();
+}
+
+/* 未启用测验工具的课程在端点层就没进 errors（实测约一半课程如此），
+   所以这里没有「404 错误行」要处理；真正失败的那些课程也只是不贡献条目。 */
+function renderQuizzes(){
+  const box = $("quizGroup");
+  if(!box) return;
+  if(!canvasQuizzes){ box.hidden = true; box.innerHTML = ""; return; }
+  const names = {};
+  (courseList || []).forEach(c => { names[c.id] = c.name; });
+  const rows = [];
+  Object.keys(canvasQuizzes.by_course).forEach(k => {
+    (canvasQuizzes.by_course[k] || []).forEach(q =>
+      rows.push({ ...q, course: names[k] || ("#" + k) }));
+  });
+  box.hidden = false;
+  if(!rows.length){
+    box.innerHTML = `<div class="filter-bar" style="margin-top:14px">
+      <span class="filter-label">${t("schedule.quiz_label")}</span>
+      <span class="muted">${t("schedule.quiz_none")}</span></div>`;
+    return;
+  }
+  rows.sort((a, b) => String(a.due_at || "").localeCompare(String(b.due_at || "")));
+  box.innerHTML =
+    `<div class="filter-bar" style="margin-top:14px">
+       <span class="filter-label">${t("schedule.quiz_label")}</span>
+       <span class="muted">${t("schedule.quiz_loaded", { n: rows.length })}</span>
+     </div>
+     <div class="quiz-list">` +
+    rows.map(q => {
+      const bits = [];
+      if(q.due_at) bits.push(t("schedule.quiz_due") + " " + fmtDue(q.due_at));
+      if(q.question_count != null) bits.push(t("schedule.quiz_questions", { n: q.question_count }));
+      if(q.time_limit != null) bits.push(t("schedule.quiz_limit", { n: q.time_limit }));
+      if(q.points_possible != null) bits.push(String(q.points_possible) + " pts");
+      return `<a class="quiz-row" href="${escAttr(q.html_url || "")}" target="_blank" rel="noopener">
+        <div class="item-title">${esc(q.title || "")}</div>
+        <div class="file-path">${esc(q.course + (bits.length ? " · " + bits.join(" · ") : ""))}</div>
+      </a>`;
+    }).join("") + `</div>`;
 }
 $("btnReloadExams").onclick = loadExams;
 $("btnWriteExams").onclick = async () => {
@@ -1885,7 +1943,8 @@ async function initScheduleTab(){
     const r = await api("calendars");
     fillSelect("selExamCalendar", r.calendars || []);
   }
-  loadExams();   // 静默拉考试（登录态复用课表会话；失败仅提示不阻塞）
+  loadExams();     // 静默拉考试（登录态复用课表会话；失败仅提示不阻塞）
+  loadQuizzes();   // 静默拉 Canvas 测验（与 AIMS 无关，不登录也要能看）
   // 先填上次抓到的学期（离线 / AIMS 会话失效时也能先选），再走登录流程刷新
   const cachedTerms = loadCachedTerms();
   if(cachedTerms && cachedTerms.length) populateTermOptions(cachedTerms);
