@@ -477,3 +477,169 @@ def test_get_calendar_events_filters_assignment(monkeypatch):
     assert out[0]["title"] == "Guest Talk"
     assert out[0]["course_id"] == 5
     assert s.calls[0][1]["context_codes[]"] == ["course_5"]
+
+
+# ===== 新数据源：quizzes / pages / page_body =====
+
+def test_get_quizzes_maps_and_sorts(monkeypatch):
+    s = _Session([([
+        {"id": 2, "title": "小测二", "due_at": None, "lock_at": None,
+         "points_possible": 10, "quiz_type": "practice_quiz",
+         "time_limit": None, "question_count": 5,
+         "html_url": "https://x/courses/1/quizzes/2", "published": True},
+        {"id": 1, "title": "小测一", "due_at": "2026-09-20T15:59:00Z",
+         "lock_at": "2026-09-21T15:59:00Z", "points_possible": 100,
+         "quiz_type": "assignment", "time_limit": 60, "question_count": 20,
+         "html_url": "https://x/courses/1/quizzes/1", "published": True},
+    ], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_quizzes("https://x", "tok", 1)
+    # 有截止的在前，无截止（due_at=None → ""）排最后
+    assert [q["id"] for q in out] == [1, 2]
+    assert out[1]["due_at"] == ""      # null → 空串，与 get_todo 同惯例
+    assert out[1]["lock_at"] == ""
+    assert out[0]["quiz_type"] == "assignment"
+    assert out[0]["question_count"] == 20
+    assert out[0]["time_limit"] == 60
+    assert out[1]["time_limit"] is None
+    # 请求参数
+    assert s.calls[0][0] == "https://x/api/v1/courses/1/quizzes"
+    assert s.calls[0][1] == {"per_page": 100}
+
+
+def test_get_quizzes_filters_unpublished(monkeypatch):
+    s = _Session([([
+        {"id": 1, "title": "已发布", "published": True},
+        {"id": 2, "title": "未发布", "published": False},
+        {"id": 3, "title": "缺字段"},
+    ], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_quizzes("https://x", "tok", 1)
+    assert [q["id"] for q in out] == [1]
+
+
+def test_get_quizzes_404_raises_tool_disabled(monkeypatch):
+    """实测：6 门课里 3 门未启用测验工具 → 404。这是常态，必须与真故障可区分。"""
+    import pytest
+
+    def boom(session, url, params, token):
+        resp = requests.Response()
+        resp.status_code = 404
+        raise requests.HTTPError(response=resp)
+
+    monkeypatch.setattr(canvas_client, "_paginate", boom)
+    with pytest.raises(canvas_client.CanvasToolDisabled):
+        canvas_client.get_quizzes("https://x", "tok", 70488)
+
+
+def test_paginate_allow_disabled_reraises_other_status(monkeypatch):
+    """非 404 的错误不能被吞掉。"""
+    import pytest
+
+    def boom(session, url, params, token):
+        resp = requests.Response()
+        resp.status_code = 500
+        raise requests.HTTPError(response=resp)
+
+    monkeypatch.setattr(canvas_client, "_paginate", boom)
+    with pytest.raises(requests.HTTPError):
+        canvas_client._paginate_allow_disabled(None, "https://x/api/v1/a", {}, "tok")
+
+
+def test_paginate_allow_disabled_reraises_canvas_error(monkeypatch):
+    """401/403 走 CanvasError，不能被误判成「工具未启用」。"""
+    import pytest
+
+    def boom(session, url, params, token):
+        raise canvas_client.CanvasError("Canvas token 无效或已过期 (HTTP 401)")
+
+    monkeypatch.setattr(canvas_client, "_paginate", boom)
+    with pytest.raises(canvas_client.CanvasError) as ei:
+        canvas_client._paginate_allow_disabled(None, "https://x/api/v1/a", {}, "tok")
+    assert not isinstance(ei.value, canvas_client.CanvasToolDisabled)
+
+
+def test_get_pages_maps_filters_and_sorts(monkeypatch):
+    s = _Session([([
+        {"url": "syllabus", "title": "Syllabus", "updated_at": "2026-09-01T00:00:00Z",
+         "published": True, "front_page": False, "html_url": "https://x/courses/1/pages/syllabus"},
+        {"url": "home", "title": "Course Home", "updated_at": "2026-09-02T00:00:00Z",
+         "published": True, "front_page": True, "html_url": "https://x/courses/1/pages/home"},
+        {"url": "draft", "title": "Draft", "published": False, "front_page": False},
+    ], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_pages("https://x", "tok", 1)
+    assert [p["url"] for p in out] == ["home", "syllabus"]   # front_page 置顶，其余按标题
+    assert out[0]["front_page"] is True
+    assert out[1]["title"] == "Syllabus"
+    assert "body" not in out[0]                              # 列表不带正文
+    assert s.calls[0][0] == "https://x/api/v1/courses/1/pages"
+
+
+def test_get_pages_404_raises_tool_disabled(monkeypatch):
+    import pytest
+
+    def boom(session, url, params, token):
+        resp = requests.Response()
+        resp.status_code = 404
+        raise requests.HTTPError(response=resp)
+
+    monkeypatch.setattr(canvas_client, "_paginate", boom)
+    with pytest.raises(canvas_client.CanvasToolDisabled):
+        canvas_client.get_pages("https://x", "tok", 70488)
+
+
+def test_get_page_body_strips_html(monkeypatch):
+    """实测：原始 body 是 HTML 片段，必须过 strip_html。"""
+    s = _Session([({
+        "url": "home", "title": "Course Home",
+        "body": '<p>Adapted from <a href="https://x">the source</a></p><ul><li>要点一</li></ul>',
+        "updated_at": "2026-09-02T00:00:00Z",
+        "html_url": "https://x/courses/1/pages/home",
+    }, "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_page_body("https://x", "tok", 1, "home")
+    assert out["title"] == "Course Home"
+    assert "<p>" not in out["body_text"]
+    assert "<a href" not in out["body_text"]
+    assert "Adapted from" in out["body_text"]
+    assert "要点一" in out["body_text"]
+    assert out["html_url"] == "https://x/courses/1/pages/home"   # 此端点实测是绝对 URL
+    assert s.calls[0][0] == "https://x/api/v1/courses/1/pages/home"
+
+
+def test_get_page_body_quotes_page_url(monkeypatch):
+    """page_url 来自 Canvas 的 slug，进 URL 前必须转义。"""
+    s = _Session([({"url": "a b", "title": "T", "body": ""}, "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    canvas_client.get_page_body("https://x", "tok", 1, "a b")
+    assert s.calls[0][0] == "https://x/api/v1/courses/1/pages/a%20b"
+
+
+def test_get_page_body_404_is_plain_http_error(monkeypatch):
+    """单页正文没有「工具未启用」语义，404 就是真失败，走端点层 errors。"""
+    import pytest
+
+    class _NotFound(_Resp):
+        def __init__(self, data=None, link=""):
+            super().__init__(data, link)
+            self.status_code = 404
+
+        def raise_for_status(self):
+            resp = requests.Response()
+            resp.status_code = 404
+            raise requests.HTTPError(response=resp)
+
+    class _S:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url, params=None, headers=None, timeout=None):
+            return _NotFound()
+
+    monkeypatch.setattr(requests, "Session", lambda: _S())
+    with pytest.raises(requests.HTTPError):
+        canvas_client.get_page_body("https://x", "tok", 1, "home")

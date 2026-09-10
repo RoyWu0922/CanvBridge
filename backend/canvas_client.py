@@ -7,6 +7,7 @@ from datetime import datetime, timezone  # 放到文件顶部现有 import 区
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -252,6 +253,105 @@ def strip_html(html: str) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+class CanvasToolDisabled(CanvasError):
+    """课程未启用该工具 → Canvas 返回 404 "That page has been disabled for this
+    course"。实测 6 门课里 3 门如此，**这是常态而非异常**，调用方应处理成
+    「该课没有这类内容」，不带错误提示。"""
+
+
+def _paginate_allow_disabled(session: requests.Session, url: str,
+                             params: dict[str, Any], token: str) -> list[dict]:
+    """同 _paginate，但把「课程未启用该工具」的 404 单独抛成 CanvasToolDisabled。
+    其余一切（401/403 的 CanvasError、其它状态的 HTTPError）原样向上抛。"""
+    try:
+        return _paginate(session, url, params, token)
+    except requests.HTTPError as exc:
+        resp = getattr(exc, "response", None)
+        if resp is not None and resp.status_code == 404:
+            raise CanvasToolDisabled(f"课程未启用该工具 (HTTP 404): {url}") from exc
+        raise
+
+
+def get_quizzes(canvas_url: str, token: str, course_id: int) -> list[dict]:
+    """课程测验。未启用测验工具的课程会抛 CanvasToolDisabled。
+
+    注意：Canvas 的 quiz **不在 assignments 端点里**，走独立端点。
+    """
+    base = canvas_url.rstrip("/")
+    with requests.Session() as s:
+        data = _paginate_allow_disabled(
+            s, f"{base}/api/v1/courses/{course_id}/quizzes", {"per_page": 100}, token)
+    out = []
+    for q in data:
+        if not q.get("published"):
+            continue
+        out.append({
+            "id": q.get("id"),
+            "title": q.get("title") or "",
+            "due_at": q.get("due_at") or "",          # 实测无值时是 null
+            "lock_at": q.get("lock_at") or "",
+            "points_possible": q.get("points_possible"),
+            "quiz_type": q.get("quiz_type") or "",
+            "time_limit": q.get("time_limit"),
+            "question_count": q.get("question_count"),
+            "html_url": q.get("html_url") or "",
+        })
+    out.sort(key=lambda x: (x["due_at"] == "", x["due_at"]))   # 无截止排最后
+    return out
+
+
+def get_pages(canvas_url: str, token: str, course_id: int) -> list[dict]:
+    """课程 Pages **列表**（不含正文）。
+
+    正文由 get_page_body 按需单独取 —— 列表阶段拉全部正文是 O(N) 次额外请求。
+    未启用 Pages 工具的课程会抛 CanvasToolDisabled。
+    """
+    base = canvas_url.rstrip("/")
+    with requests.Session() as s:
+        data = _paginate_allow_disabled(
+            s, f"{base}/api/v1/courses/{course_id}/pages", {"per_page": 100}, token)
+    out = []
+    for p in data:
+        if not p.get("published"):
+            continue
+        out.append({
+            "url": p.get("url") or "",
+            "title": p.get("title") or "",
+            "updated_at": p.get("updated_at") or "",
+            "published": True,
+            "front_page": bool(p.get("front_page")),
+            "html_url": p.get("html_url") or "",
+        })
+    out.sort(key=lambda x: (not x["front_page"], x["title"]))   # 课程首页置顶
+    return out
+
+
+def get_page_body(canvas_url: str, token: str, course_id: int,
+                  page_url: str) -> dict:
+    """单个 Page 的正文。
+
+    原始 body **实测是 HTML 片段** → 必须过 strip_html 转纯文本；前端插入时再过
+    esc() 防注入。两道处理各司其职，都不能省。
+    """
+    base = canvas_url.rstrip("/")
+    with requests.Session() as s:
+        resp = s.get(f"{base}/api/v1/courses/{course_id}/pages/{quote(page_url, safe='')}",
+                     headers=_headers(token), timeout=30)
+        if resp.status_code == 401:
+            raise CanvasError("Canvas token 无效或已过期 (HTTP 401)")
+        if resp.status_code == 403:
+            raise CanvasError("没有权限访问该资源 (HTTP 403)")
+        resp.raise_for_status()
+        p = resp.json()
+    return {
+        "url": p.get("url") or page_url,
+        "title": p.get("title") or "",
+        "body_text": strip_html(p.get("body") or ""),
+        "updated_at": p.get("updated_at") or "",
+        "html_url": p.get("html_url") or "",      # 此端点实测是绝对 URL
+    }
 
 
 def get_announcements(canvas_url: str, token: str, course_ids: list[int],
