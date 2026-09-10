@@ -644,3 +644,236 @@ def test_get_page_body_404_is_plain_http_error(monkeypatch):
     monkeypatch.setattr(requests, "Session", lambda: _S())
     with pytest.raises(requests.HTTPError):
         canvas_client.get_page_body("https://x", "tok", 1, "home")
+
+
+# ===== 新数据源：discussion_topics / planner =====
+
+def test_get_discussions_maps_subentry_count(monkeypatch):
+    """实测：回复数字段是 discussion_subentry_count，不是 replies_count。"""
+    s = _Session([([
+        {"id": 7, "title": "第一次讨论", "posted_at": "2026-09-05T00:00:00Z",
+         "last_reply_at": "2026-09-06T00:00:00Z",
+         "author": {"display_name": "张三"},
+         "discussion_subentry_count": 12, "unread_count": 0,
+         "read_state": "read", "pinned": False, "locked": False,
+         "require_initial_post": True, "html_url": "https://x/t/7",
+         "is_announcement": False},
+    ], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_discussion_topics("https://x", "tok", 1)
+    assert out[0]["replies_count"] == 12
+    assert out[0]["author"] == "张三"
+    assert out[0]["require_initial_post"] is True
+    assert s.calls[0][1] == {"per_page": 100, "order_by": "recent_activity"}
+
+
+def test_get_discussions_author_empty_array(monkeypatch):
+    """实测 71134 的 author 是空数组 []。直接下标会 TypeError 打死整批。"""
+    s = _Session([([
+        {"id": 1, "title": "无作者", "author": [], "discussion_subentry_count": 0},
+    ], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_discussion_topics("https://x", "tok", 1)
+    assert out[0]["author"] == ""
+
+
+def test_get_discussions_author_display_name_none(monkeypatch):
+    """实测 display_name 可能是 null → or ""。"""
+    s = _Session([([
+        {"id": 1, "title": "空名", "author": {"display_name": None},
+         "discussion_subentry_count": 3},
+    ], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_discussion_topics("https://x", "tok", 1)
+    assert out[0]["author"] == ""
+
+
+def test_get_discussions_read_state_and_unread_count_are_independent(monkeypatch):
+    """实测：read_state 是根帖已读状态，unread_count 是未读回复数，两者独立。
+    同一门课里既有 read+8 也有 unread+0。两个都要原样透传。"""
+    s = _Session([([
+        {"id": 1, "title": "根帖已读但 8 条回复没读",
+         "read_state": "read", "unread_count": 8,
+         "discussion_subentry_count": 8, "last_reply_at": "2026-09-08T00:00:00Z"},
+        {"id": 2, "title": "根帖没读但无人回复",
+         "read_state": "unread", "unread_count": 0,
+         "discussion_subentry_count": 0, "last_reply_at": "2026-09-07T00:00:00Z"},
+    ], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = {t["id"]: t for t in canvas_client.get_discussion_topics("https://x", "tok", 1)}
+    assert (out[1]["read_state"], out[1]["unread_count"]) == ("read", 8)
+    assert (out[2]["read_state"], out[2]["unread_count"]) == ("unread", 0)
+
+
+def test_get_discussions_missing_fields_default(monkeypatch):
+    s = _Session([([
+        {"id": 1, "title": "缺字段", "discussion_subentry_count": 0},
+    ], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_discussion_topics("https://x", "tok", 1)
+    assert out[0]["read_state"] == "read"     # 缺失按已读
+    assert out[0]["unread_count"] == 0
+    assert out[0]["posted_at"] == ""
+    assert out[0]["last_reply_at"] == ""
+
+
+def test_get_discussions_filters_announcements(monkeypatch):
+    s = _Session([([
+        {"id": 1, "title": "真讨论", "is_announcement": False,
+         "discussion_subentry_count": 1},
+        {"id": 2, "title": "其实是公告", "is_announcement": True,
+         "discussion_subentry_count": 1},
+    ], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_discussion_topics("https://x", "tok", 1)
+    assert [t["id"] for t in out] == [1]
+
+
+def test_get_discussions_sort_pinned_then_activity(monkeypatch):
+    """pinned 优先；其次 last_reply_at 降序，为 None 退到 posted_at；两者都 None 排最后。"""
+    s = _Session([([
+        {"id": 1, "title": "老帖", "last_reply_at": "2026-09-01T00:00:00Z",
+         "posted_at": "2026-08-01T00:00:00Z", "discussion_subentry_count": 0},
+        {"id": 2, "title": "置顶的老帖", "pinned": True,
+         "last_reply_at": "2026-08-15T00:00:00Z", "posted_at": "2026-08-01T00:00:00Z",
+         "discussion_subentry_count": 0},
+        {"id": 3, "title": "新帖", "last_reply_at": "2026-09-09T00:00:00Z",
+         "posted_at": "2026-09-09T00:00:00Z", "discussion_subentry_count": 0},
+        {"id": 4, "title": "无回复，退 posted_at", "last_reply_at": None,
+         "posted_at": "2026-09-05T00:00:00Z", "discussion_subentry_count": 0},
+        {"id": 5, "title": "两个都 None", "last_reply_at": None,
+         "posted_at": None, "discussion_subentry_count": 0},
+    ], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_discussion_topics("https://x", "tok", 1)
+    assert [t["id"] for t in out] == [2, 3, 4, 1, 5]
+
+
+def test_get_discussions_404_raises_tool_disabled(monkeypatch):
+    import pytest
+
+    def boom(session, url, params, token):
+        resp = requests.Response()
+        resp.status_code = 404
+        raise requests.HTTPError(response=resp)
+
+    monkeypatch.setattr(canvas_client, "_paginate", boom)
+    with pytest.raises(canvas_client.CanvasToolDisabled):
+        canvas_client.get_discussion_topics("https://x", "tok", 1)
+
+
+def _planner_payload():
+    return [
+        {"plannable_id": 101, "plannable_type": "assignment",
+         "plannable_date": "2026-09-12T15:59:00Z", "course_id": 5,
+         "context_name": "DSC1001 Introduction to Data Science",
+         "html_url": "/courses/5/assignments/101",
+         "plannable": {"title": "作业一", "due_at": "2026-09-12T15:59:00Z"},
+         "submissions": {"submitted": False}},
+        {"plannable_id": 102, "plannable_type": "quiz",
+         "plannable_date": "2026-09-13T15:59:00Z", "course_id": 5,
+         "context_name": "DSC1001", "html_url": "/courses/5/quizzes/102",
+         "plannable": {"title": "小测一"}, "submissions": {"submitted": True}},
+        {"plannable_id": 103, "plannable_type": "discussion_topic",
+         "plannable_date": "2026-09-14T15:59:00Z", "course_id": 5,
+         "context_name": "DSC1001", "html_url": "/courses/5/discussion_topics/103",
+         "plannable": {"title": "讨论一"}, "submissions": False},
+        {"plannable_id": 104, "plannable_type": "calendar_event",
+         "plannable_date": "2026-09-15T02:00:00Z", "course_id": 5,
+         "context_name": "DSC1001", "html_url": "/calendar_events/104",
+         "plannable": {"title": "讲座"}, "submissions": False},
+        {"plannable_id": 105, "plannable_type": "wiki_page",
+         "plannable_date": "2026-09-16T00:00:00Z", "course_id": 5,
+         "context_name": "DSC1001", "html_url": "/courses/5/pages/105",
+         "plannable": {"title": "阅读材料"}, "submissions": False},
+        {"plannable_id": 106, "plannable_type": "planner_note",
+         "plannable_date": "2026-09-17T00:00:00Z", "course_id": None,
+         "context_name": None, "html_url": "/planner/notes/106",
+         "plannable": {"title": "自己记的"}, "submissions": False},
+        {"plannable_id": 107, "plannable_type": "unknown_future_type",
+         "plannable_date": "2026-09-18T00:00:00Z", "course_id": 5,
+         "context_name": "DSC1001", "html_url": "/x/107",
+         "plannable": {"title": "未知类型"}, "submissions": False},
+        {"plannable_id": 108, "plannable_type": "announcement",
+         "plannable_date": "2026-09-10T09:00:00Z", "course_id": 5,
+         "context_name": "DSC1001", "html_url": "/courses/5/announcements/108",
+         "plannable": {"title": "一条公告"}, "submissions": False},
+    ]
+
+
+def test_get_planner_keeps_every_known_type(monkeypatch):
+    s = _Session([(_planner_payload(), "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_planner_items("https://x", "tok", "2026-09-10", "2026-09-17")
+    assert [i["id"] for i in out] == [101, 102, 103, 104, 105, 106, 107]
+    types = {i["id"]: i["type"] for i in out}
+    assert types[107] == "unknown_future_type"      # 未知类型走兜底，不丢弃
+    assert out[0]["course_name"] == "DSC1001 Introduction to Data Science"
+    assert s.calls[0][1] == {"start_date": "2026-09-10", "end_date": "2026-09-17",
+                             "per_page": 100}
+
+
+def test_get_planner_drops_announcement(monkeypatch):
+    """实测 88 条里 20 条是 announcement，其 plannable_date 是发布时间，是纯噪音。"""
+    s = _Session([(_planner_payload(), "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_planner_items("https://x", "tok", "2026-09-10", "2026-09-17")
+    assert 108 not in [i["id"] for i in out]
+    assert all(i["type"] != "announcement" for i in out)
+
+
+def test_get_planner_submitted_is_tri_state(monkeypatch):
+    """submissions 键恒在，值是 false 或对象 → 必须 isinstance 判定。
+    写成 `if "submissions" in item` 会把每一项都当成「有提交状态」。"""
+    s = _Session([(_planner_payload(), "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = {i["id"]: i["submitted"] for i in
+           canvas_client.get_planner_items("https://x", "tok", "2026-09-10", "2026-09-17")}
+    assert out[101] is False      # 对象且 submitted=False
+    assert out[102] is True       # 对象且 submitted=True
+    assert out[103] is None       # submissions 是布尔 false → 不适用
+    assert out[104] is None
+
+
+def test_get_planner_absolutizes_html_url(monkeypatch):
+    """实测 html_url 是相对路径 /courses/… → 必须补成绝对，否则 openExternal 打不开。"""
+    s = _Session([(_planner_payload(), "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_planner_items("https://canvas.cityu.edu.hk/", "tok",
+                                          "2026-09-10", "2026-09-17")
+    assert out[0]["html_url"] == "https://canvas.cityu.edu.hk/courses/5/assignments/101"
+    assert all(i["html_url"].startswith("https://") for i in out)
+
+
+def test_get_planner_date_fallback_chain(monkeypatch):
+    """plannable_date 缺失时按类型回落；全缺则丢弃该项。"""
+    s = _Session([([
+        {"plannable_id": 1, "plannable_type": "assignment", "course_id": 5,
+         "plannable": {"title": "退 due_at", "due_at": "2026-09-19T00:00:00Z"},
+         "html_url": "/a/1", "submissions": {"submitted": False}},
+        {"plannable_id": 2, "plannable_type": "discussion_topic", "course_id": 5,
+         "plannable": {"title": "退 todo_date", "todo_date": "2026-09-20T00:00:00Z"},
+         "html_url": "/a/2", "submissions": False},
+        {"plannable_id": 3, "plannable_type": "calendar_event", "course_id": 5,
+         "plannable": {"title": "退 start_at", "start_at": "2026-09-21T00:00:00Z"},
+         "html_url": "/a/3", "submissions": False},
+        {"plannable_id": 4, "plannable_type": "assignment", "course_id": 5,
+         "plannable": {"title": "全缺"}, "html_url": "/a/4",
+         "submissions": {"submitted": False}},
+    ], "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_planner_items("https://x", "tok", "2026-09-10", "2026-09-30")
+    assert [(i["id"], i["date"]) for i in out] == [
+        (1, "2026-09-19T00:00:00Z"),
+        (2, "2026-09-20T00:00:00Z"),
+        (3, "2026-09-21T00:00:00Z"),
+    ]      # id=4 无任何日期 → 丢弃
+
+
+def test_get_planner_course_name_missing_is_empty(monkeypatch):
+    s = _Session([(_planner_payload(), "")])
+    monkeypatch.setattr(requests, "Session", lambda: s)
+    out = canvas_client.get_planner_items("https://x", "tok", "2026-09-10", "2026-09-17")
+    note = [i for i in out if i["id"] == 106][0]
+    assert note["course_name"] == ""
+    assert note["course_id"] is None

@@ -355,6 +355,100 @@ def get_page_body(canvas_url: str, token: str, course_id: int,
     }
 
 
+def get_discussion_topics(canvas_url: str, token: str, course_id: int) -> list[dict]:
+    """课程讨论区帖子。未启用讨论工具的课程会抛 CanvasToolDisabled。"""
+    base = canvas_url.rstrip("/")
+    with requests.Session() as s:
+        data = _paginate_allow_disabled(
+            s, f"{base}/api/v1/courses/{course_id}/discussion_topics",
+            {"per_page": 100, "order_by": "recent_activity"}, token)
+    out = []
+    for tp in data:
+        if tp.get("is_announcement"):
+            continue                       # 公告有独立页面与接口，不混进讨论页
+        author = tp.get("author")
+        # 实测 author 可能是空数组 []，直接下标会 TypeError 打死整批
+        name = author.get("display_name") if isinstance(author, dict) else None
+        out.append({
+            "id": tp.get("id"),
+            "title": tp.get("title") or "",
+            "posted_at": tp.get("posted_at") or "",
+            "last_reply_at": tp.get("last_reply_at") or "",
+            "author": name or "",          # 实测 display_name 可能是 null
+            # 实测字段名是 discussion_subentry_count，输出仍叫 replies_count
+            "replies_count": tp.get("discussion_subentry_count") or 0,
+            # read_state（根帖）与 unread_count（未读回复）是两个独立维度，
+            # 两个都原样透传，未读口径由前端决定。
+            "unread_count": tp.get("unread_count") or 0,
+            "read_state": tp.get("read_state") or "read",
+            "pinned": bool(tp.get("pinned")),
+            "locked": bool(tp.get("locked")),
+            "require_initial_post": bool(tp.get("require_initial_post")),
+            "html_url": tp.get("html_url") or "",
+        })
+    # 先按「最后活动时间」降序（缺失的空串在 reverse=True 下自动排最后），
+    # 再按 pinned 做稳定排序 → 置顶组内部保持时间序。
+    out.sort(key=lambda x: x["last_reply_at"] or x["posted_at"] or "", reverse=True)
+    out.sort(key=lambda x: not x["pinned"])
+    return out
+
+
+# planner 的日期回落链：plannable_date 是每种类型都存在的权威字段（实测 88/88），
+# 缺失时按 plannable_type 回落到该类型的原生日期字段。
+_PLANNER_DATE_FALLBACK = {
+    "assignment": "due_at",
+    "quiz": "due_at",
+    "discussion_topic": "todo_date",
+    "calendar_event": "start_at",
+    "planner_note": "todo_date",
+}
+
+
+def get_planner_items(canvas_url: str, token: str, start_date: str,
+                      end_date: str) -> list[dict]:
+    """Canvas Planner 聚合流（作业 + 测验 + 讨论 + 日历 + 自记事项）。
+
+    **不按日期过滤**：Canvas 的 start_date/end_date 参数实测生效（传范围 74 条 vs
+    不传 88 条），但结果里仍含过去条目（实测 23 条早于今天）。「本周」是前端展示
+    口径，后端只做归一化 —— 否则口径被焊死在 API 里，换个页面复用就得改后端。
+    """
+    base = canvas_url.rstrip("/")
+    with requests.Session() as s:
+        data = _paginate(s, f"{base}/api/v1/planner/items",
+                         {"start_date": start_date, "end_date": end_date,
+                          "per_page": 100}, token)
+    out = []
+    for item in data:
+        ptype = item.get("plannable_type") or ""
+        if ptype == "announcement":
+            continue          # plannable_date 是发布时间不是截止时间，实测 20/88 条
+        pl = item.get("plannable") or {}
+        date = item.get("plannable_date") or ""
+        if not date:
+            fb = _PLANNER_DATE_FALLBACK.get(ptype)
+            date = (pl.get(fb) or "") if fb else ""
+        if not date:
+            continue          # 无日期的聚合项对「本周 DDL」无意义
+        subs = item.get("submissions")
+        # submissions 键**恒在**，值是 false 或对象（实测 35:39）→ 必须判类型
+        submitted = bool(subs.get("submitted")) if isinstance(subs, dict) else None
+        url = item.get("html_url") or ""
+        if url.startswith("/"):
+            url = base + url          # 实测是相对路径，不补全就 openExternal 打不开
+        out.append({
+            "id": item.get("plannable_id"),
+            "type": ptype,
+            "title": pl.get("title") or "",
+            "course_id": item.get("course_id"),
+            "course_name": item.get("context_name") or "",
+            "date": date,
+            "submitted": submitted,
+            "html_url": url,
+        })
+    out.sort(key=lambda x: (x["date"] == "", x["date"]))
+    return out
+
+
 def get_announcements(canvas_url: str, token: str, course_ids: list[int],
                       start_date: str, end_date: str) -> dict[int, list[dict]]:
     """按课程分组返回公告；无公告的课程不在结果中出现。
