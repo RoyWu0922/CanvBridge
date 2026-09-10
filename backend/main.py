@@ -138,6 +138,22 @@ class CalendarEventsRequest(CanvasConfig):
     end_date: str
 
 
+class CoursesRequest(CanvasConfig):
+    """批量端点：一次拉多门课的同一类内容。"""
+    course_ids: list[int]
+
+
+class PageBodyRequest(CourseDetailRequest):
+    """单个 Page 的正文。page_url 是 Canvas 的页面 slug（如 "course-home"）。"""
+    page_url: str
+
+
+class PlannerRequest(CanvasConfig):
+    """Planner 聚合流。无课程维度 —— Canvas 按当前用户的全部选课聚合。"""
+    start_date: str
+    end_date: str
+
+
 class WriteCanvasEventsRequest(BaseModel):
     calendar_name: str
     items: list[dict]   # [{title, start, end, location, notes}]
@@ -261,6 +277,73 @@ def course_detail(req: CourseDetailRequest):
     except Exception as exc:
         modules_error = str(exc)
     return {"ok": True, "course": course, "modules": modules, "modules_error": modules_error}
+
+
+@app.post("/api/quizzes")
+def quizzes(req: CoursesRequest):
+    """逐课程拉测验。未启用测验工具的课程返回 404（实测约一半课程如此），
+    按「该课无测验」静默处理，不进 errors —— 那是常态，不是故障。"""
+    by_course: dict[int, list] = {}
+    errors: dict[int, str] = {}
+    for cid in req.course_ids:
+        try:
+            by_course[cid] = canvas_client.get_quizzes(req.canvas_url,
+                                                       req.canvas_token, cid)
+        except canvas_client.CanvasToolDisabled:
+            by_course[cid] = []
+        except Exception as exc:
+            by_course[cid] = []
+            errors[cid] = str(exc)
+    return {"ok": True, "by_course": by_course, "errors": errors}
+
+
+@app.post("/api/discussions")
+def discussions(req: CoursesRequest):
+    """逐课程拉讨论区帖子。错误隔离口径与 /api/quizzes 一致。"""
+    by_course: dict[int, list] = {}
+    errors: dict[int, str] = {}
+    for cid in req.course_ids:
+        try:
+            by_course[cid] = canvas_client.get_discussion_topics(
+                req.canvas_url, req.canvas_token, cid)
+        except canvas_client.CanvasToolDisabled:
+            by_course[cid] = []
+        except Exception as exc:
+            by_course[cid] = []
+            errors[cid] = str(exc)
+    return {"ok": True, "by_course": by_course, "errors": errors}
+
+
+@app.post("/api/pages")
+def pages(req: CourseDetailRequest):
+    """单课程 Pages 列表（不含正文）。未启用 Pages 工具 → 空列表，不算错误。"""
+    try:
+        return {"ok": True, "pages": canvas_client.get_pages(
+            req.canvas_url, req.canvas_token, req.course_id)}
+    except canvas_client.CanvasToolDisabled:
+        return {"ok": True, "pages": []}
+    except Exception as exc:
+        return {"ok": False, "pages": [], "error": str(exc)}
+
+
+@app.post("/api/page_body")
+def page_body(req: PageBodyRequest):
+    """单个 Page 正文。按需拉取 —— 列表阶段不带头文，避免 N+1。"""
+    try:
+        return {"ok": True, "page": canvas_client.get_page_body(
+            req.canvas_url, req.canvas_token, req.course_id, req.page_url)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/planner")
+def planner(req: PlannerRequest):
+    """Canvas Planner 聚合流。不做日期过滤（见 canvas_client.get_planner_items）。"""
+    try:
+        return {"ok": True, "items": canvas_client.get_planner_items(
+            req.canvas_url, req.canvas_token, req.start_date, req.end_date)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @app.post("/api/assignments")

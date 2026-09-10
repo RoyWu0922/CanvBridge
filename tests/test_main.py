@@ -734,3 +734,146 @@ def test_write_one_off_writes_local_naive_when_absent(monkeypatch):
     assert res["created"] == 1
     assert added[0][2] == expect_start     # 写入的开始=本地无时区
     assert added[0][3] == expect_end       # 写入的结束=本地无时区
+
+
+# ===== 新端点：quizzes / discussions / pages / page_body / planner =====
+
+def test_quizzes_batch_isolates_per_course(monkeypatch):
+    """逐课程错误隔离：一门失败不拖垮整批。"""
+    def fake(url, token, cid):
+        if cid == 5:
+            raise RuntimeError("boom")
+        return [{"id": cid, "title": "Q"}]
+    monkeypatch.setattr(canvas_client, "get_quizzes", fake)
+    client = TestClient(main.app)
+    r = client.post("/api/quizzes", json={
+        "canvas_url": "https://x", "canvas_token": "t", "course_ids": [4, 5]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["by_course"] == {"4": [{"id": 4, "title": "Q"}], "5": []}
+    # 与既有 /api/assignments 约定一致：JSON 往返后 errors 的键是字符串
+    assert body["errors"] == {"5": "boom"}
+
+
+def test_quizzes_tool_disabled_is_not_an_error(monkeypatch):
+    """实测约一半课程未启用测验工具 → 404。这是常态，不进 errors、不显示错误行。"""
+    def fake(url, token, cid):
+        raise canvas_client.CanvasToolDisabled("课程未启用该工具 (HTTP 404)")
+    monkeypatch.setattr(canvas_client, "get_quizzes", fake)
+    client = TestClient(main.app)
+    body = client.post("/api/quizzes", json={
+        "canvas_url": "https://x", "canvas_token": "t", "course_ids": [1, 2]}).json()
+    assert body["ok"] is True
+    assert body["by_course"] == {"1": [], "2": []}
+    assert body["errors"] == {}
+
+
+def test_discussions_batch_isolates_per_course(monkeypatch):
+    def fake(url, token, cid):
+        if cid == 9:
+            raise RuntimeError("nope")
+        return [{"id": 1, "title": "T", "replies_count": 3}]
+    monkeypatch.setattr(canvas_client, "get_discussion_topics", fake)
+    client = TestClient(main.app)
+    body = client.post("/api/discussions", json={
+        "canvas_url": "https://x", "canvas_token": "t", "course_ids": [8, 9]}).json()
+    assert body["ok"] is True
+    assert body["by_course"]["8"][0]["replies_count"] == 3
+    assert body["by_course"]["9"] == []
+    assert body["errors"] == {"9": "nope"}
+
+
+def test_discussions_tool_disabled_is_not_an_error(monkeypatch):
+    def fake(url, token, cid):
+        raise canvas_client.CanvasToolDisabled("课程未启用该工具 (HTTP 404)")
+    monkeypatch.setattr(canvas_client, "get_discussion_topics", fake)
+    client = TestClient(main.app)
+    body = client.post("/api/discussions", json={
+        "canvas_url": "https://x", "canvas_token": "t", "course_ids": [1]}).json()
+    assert body["errors"] == {}
+    assert body["by_course"] == {"1": []}
+
+
+def test_pages_success(monkeypatch):
+    monkeypatch.setattr(canvas_client, "get_pages",
+                        lambda url, token, cid: [{"url": "home", "title": "Home"}])
+    client = TestClient(main.app)
+    body = client.post("/api/pages", json={
+        "canvas_url": "https://x", "canvas_token": "t", "course_id": 5}).json()
+    assert body == {"ok": True, "pages": [{"url": "home", "title": "Home"}]}
+
+
+def test_pages_tool_disabled_returns_empty_not_error(monkeypatch):
+    def fake(url, token, cid):
+        raise canvas_client.CanvasToolDisabled("课程未启用该工具 (HTTP 404)")
+    monkeypatch.setattr(canvas_client, "get_pages", fake)
+    client = TestClient(main.app)
+    body = client.post("/api/pages", json={
+        "canvas_url": "https://x", "canvas_token": "t", "course_id": 5}).json()
+    assert body["ok"] is True
+    assert body["pages"] == []
+    assert "error" not in body or not body["error"]
+
+
+def test_pages_failure_is_flat_error(monkeypatch):
+    monkeypatch.setattr(canvas_client, "get_pages",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    client = TestClient(main.app)
+    body = client.post("/api/pages", json={
+        "canvas_url": "https://x", "canvas_token": "t", "course_id": 5}).json()
+    assert body["ok"] is False
+    assert body["error"] == "boom"
+
+
+def test_page_body_success(monkeypatch):
+    monkeypatch.setattr(canvas_client, "get_page_body",
+                        lambda url, token, cid, purl: {"url": purl, "title": "T",
+                                                       "body_text": "纯文本"})
+    client = TestClient(main.app)
+    body = client.post("/api/page_body", json={
+        "canvas_url": "https://x", "canvas_token": "t",
+        "course_id": 5, "page_url": "home"}).json()
+    assert body["ok"] is True
+    assert body["page"]["body_text"] == "纯文本"
+
+
+def test_page_body_failure(monkeypatch):
+    monkeypatch.setattr(canvas_client, "get_page_body",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("gone")))
+    client = TestClient(main.app)
+    body = client.post("/api/page_body", json={
+        "canvas_url": "https://x", "canvas_token": "t",
+        "course_id": 5, "page_url": "home"}).json()
+    assert body["ok"] is False
+    assert body["error"] == "gone"
+
+
+def test_planner_success_and_passthrough(monkeypatch):
+    got = {}
+
+    def fake(url, token, start, end):
+        got["range"] = (start, end)
+        return [{"id": 1, "type": "assignment", "title": "作业",
+                 "date": "2026-09-12T15:59:00Z", "submitted": False,
+                 "html_url": "https://x/courses/5/assignments/1"}]
+
+    monkeypatch.setattr(canvas_client, "get_planner_items", fake)
+    client = TestClient(main.app)
+    body = client.post("/api/planner", json={
+        "canvas_url": "https://x", "canvas_token": "t",
+        "start_date": "2026-09-10", "end_date": "2026-09-17"}).json()
+    assert body["ok"] is True
+    assert body["items"][0]["submitted"] is False
+    assert got["range"] == ("2026-09-10", "2026-09-17")
+
+
+def test_planner_failure_is_flat_error(monkeypatch):
+    monkeypatch.setattr(canvas_client, "get_planner_items",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    client = TestClient(main.app)
+    body = client.post("/api/planner", json={
+        "canvas_url": "https://x", "canvas_token": "t",
+        "start_date": "2026-09-10", "end_date": "2026-09-17"}).json()
+    assert body["ok"] is False
+    assert body["error"] == "boom"
