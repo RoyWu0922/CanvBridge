@@ -228,6 +228,10 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 .file-saved { font-size:11px; color:var(--ok, #2e7d32); border:1px solid var(--ok, #2e7d32);
   border-radius:4px; padding:0 5px; margin-left:4px; vertical-align:1px; }
 .file-path { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+/* 文件名可点：默认去掉下划线，hover 才提示可点，避免整页看起来到处是链接 */
+.file-open { color:inherit; text-decoration:none; border-bottom:1px solid transparent; cursor:pointer; }
+.file-open:hover { color:var(--accent); border-bottom-color:var(--accent); }
+.module-pop-title { cursor:pointer; }
 .announce-link { color:var(--link); text-decoration:none; }
 .announce-link:hover { text-decoration:underline; }
 .announce-msg-wrap { margin-top:2px; }

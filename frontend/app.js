@@ -1079,6 +1079,65 @@ async function downloadModuleFile(rowEl){
     setStatus(r.saved ? t("module.saved") : t("module.downloaded", {p: r.dest_path}), "ok");
   });
 }
+/* ===== 文件直链：浏览器形态内联打开，桌面（内嵌窗口）形态退化为下载 =====
+   三个调用点共用：侧栏文件页、课程 Modules 弹层、课程中心的文件子标签。
+   注意 api()（util.js:26-33）无条件 await r.json()，二进制端点必须走裸 fetch。 */
+async function openFileInline(courseId, fileId, name){
+  const s = settings();
+  const resp = await fetch("/api/module_file_stream", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ canvas_url: s.canvas_url, canvas_token: s.canvas_token,
+                           course_id: courseId, file_id: fileId }),
+  });
+  const ctype = (resp.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
+  // 后端出错时同样是 200 + JSON（main.py 约定），所以 Content-Type 是判据，不能只看 resp.ok
+  if (!resp.ok || ctype === "application/json"){
+    let msg = "";
+    try { const j = await resp.json(); msg = j.error || ""; } catch (e) { /* 忽略解析失败 */ }
+    return { ok: false, error: msg };
+  }
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  /* window.open 在 await 之后调用已脱离用户手势上下文，被弹窗拦截器拦下会**静默返回 null**
+     而不抛错。若不当成失败，openFileSmart 的降级分支永远不会触发 —— 用户点了没反应、
+     也没提示。所以这里把"没拿到窗口"判成失败，交给上层走下载兜底。 */
+  const win = window.open(url, "_blank", "noopener");
+  if (!win){ URL.revokeObjectURL(url); return { ok: false, error: "" }; }
+  // objectURL 交给新打开的文档用；延迟释放避免新标签还没加载完就被回收
+  setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 60000);
+  return { ok: true };
+}
+
+async function downloadFileTo(courseId, fileId, name, courseName, moduleName){
+  const s = settings();
+  const r = await api("download_module_item", {
+    canvas_url: s.canvas_url, canvas_token: s.canvas_token,
+    download_dir: downloadDir(), course_id: courseId,
+    course_name: courseName || "", module_name: moduleName || "", file_id: fileId });
+  if (r.ok !== true) return { ok: false, error: r.error || "" };
+  return { ok: true, dest: r.dest_path || "", saved: !!r.saved };
+}
+
+/* 统一入口：按形态分叉 + 失败自动降级。
+   用户点文件名要的是"拿到文件"，所以内联失败时报错之余还要替他下载一次，
+   而不是只丢一句红字让他自己再找下载按钮。 */
+async function openFileSmart(courseId, fileId, name, courseName, moduleName, btnEl){
+  if (!fileId){ setStatus(t("file.open_fail"), "err"); return; }
+  await withBusy(t("file.opening", {f: name}), btnEl || null, async () => {
+    if (window.CanvBridgeShell && window.CanvBridgeShell.isWebview()){
+      const r = await downloadFileTo(courseId, fileId, name, courseName, moduleName);
+      if (!r.ok){ setStatus(t("file.open_fail") + (r.error || ""), "err"); return; }
+      setStatus(r.saved ? t("file.downloaded_saved", {f: name})
+                        : t("file.downloaded", {p: r.dest}), "ok");
+      return;
+    }
+    const r = await openFileInline(courseId, fileId, name);
+    if (r.ok) return;
+    setStatus(t("file.open_fail") + (r.error || ""), "err");
+    const d = await downloadFileTo(courseId, fileId, name, courseName, moduleName);
+    if (d.ok) setStatus(t("file.downloaded", {p: d.dest}), "ok");
+  });
+}
 $("detailBody").addEventListener("click", (e) => {
   const dl = e.target.closest(".module-dl-btn");
   if (dl){
@@ -1114,30 +1173,21 @@ $("btnModuleOpenPage").onclick = () => {
   if (modulePopCtx && modulePopCtx.pageUrl) window.open(modulePopCtx.pageUrl, "_blank", "noopener");
   closeModulePop();
 };
-$("btnModuleOpenFile").onclick = async () => {
+/* 标题可点 = 等同于点「打开文件」（spec §5.2(b)）：让"点名字就能打开"在模块列表里也成立 */
+$("modulePopTitle").onclick = () => {
   const ctx = modulePopCtx;
   if (!ctx) return;
-  const s = settings(), c = detailCourse;
+  const c = detailCourse;
+  closeModulePop();
+  openFileSmart(c ? c.id : 0, ctx.fid, ctx.title, (c && c.name) || "", ctx.moduleName, null);
+};
+$("btnModuleOpenFile").onclick = () => {
+  const ctx = modulePopCtx;
+  if (!ctx) return;
+  const c = detailCourse;
   const btn = $("btnModuleOpenFile");
-  await withBusy(t("module.fetching", {f: ctx.title}), btn, async () => {
-    // 不用 Canvas 直链（download_frd 会触发下载）：后端以 inline 流式转发文件本体，
-    // 这里 fetch→blob→objectURL，浏览器内置 PDF 查看器（Adobe 引擎）内联渲染。
-    const resp = await fetch("/api/module_file_stream", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ canvas_url: s.canvas_url, canvas_token: s.canvas_token,
-                             course_id: c ? c.id : 0, file_id: ctx.fid }),
-    });
-    closeModulePop();
-    const ctype = (resp.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
-    if (!resp.ok || ctype === "application/json"){
-      let msg = "";
-      try { const j = await resp.json(); msg = j.error || ""; } catch (e) { /* 忽略解析失败 */ }
-      setStatus(t("module.open_file_fail") + msg, "err");
-      return;
-    }
-    const blob = await resp.blob();
-    window.open(URL.createObjectURL(blob), "_blank", "noopener");
-  });
+  closeModulePop();
+  openFileSmart(c ? c.id : 0, ctx.fid, ctx.title, (c && c.name) || "", ctx.moduleName, btn);
 };
 
 $("btnListFiles").onclick = async () => {
@@ -1173,7 +1223,7 @@ function renderFiles(){
     const cfs=c.files||[];
     const rows = cfs.map(f=>`
         <div class="item"><input type="checkbox" class="fl" data-ci="${c._orig}" data-fi="${f.file_id}" ${f.saved?"":"checked"}>
-          <div><div class="item-title">${esc(f.display_name)} <span class="muted">（${esc(f.content_type)}）</span>${f.saved?` <span class="file-saved">${esc(t("files.saved"))}</span>`:""}</div>
+          <div><div class="item-title"><a href="#" class="file-open" data-ci="${c._orig}" data-fid="${escAttr(f.file_id)}" data-name="${escAttr(f.display_name)}" title="${escAttr(t("file.open"))}">${esc(f.display_name)}</a> <span class="muted">（${esc(f.content_type)}）</span>${f.saved?` <span class="file-saved">${esc(t("files.saved"))}</span>`:""}</div>
           <div class="file-path">${esc(f.path||"/")}</div></div></div>`).join("");
     const has = cfs.length>0;
     const open = has && expandedFiles.has(c.course_id);
@@ -1211,6 +1261,14 @@ $("btnSelectAllFiles").onclick = () => {
   updateSelectAllBtn();
 };
 $("filesArea").addEventListener("click", (e)=>{
+  const fo = e.target.closest(".file-open");
+  if (fo){
+    e.preventDefault();                       // href="#" 只是占位，别让页面跳到顶部
+    const c = fileCourses[Number(fo.dataset.ci)];
+    if (!c) return;
+    openFileSmart(c.course_id, Number(fo.dataset.fid), fo.dataset.name, c.name, "", null);
+    return;
+  }
   const ct=e.target.closest(".caret");
   if(ct){
     const card=ct.closest(".course-card");
