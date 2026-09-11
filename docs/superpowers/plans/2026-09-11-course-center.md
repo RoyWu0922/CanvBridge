@@ -1133,7 +1133,7 @@ Run: `.venv/bin/python run_app.py --browser`
 - [ ] **Step 5: 提交**
 
 ```bash
-git add frontend/app.js
+git add frontend/app.js frontend/i18n.js
 git commit -m "feat: 课程中心文件子标签（复用文件直链打开器）"
 ```
 
@@ -1238,7 +1238,7 @@ Run: `.venv/bin/python run_app.py --browser`
 - [ ] **Step 4: 提交**
 
 ```bash
-git add frontend/app.js
+git add frontend/app.js frontend/i18n.js
 git commit -m "feat: 课程中心公告子标签（全文展示，规避 clamp 无按钮陷阱）"
 ```
 
@@ -1389,7 +1389,7 @@ Run: `.venv/bin/python run_app.py --browser`
 - [ ] **Step 5: 提交**
 
 ```bash
-git add frontend/app.js
+git add frontend/app.js frontend/i18n.js
 git commit -m "feat: 课程中心待办/讨论子标签（讨论键按 String(cid) 取用）"
 ```
 
