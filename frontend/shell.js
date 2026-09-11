@@ -15,6 +15,7 @@ const PAGE_INIT = {
   discuss:  () => initDiscussTab(),
   home:     () => initHome(),
   settings: () => openSettings(),
+  courses:  () => initCourseHubTab(),
 };
 
 let currentPage = "";

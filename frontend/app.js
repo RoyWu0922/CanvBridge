@@ -638,6 +638,7 @@ $("btnLoadCourses").onclick = async () => {
     if(!r.ok){ setStatus(t("status.courses_fail")+r.error,"err"); return; }
     courseList=r.courses;
     renderCourseCheckboxes(courseList);
+    if (typeof renderCourseHubList === "function") renderCourseHubList();   // 课程中心列表跟着更新
     setStatus(t("status.courses_loaded", {n: courseList.length}),"ok");
   });
   // 课程配置已搬进设置页：这里不再 switchPage("announce")。
@@ -732,10 +733,12 @@ $("ignoreCourses").addEventListener("change", e => {
   const ids = [...document.querySelectorAll("#ignoreCourses input:checked")].map(i => Number(i.dataset.id));
   saveCourseIgnored(ids);
   if (courseList.length) renderCourseCheckboxes(courseList);  // 顶部课程区立即增删
+  if (typeof renderCourseHubList === "function") renderCourseHubList();
 });
 $("btnClearIgnore").onclick = () => {
   localStorage.removeItem(COURSE_IGNORE_KEY);
   if (courseList.length) renderCourseCheckboxes(courseList);
+  if (typeof renderCourseHubList === "function") renderCourseHubList();
   fillIgnoreCourses();
 };
 
@@ -2169,3 +2172,164 @@ function onTopRangeChange(){
 $("inpStart").addEventListener("change", onTopRangeChange);
 $("inpEnd").addEventListener("change", onTopRangeChange);
 renderSummaries();
+
+/* ===== 课程中心：列表 → 单课程四子标签 =====
+   与课程详情弹层（#detailModal）并存，两者各自独立可用。
+   本页只呈现"这一门课"的内容，不做跨课程聚合 —— 那是侧栏各全局页的职责。 */
+let hubCid = null;        // 当前详情页的 Canvas course id（null = 未匹配到 Canvas 课程）
+let hubBanweb = null;     // 从首页课表进来时带的 Banweb 课程对象（可为 null）
+let hubTab = "files";     // 当前标签
+let hubInit = false;      // 首次进入是否已拉过课程列表
+
+/* 同一课程同一标签 60 秒内不重复后台拉取：切标签是高频动作，
+   每次都打一次网络既慢又无意义。 */
+const HUB_REFRESH_TTL = 60000;
+const hubRefreshed = new Map();          // "cid:tab" -> 上次刷新时间戳
+function hubShouldRefresh(key){
+  const last = hubRefreshed.get(key) || 0;
+  if (Date.now() - last < HUB_REFRESH_TTL) return false;
+  hubRefreshed.set(key, Date.now());
+  return true;
+}
+
+/* 详情页标题：优先 Canvas 课程名；未匹配到 Canvas 时退化为 Banweb 的 code+section */
+function hubCourseName(){
+  if (hubCid != null){
+    const c = (courseList || []).find(x => x.id === hubCid);
+    if (c) return c.name;
+  }
+  if (hubBanweb) return `${hubBanweb.code || ""} ${hubBanweb.section || ""}`.trim();
+  return hubCid != null ? ("#" + hubCid) : "";
+}
+
+/* 首次进入课程中心：课程配置现在在设置页，不能指望用户先去点「加载课程」，
+   所以这里自行拉一次（有缓存就直接渲染，不闪空白）。与 discuss/grades/home
+   的"首次进入才拉"是同一个 house pattern。 */
+function initCourseHubTab(){
+  if (hubInit) return;
+  hubInit = true;
+  if ((courseList || []).length){ renderCourseHubList(); return; }
+  const s = settings();
+  if (!s.canvas_url || !s.canvas_token){ renderCourseHubList(); return; }   // 未配置 → 空态
+  loadCourseHubList();
+}
+async function loadCourseHubList(){
+  const r = await api("courses", settings());
+  if (r.ok) courseList = r.courses || [];
+  renderCourseHubList();
+}
+
+function renderCourseHubList(){
+  const box = $("hubListArea");
+  if (!box) return;
+  const s = settings();
+  if (!s.canvas_url || !s.canvas_token){
+    box.innerHTML = `<div class="empty">${t("hub.need_config")}</div>`;
+    return;
+  }
+  const ignored = savedCourseIgnored() || new Set();
+  const list = (courseList || []).filter(c => !ignored.has(c.id));
+  if (!list.length){
+    box.innerHTML = `<div class="empty">${t("hub.empty")}</div>`;
+    return;
+  }
+  box.innerHTML = list.map(c => `
+    <button type="button" class="hub-card" data-id="${c.id}">
+      <span class="hub-card-name">${esc(c.name)}</span>
+      <span class="hub-card-code">${esc(c.course_code || "")}</span>
+    </button>`).join("");
+}
+$("hubListArea").addEventListener("click", (e) => {
+  const b = e.target.closest(".hub-card");
+  if (b) openCourseHub(Number(b.dataset.id), null);
+});
+
+function backToHubList(){
+  hubCid = null; hubBanweb = null;
+  $("hubDetail").hidden = true;
+  $("hubList").hidden = false;
+  renderCourseHubList();
+}
+$("btnHubBack").onclick = backToHubList;
+
+/* 进入某门课的详情。canvasId 允许为 null（Banweb 有课但没匹配上 Canvas 课程），
+   此时退化为只显示课表信息 + 一条明确提示。 */
+function openCourseHub(canvasId, banwebCourse){
+  hubCid = (canvasId == null ? null : Number(canvasId));
+  hubBanweb = banwebCourse || null;
+  hubTab = "files";
+  $("hubList").hidden = true;
+  $("hubDetail").hidden = false;
+  renderCourseHub();
+  // 详情页住在 #page-courses 里，若当前不在课程页则切过去（侧栏高亮随之同步）。
+  // 放最后：switchPage 会触发 PAGE_INIT.courses，而 hubInit 守卫保证它不会重拉数据。
+  if (typeof switchPage === "function" && currentPage !== "courses") switchPage("courses");
+  hubRefreshCurrent();
+}
+
+function renderCourseHub(){
+  if (hubCid == null && !hubBanweb) return;     // 没有目标课程：什么都不写，避免误清空
+  $("hubTitle").textContent = hubCourseName();
+  $$("#hubTabs .tab-item").forEach(b => {
+    const on = b.dataset.tab === hubTab;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  renderHubTab();
+}
+$("hubTabs").addEventListener("click", (e) => {
+  const b = e.target.closest(".tab-item");
+  if (b) switchHubTab(b.dataset.tab);
+});
+function switchHubTab(name){
+  if (!["files", "announce", "todo", "discuss"].includes(name)) return;
+  hubTab = name;
+  renderCourseHub();
+  hubRefreshCurrent();
+}
+
+/* Banweb 课表信息（未匹配到 Canvas 时唯一能显示的内容）。
+   字段取自 renderHomeToday 已在用的那批（shell.js:169-171），不用未验证的字段。 */
+function hubBanwebInfoHtml(){
+  if (!hubBanweb) return "";
+  const ms = (hubBanweb.meetings || []).map(m =>
+    `<div class="file-path">${esc((m.days_list || []).join(""))} ${esc(fmtTime(m.start_min))}–${esc(fmtTime(m.end_min))}${(m.room_short || m.room) ? " · " + esc(m.room_short || m.room) : ""}</div>`).join("");
+  const head = `${hubBanweb.code || ""} ${hubBanweb.section || ""}`.trim();
+  return `<div class="glass-card"><div class="sub-label">${esc(head)}</div>${ms}</div>`;
+}
+
+/* 标签分发。四个 renderHub* 由后续任务实现（函数声明提升，运行时可见）。 */
+function renderHubTab(){
+  const box = $("hubPanel");
+  if (!box) return;
+  if (hubCid == null){
+    box.innerHTML = `<div class="muted">${t("hub.no_canvas")}</div>` + hubBanwebInfoHtml();
+    return;
+  }
+  const fn = { files: renderHubFiles, announce: renderHubAnnounce,
+               todo: renderHubTodo, discuss: renderHubDiscuss }[hubTab];
+  (fn || renderHubFiles)(hubCid);
+}
+
+/* 后台刷新：只对能按课程粒度的端点做（spec §4.4）。
+   待办不做 —— /api/todo 没有课程参数，只能整批取，本轮只用全局缓存。
+   注意各 renderHub* 自身绝不触发刷新，否则会形成 渲染→刷新→渲染 的死循环。 */
+function hubRefreshCurrent(){
+  if (hubCid == null) return;
+  const key = hubCid + ":" + hubTab;
+  if (!hubShouldRefresh(key)) return;
+  if (hubTab === "files") hubRefreshFiles(hubCid);
+  else if (hubTab === "discuss") hubRefreshDiscuss(hubCid);
+  else if (hubTab === "announce") hubRefreshAnnounce();
+}
+
+/* 占位：由 Task 5 替换为真实实现 */
+function renderHubFiles(cid){ $("hubPanel").innerHTML = `<div class="muted">${t("hub.tab_empty.files_unloaded")}</div>`; }
+function hubRefreshFiles(cid){}
+/* 占位：由 Task 6 替换为真实实现 */
+function renderHubAnnounce(cid){ $("hubPanel").innerHTML = `<div class="muted">${t("hub.tab_empty.announce_unloaded")}</div>`; }
+function hubRefreshAnnounce(){}
+/* 占位：由 Task 7 替换为真实实现 */
+function renderHubTodo(cid){ $("hubPanel").innerHTML = `<div class="muted">${t("hub.tab_empty.todo_unloaded")}</div>`; }
+function renderHubDiscuss(cid){ $("hubPanel").innerHTML = `<div class="muted">${t("hub.tab_empty.discuss_unloaded")}</div>`; }
+function hubRefreshDiscuss(cid){}

@@ -188,9 +188,28 @@
     </div>
 
     <div id="page-courses" class="page" hidden>
-      <!-- 课程中心（列表 ↔ 单课程四标签）。本轮先留骨架，内容由 Task 4 填。
-           原先放在这里的课程配置（加载按钮/日期范围/勾选列表）已搬进设置页。 -->
-      <div class="page-head"><h2 data-i18n="nav.courses"></h2></div>
+      <!-- 课程中心：列表视图 ↔ 单课程详情视图，同一时刻只显示其一。
+           与课程详情弹层 #detailModal 并存，两者互不替代。 -->
+
+      <div id="hubList">
+        <div class="page-head"><h2 data-i18n="nav.courses"></h2></div>
+        <div id="hubListArea"></div>
+      </div>
+
+      <div id="hubDetail" hidden>
+        <div class="page-head">
+          <button id="btnHubBack" class="btn btn-ghost" data-i18n="hub.back"></button>
+          <h2 id="hubTitle"></h2>
+          <span class="sp"></span>
+        </div>
+        <div id="hubTabs" class="tab-bar" role="tablist">
+          <button class="tab-item" role="tab" data-tab="files" data-i18n="tab.files"></button>
+          <button class="tab-item" role="tab" data-tab="announce" data-i18n="tab.announce"></button>
+          <button class="tab-item" role="tab" data-tab="todo" data-i18n="tab.todo"></button>
+          <button class="tab-item" role="tab" data-tab="discuss" data-i18n="tab.discuss"></button>
+        </div>
+        <div id="hubPanel"></div>
+      </div>
     </div>
 
     <div id="page-settings" class="page" hidden>
