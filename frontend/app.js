@@ -2159,6 +2159,8 @@ $("btnLang").onclick = () => {
   renderSummaries();                     // 重渲动态文案（AI 总结按钮等）
   renderFiles();                         // 重渲文件全选按钮标签
   refreshBadges();                       // applyLang 会清掉页签内子节点，重画红点徽标
+  renderCourseHubList();                 // 课程中心列表：内容是动态拼的，data-i18n 刷不到
+  renderCourseHub();                     // 详情页标题/标签/面板：同上（无目标课程时它自己早退）
 };
 applyLang();
 loadSettings();
