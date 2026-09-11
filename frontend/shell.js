@@ -90,6 +90,18 @@ $("page-home").addEventListener("click", e => {
   if (go) switchPage(go.dataset.goto);
 });
 
+/* 今日课表卡片 → 该课程的课程中心详情。
+   注意不能走 data-goto：上面那个 #page-home 委托会把点击当成页面跳转。 */
+$("homeTodayList").addEventListener("click", (e) => {
+  const card = e.target.closest(".today-card");
+  if (!card) return;
+  const code = card.dataset.code || "";
+  if (!code) return;
+  const bw = ((banwebSchedule && banwebSchedule.courses) || []).find(c => c.code === code) || null;
+  const cv = matchCourseByCode(code);        // app.js:210，按「字母+4位数字」匹配，忽略 A/C 等后缀
+  openCourseHub(cv ? cv.id : null, bw);
+});
+
 /* 显隐首页两张速览卡：未配置 Canvas 时隐藏，配置后恢复（幂等） */
 function setHomeListCards(visible){
   $$("#page-home .list-card").forEach(el => { el.hidden = !visible; });
@@ -169,13 +181,13 @@ function renderHomeToday(){
     for (const m of (c.meetings || [])){
       if (!(m.days_list || []).includes(letter)) continue;
       slots.push({ start: m.start_min, end: m.end_min, room: m.room_short || m.room,
-                   label: `${c.code} ${c.section}` });
+                   label: `${c.code} ${c.section}`, code: c.code });   // code 供点击时反查课程
     }
   slots.sort((a, b) => a.start - b.start);
   $("statToday").textContent = String(slots.length);
   if (!slots.length){ $("homeTodayList").innerHTML = `<div class="muted">${t("home.no_class")}</div>`; return; }
   $("homeTodayList").innerHTML = slots.map(s =>
-    `<div class="today-card"><b>${esc(fmtTime(s.start))}–${esc(fmtTime(s.end))}</b>
+    `<div class="today-card" data-code="${escAttr(s.code || "")}"><b>${esc(fmtTime(s.start))}–${esc(fmtTime(s.end))}</b>
        <span>${esc(s.label)}</span><em>${esc(s.room || "")}</em></div>`).join("");
 }
 
