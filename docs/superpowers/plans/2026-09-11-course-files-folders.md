@@ -25,6 +25,7 @@
 - **后端错误约定**：出错也返回 HTTP 200 + JSON，判别看 `Content-Type === "application/json"`。
 - **前端没有单测框架。** 前端任务的运行时验证由**控制方**（有 chrome-devtools MCP）在 dev server `127.0.0.1:8331` 上跑探针完成；实施子代理只负责跑静态门（`node --check` 拼接、i18n 门、DOM id 门）并把输出贴进报告。
 - **macOS 没有 `timeout` 命令。** Python 一律用 `.venv/bin/python`。
+- **本计划里的行号是 BASE 提交当时的快照，会漂移。** 靠前的任务增删行之后，靠后任务引用的行号会失准（例如 Task 1 在 `tests/test_files_downloader.py` 里把 8 行换成约 40 行，Task 2 引用的「第 61-85 行」随即失效）。**一律按函数名 / 测试名 / id 定位**，行号只用于快速找到大致位置 —— 找不到就按名字搜，别按行号硬数。
 
 ---
 
@@ -232,8 +233,11 @@ def test_plan_downloads_path_and_rename(tmp_path):
     # 旧路径：保留课程根那一层，供「是否已下过」判定
     assert planned[0]["legacy_path"] == \
         str(tmp_path / "CS 101" / "course files" / "Week 3" / "a.pdf")
-    assert planned[2]["legacy_path"] == \
-        str(tmp_path / "CS 101" / "course files" / "b.pdf")
+    # 根下文件（folder_id 为 None）的**新旧路径相同** —— 它在旧布局里也是直接落在
+    # 课程目录下；只有子文件夹里的文件才会多出 "course files" 那一层。
+    # 别把它的 legacy_path 也期望成带前缀的。
+    assert planned[2]["legacy_path"] == str(tmp_path / "CS 101" / "b.pdf")
+    assert planned[2]["legacy_path"] == planned[2]["dest_path"]
     # 磁盘上已存在的目标文件应标记 saved=True，其余 False
     assert planned[0]["saved"] is False  # 规划时该文件还不存在
     dest0 = Path(planned[0]["dest_path"])
@@ -375,7 +379,7 @@ def plan_downloads(download_dir: str, course_name: str, files: list[dict],
 - [ ] **Step 6: 跑全量测试**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: `232 passed`（228 − 0 + 4 个新用例，其中 2 个既有用例是被替换而非新增）。**若有既有用例转红，说明改动越界了，停下来查。**
+Expected: `235 passed`。算式：基线 228 + Task 1 净增 4（1 个既有用例被换成 5 个）+ 本任务净增 3（1 个既有用例被换成 4 个）= 235。**若有计划外的既有用例转红，说明改动越界了，停下来查。**
 
 - [ ] **Step 7: 提交**
 
@@ -504,7 +508,7 @@ Expected: FAIL —— `KeyError: 'folders'`。
 - [ ] **Step 5: 跑测试确认通过**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: `234 passed`。
+Expected: `237 passed`（Task 2 后的 235 + 本任务 2 个新用例）。
 
 - [ ] **Step 6: 提交**
 
@@ -896,7 +900,7 @@ Run: `git diff --stat HEAD~1 -- backend/ tests/`
 Expected: 空输出。
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: `234 passed`。
+Expected: `237 passed`（后端自 Task 3 起未再改动，应仍是 237）。
 
 - [ ] **Step 8: 提交**
 
