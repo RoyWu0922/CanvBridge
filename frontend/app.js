@@ -2282,6 +2282,13 @@ $("hubTabs").addEventListener("click", (e) => {
   const b = e.target.closest(".tab-item");
   if (b) switchHubTab(b.dataset.tab);
 });
+/* 课程中心里的文件名点击：与侧栏文件页共用 openFileSmart，行为完全一致 */
+$("hubPanel").addEventListener("click", (e) => {
+  const fo = e.target.closest(".file-open");
+  if (!fo) return;
+  e.preventDefault();
+  openFileSmart(Number(fo.dataset.cid), Number(fo.dataset.fid), fo.dataset.name, hubCourseName(), "", null);
+});
 function switchHubTab(name){
   if (!["files", "announce", "todo", "discuss"].includes(name)) return;
   hubTab = name;
@@ -2324,9 +2331,40 @@ function hubRefreshCurrent(){
   else if (hubTab === "announce") hubRefreshAnnounce();
 }
 
-/* 占位：由 Task 5 替换为真实实现 */
-function renderHubFiles(cid){ $("hubPanel").innerHTML = `<div class="muted">${t("hub.tab_empty.files_unloaded")}</div>`; }
-function hubRefreshFiles(cid){}
+/* 文件子标签。只读 fileCourses 缓存，不触发网络（刷新由 hubRefreshCurrent 统一发起）。 */
+function renderHubFiles(cid){
+  const box = $("hubPanel");
+  if (!box) return;
+  const c = (fileCourses || []).find(x => x.course_id === cid);
+  if (!c){                                   // 全局缓存里根本没有这门课 → 尚未加载
+    box.innerHTML = `<div class="muted">${t("hub.tab_empty.files_unloaded")}</div>`;
+    return;
+  }
+  if (c.error){ box.innerHTML = `<div class="muted">${esc(c.error)}</div>`; return; }
+  const files = c.files || [];
+  if (!files.length){ box.innerHTML = `<div class="muted">${t("hub.tab_empty.files")}</div>`; return; }
+  box.innerHTML = files.map(f => `
+    <div class="item">
+      <div>
+        <div class="item-title"><a href="#" class="file-open" data-cid="${cid}" data-fid="${escAttr(f.file_id)}" data-name="${escAttr(f.display_name)}" title="${escAttr(t("file.open"))}">${esc(f.display_name)}</a> <span class="muted">（${esc(f.content_type || "")}）</span>${f.saved ? ` <span class="file-saved">${esc(t("files.saved"))}</span>` : ""}</div>
+        <div class="file-path">${esc(f.path || "/")}</div>
+      </div>
+    </div>`).join("");
+}
+
+/* 后台按本课程刷新一次文件列表。失败静默 —— 保留已渲染的缓存，不把标签打回空态。 */
+async function hubRefreshFiles(cid){
+  const s = settings();
+  if (!s.canvas_url || !s.canvas_token) return;
+  const r = await api("list_files", { ...s, course_ids: [cid], download_dir: downloadDir() });
+  if (r.ok !== true) return;
+  const fresh = (r.courses || [])[0];
+  if (!fresh) return;
+  const i = (fileCourses || []).findIndex(x => x.course_id === cid);
+  if (i >= 0) fileCourses[i] = fresh; else fileCourses.push(fresh);
+  // 用户可能已经切走或返回列表：只在仍停留在本课程的文件标签时才重渲染
+  if (hubCid === cid && hubTab === "files") renderHubFiles(cid);
+}
 /* 占位：由 Task 6 替换为真实实现 */
 function renderHubAnnounce(cid){ $("hubPanel").innerHTML = `<div class="muted">${t("hub.tab_empty.announce_unloaded")}</div>`; }
 function hubRefreshAnnounce(){}
