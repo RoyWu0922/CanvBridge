@@ -479,3 +479,13 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
   color:var(--muted); padding:8px 14px; border-bottom:2px solid transparent; }
 .tab-item:hover { color:var(--ink); }
 .tab-item.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
+
+/* 文件夹树（侧栏文件页 + 课程中心文件标签共用）。缩进由 JS 的内联 padding-left 给，
+   这里只管行本身的排版与 caret 的展开态。 */
+.folder-row { display:flex; align-items:center; gap:6px; padding:5px 0; }
+.folder-row .fcaret { border:0; background:none; cursor:pointer; color:var(--muted);
+  font-size:14px; line-height:1; padding:0; }
+.folder-row .fcaret:hover { color:var(--ink); }
+.folder-row .fcaret[aria-expanded="true"] { transform:rotate(90deg); }
+.folder-name { font-size:13px; font-weight:600; }
+.fchildren[hidden] { display:none; }

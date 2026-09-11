@@ -1243,17 +1243,101 @@ $("btnListFiles").onclick = async () => {
 };
 /* 文件页展开的课程（按 course_id）。新列出文件时清空 → 默认全收起；筛选重渲时保留，不打断查看 */
 const expandedFiles = new Set();
+/* 文件夹展开状态（键为 "<courseId>:<folderId>"）。与 expandedFiles 分开：
+   那个管课程卡片的展开，这个管卡片内部文件夹的展开。 */
+const expandedFolders = new Set();
+/* 把 /api/list_files 的 files[] 与 folders[] 合成一棵树。
+   返回 { folders: 根层文件夹节点, files: 挂在根层的散文件 }；节点形如
+   { id, name, position, folders:[], files:[] }。
+
+   folders 可能是 undefined —— 后端在 no_files 与 error 两条分支上不带这个键
+   （虽然 main.py 现在补了 folders: []，这里仍按容缺写：那两类课程今天显示的
+   是一句弱提示，不能因为建树整块白掉）。 */
+function buildFileTree(files, folders){
+  const list = Array.isArray(folders) ? folders : [];
+  const nodes = new Map();
+  list.forEach(fo => nodes.set(fo.id, {
+    id: fo.id, name: fo.name || "", position: fo.position, parent: fo.parent_folder_id,
+    folders: [], files: [],
+  }));
+  /* Canvas 的课程根文件夹（parent_folder_id 为 null）**不作为一个可见层**：课程本身就是根。
+     它的子文件夹与直接挂在它下面的文件都提升到根层 —— 判据与后端 build_folder_path 剥根时
+     用的完全一致，因此屏幕上的层级与磁盘上的路径层级永远对得上。也正因如此，Canvas 文件页
+     上看到的顶层层级（Week 1 / Week 3 …）与这里一致，不会多出一个 course files 行。
+     rootIds 为空（Canvas 返回形态与预期不符）时，这个「提升」自动不发生 —— 退回不提升的
+     旧行为，而不是把路径算错。 */
+  const rootIds = new Set(list.filter(fo => fo && fo.parent_folder_id === null).map(fo => fo.id));
+  const roots = [], loose = [];
+  nodes.forEach(n => {
+    if (rootIds.has(n.id)) return;                    // 课程根本身不成节点
+    const p = nodes.get(n.parent);
+    const parentIsRoot = rootIds.has(n.parent);       // 父是课程根 → 本节点提升到根层
+    if (p && !parentIsRoot && p !== n && !parentChainCycles(nodes, n)) p.folders.push(n);
+    else roots.push(n);
+  });
+  (files || []).forEach(f => {
+    /* 根下的文件（folder_id 指向课程根）与找不到归属的文件，都挂根层 —— 不丢文件。 */
+    const n = rootIds.has(f.folder_id) ? null : nodes.get(f.folder_id);
+    (n ? n.files : loose).push(f);
+  });
+  sortTree(roots, loose);
+  return { folders: roots, files: loose };
+}
+/* n 的父链上是否回环到 n 自身。seen 保证最多走一遍，绝不会无限循环。 */
+function parentChainCycles(nodes, n){
+  const seen = new Set();
+  let cur = nodes.get(n.parent);
+  while (cur){
+    if (cur === n) return true;
+    if (seen.has(cur)) return false;      // 撞进别人的环 → 这条链到此为止
+    seen.add(cur);
+    cur = nodes.get(cur.parent);
+  }
+  return false;
+}
+/* 文件夹按 Canvas 的 position 升序；取不到 position 的排在有值的后面，彼此按名字。
+   文件按 display_name —— 我们没抓文件的 position，按名字排每次渲染顺序一致，
+   比依赖 API 返回顺序这种隐含约定好。 */
+function sortTree(folders, files){
+  const pos = n => (n.position === null || n.position === undefined) ? Infinity : n.position;
+  folders.sort((a, b) => (pos(a) - pos(b)) || a.name.localeCompare(b.name));
+  files.sort((a, b) => String(a.display_name || "").localeCompare(String(b.display_name || "")));
+  folders.forEach(n => sortTree(n.folders, n.files));
+}
+/* 递归渲染一棵文件夹树。fileRow(f, depth) 由调用方给，负责生成文件行的 HTML
+   （侧栏带勾选框、课程中心不带）。fkey(folderId) 生成展开状态的键。
+   传入 { folders, files } 形状的伪根即可 —— buildFileTree 的返回值就是这个形状。 */
+function treeRows(node, depth, expanded, fkey, fileRow){
+  const dirs = (node.folders || []).map(ch => {
+    const k = fkey(ch.id);
+    const open = expanded.has(k);
+    const caret = open ? t("files.collapse") : t("files.expand");
+    return `
+      <div class="folder-row" style="padding-left:${depth * 14}px">
+        <button type="button" class="fcaret" data-fkey="${escAttr(k)}" aria-expanded="${open}" title="${escAttr(caret)}">▸</button>
+        <span class="folder-name">${esc(ch.name)}</span>
+      </div>
+      <div class="fchildren"${open ? "" : " hidden"}>${treeRows(ch, depth + 1, expanded, fkey, fileRow)}</div>`;
+  }).join("");
+  const rows = (node.files || []).map(f => fileRow(f, depth)).join("");
+  return dirs + rows;
+}
 function renderFiles(){
   const filter=$("inpTypeFilter").value.toLowerCase().trim().replace(/^\./,"");
   fillCourseFilter("selFileCourse", fileCourses.map(c => c.name));
   const courseSel = $("selFileCourse").value;
   const shown = fileCourses
     .filter(c => !courseSel || c.name === courseSel)
-    .map(c => ({ ...c, _orig: fileCourses.indexOf(c), _empty:(c.files||[]).length===0, files:(c.files||[]).filter(f=>{
-      if(!filter) return true;
-      return (f.content_type||"").toLowerCase().includes(filter)
-          || (f.display_name||"").toLowerCase().endsWith("."+filter);
-    })}));
+    .map(c => {
+      // 课程根不渲染成行，所以它不算「有文件夹」（否则会出现展开后为空的 caret）
+      const nf=(c.folders||[]).filter(fo => fo && fo.parent_folder_id !== null);
+      return { ...c, _orig: fileCourses.indexOf(c),
+               _empty:(c.files||[]).length===0 && nf.length===0,
+               files:(c.files||[]).filter(f=>{
+        if(!filter) return true;
+        return (f.content_type||"").toLowerCase().includes(filter)
+            || (f.display_name||"").toLowerCase().endsWith("."+filter);
+      })}; });
   if(!shown.length){
     $("filesArea").innerHTML = `<div class='muted' style='padding:12px 0'>${t("files.empty")}</div>`;
     updateSelectAllBtn();
@@ -1261,11 +1345,17 @@ function renderFiles(){
   }
   $("filesArea").innerHTML = shown.map((c)=>{
     const cfs=c.files||[];
-    const rows = cfs.map(f=>`
-        <div class="item"><input type="checkbox" class="fl" data-ci="${c._orig}" data-fi="${f.file_id}" ${f.saved?"":"checked"}>
+    const folders=c.folders||[];
+    /* 文件行保留原有的 .fl 勾选框与 file-open 直链（updateSelectAllBtn 与
+       refreshCourseChecks 是按 .fl 全局/按卡片统计的，文件夹行绝不能带 .fl，
+       否则文件夹会被算成一个文件）。 */
+    const fileRow=(f, depth)=>`
+        <div class="item" style="padding-left:${depth*14}px"><input type="checkbox" class="fl" data-ci="${c._orig}" data-fi="${f.file_id}" ${f.saved?"":"checked"}>
           <div><div class="item-title"><a href="#" class="file-open" data-ci="${c._orig}" data-fid="${escAttr(f.file_id)}" data-name="${escAttr(f.display_name)}" title="${escAttr(t("file.open"))}">${esc(f.display_name)}</a> <span class="muted">（${esc(f.content_type)}）</span>${f.saved?` <span class="file-saved">${esc(t("files.saved"))}</span>`:""}</div>
-          <div class="file-path">${esc(f.path||"/")}</div></div></div>`).join("");
-    const has = cfs.length>0;
+          <div class="file-path">${esc(f.path||"/")}</div></div></div>`;
+    const tree=buildFileTree(cfs, folders);
+    const rows=treeRows(tree, 0, expandedFolders, (fid)=>`${c.course_id}:${fid}`, fileRow);
+    const has = cfs.length>0 || folders.some(fo => fo && fo.parent_folder_id !== null);
     const open = has && expandedFiles.has(c.course_id);
     return `
     <div class="course-card${open?" open":""}">
@@ -1309,6 +1399,17 @@ $("filesArea").addEventListener("click", (e)=>{
     openFileSmart(c.course_id, Number(fo.dataset.fid), fo.dataset.name, c.name, "", null);
     return;
   }
+  const fc=e.target.closest(".fcaret");
+  if(fc){
+    const k=fc.dataset.fkey;
+    const kids=fc.closest(".folder-row").nextElementSibling;   // 紧邻的 .fchildren
+    const wasOpen = kids && !kids.hidden;
+    if(kids) kids.hidden = wasOpen;
+    fc.setAttribute("aria-expanded", String(!wasOpen));
+    fc.title = wasOpen ? t("files.expand") : t("files.collapse");
+    if(wasOpen) expandedFolders.delete(k); else expandedFolders.add(k);
+    return;
+  }
   const ct=e.target.closest(".caret");
   if(ct){
     const card=ct.closest(".course-card");
@@ -1340,7 +1441,8 @@ $("btnDownloadFiles").onclick = async () => {
   const items=[...document.querySelectorAll(".fl:checked")].map(i=>{
     const c=fileCourses[Number(i.dataset.ci)];
     const f=c.files.find(x=>x.file_id===Number(i.dataset.fi));
-    return { course_id:c.course_id, file_id:f.file_id, dest_path:f.dest_path }; });
+    return { course_id:c.course_id, file_id:f.file_id,
+             dest_path:f.dest_path, legacy_path:f.legacy_path||"" }; });
   if(!items.length){ setStatus(t("status.no_file"),"err"); return; }
   const bar=$("downloadProgress"), fill=$("downloadProgressFill"), txt=$("downloadProgressText");
   bar.hidden=false; fill.style.width="0%";
