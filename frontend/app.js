@@ -2455,6 +2455,69 @@ $("hubPanel").addEventListener("click", (e) => {
   e.preventDefault();
   openFileSmart(Number(fo.dataset.cid), Number(fo.dataset.fid), fo.dataset.name, hubCourseName(), "", null);
 });
+
+/* 课程中心「还没下载」清单的勾选收集。勾选框是 .hfl 而不是 .fl —— 侧栏的
+   updateSelectAllBtn/refreshCourseChecks 按 document.querySelectorAll(".fl") 全局
+   统计，而 #filesArea 与 #hubPanel 同时在 DOM 里，用 .fl 会把这里的勾选算进侧栏。 */
+function hubSelectedFiles(cid){
+  const c = (fileCourses || []).find(x => x.course_id === cid);
+  if (!c) return [];
+  return [...document.querySelectorAll("#hubPanel .hfl:checked")].map(i => {
+    const f = (c.files || []).find(x => x.file_id === Number(i.dataset.fid));
+    return f ? { course_id: cid, file_id: f.file_id,
+                 dest_path: f.dest_path, legacy_path: f.legacy_path || "" } : null;
+  }).filter(Boolean);
+}
+/* 「下载所选」的可用态：一个都没勾就禁用。按钮每次重渲都是新的，所以按 class 取，
+   不用 id —— 动态渲染的元素在 index.html 里没有对应 id，用 $() 取会被 check_dom_ids 拦。 */
+function hubSyncDownloadBtn(){
+  const btn = document.querySelector("#hubPanel .hub-dl-go");
+  if (btn) btn.disabled = hubSelectedFiles(hubCid).length === 0;
+}
+$("hubPanel").addEventListener("change", (e) => {
+  if (e.target.classList && e.target.classList.contains("hfl")) hubSyncDownloadBtn();
+});
+/* 课程中心的下载走与侧栏同一个端点。逐条发（端点一次只收一批 items，逐条发好报进度），
+   完成后重渲本标签 —— saved 会从后端刷新回来，清单条目随之消失、计数随之减少。 */
+$("hubPanel").addEventListener("click", async (e) => {
+  // 课程中心的文件夹 caret。侧栏那份委托绑在 #filesArea 上，这里复用了同一个
+  // .fcaret 类但复用不了那个监听器，必须自己来一份。键与 renderHubFiles 传给
+  // treeRows 的 fkey 一致（"<courseId>:<folderId>"），因此展开态与侧栏共享。
+  const fc = e.target.closest(".fcaret");
+  if (fc){
+    const k = fc.dataset.fkey;
+    const kids = fc.closest(".folder-row").nextElementSibling;   // 紧邻的 .fchildren
+    if (kids && kids.classList.contains("fchildren")){
+      const wasOpen = !kids.hidden;
+      kids.hidden = wasOpen;
+      fc.setAttribute("aria-expanded", String(!wasOpen));
+      fc.title = wasOpen ? t("files.expand") : t("files.collapse");
+      if (wasOpen) expandedFolders.delete(k); else expandedFolders.add(k);
+    }
+    return;
+  }
+  const btn = e.target.closest(".hub-dl-go");
+  if (!btn) return;
+  const items = hubSelectedFiles(hubCid);
+  if (!items.length) return;
+  const s = settings();
+  btn.disabled = true;
+  const failed = [];
+  try {
+    for (const it of items) {
+      const r = await api("download_files",
+        { ...s, download_dir: downloadDir(), items: [it] });
+      if (r.ok !== true) failed.push({ file_id: it.file_id, error: r.error || "" });
+      else failed.push(...(r.failed || []));
+    }
+    const doneMsg = t("status.download_done",
+      { a: items.length - failed.length, b: failed.length, s: 0 });
+    setStatus(doneMsg, failed.length === 0 ? "ok" : "err");
+    await hubRefreshFiles(hubCid);
+  } finally {
+    hubSyncDownloadBtn();
+  }
+});
 function switchHubTab(name){
   if (!["files", "announce", "todo", "discuss"].includes(name)) return;
   hubTab = name;
@@ -2513,7 +2576,12 @@ function renderHubFiles(cid){
   }
   if (c.error){ box.innerHTML = `<div class="muted">${esc(c.error)}</div>`; return; }
   const files = c.files || [];
-  if (!files.length){
+  const folders = c.folders || [];
+  /* 课程根（parent_folder_id 为 null）由 buildFileTree 提升成根层、自身不成行，
+     所以它不算「有文件夹」—— 否则只剩一个课程根、零文件的课会绕过下面这条空态分支，
+     treeHtml 与 panel 都是空串，整块标签被清空（比现在只剩一句提示还糟）。
+     判据与 renderFiles 的 has/_empty 完全一致。 */
+  if (!files.length && !folders.some(fo => fo && fo.parent_folder_id !== null)){
     // 后端在 Canvas 对空文件区返回 403 时会带 no_files:true（backend/main.py 的 list_files）——
     // 那种「确实为空 / 未对学生开放」用侧栏文件页的同一句措辞，比笼统的 hub.tab_empty.files 准。
     // 两条分支各写一遍取词调用、而不是把它塞进三元表达式：check_i18n_keys.mjs 的悬空引用扫描
@@ -2524,13 +2592,27 @@ function renderHubFiles(cid){
       : `<div class="muted">${t("hub.tab_empty.files")}</div>`;
     return;
   }
-  box.innerHTML = files.map(f => `
-    <div class="item">
+  // 上段：文件夹树，文件行不带勾选框（点文件名仍是 openFileSmart 直开）
+  const row = (f, depth) => `
+    <div class="item" style="padding-left:${depth*14}px">
       <div>
         <div class="item-title"><a href="#" class="file-open" data-cid="${cid}" data-fid="${escAttr(f.file_id)}" data-name="${escAttr(f.display_name)}" title="${escAttr(t("file.open"))}">${esc(f.display_name)}</a> <span class="muted">（${esc(f.content_type || "")}）</span>${f.saved ? ` <span class="file-saved">${esc(t("files.saved"))}</span>` : ""}</div>
         <div class="file-path">${esc(f.path || "/")}</div>
       </div>
-    </div>`).join("");
+    </div>`;
+  const tree = buildFileTree(files, folders);
+  const treeHtml = treeRows(tree, 0, expandedFolders, (fid)=>`${cid}:${fid}`, row);
+  // 下段：还没下载的，可勾选下载
+  const missing = files.filter(f => !f.saved);
+  const panel = missing.length ? `
+    <div class="hub-dl-sep"></div>
+    <div class="sub-label">${t("files.undownloaded")} (${missing.length})</div>
+    <div class="hub-dl-list">${missing.map(f => `
+      <label class="hub-dl-row"><input type="checkbox" class="hfl" data-fid="${escAttr(f.file_id)}">
+        <span class="hub-dl-name">${esc(f.display_name)}</span>
+        <span class="hub-dl-path">${esc(f.path || t("files.root"))}</span></label>`).join("")}</div>
+    <div class="hub-dl-go-wrap"><button type="button" class="btn btn-primary hub-dl-go" disabled>${esc(t("btn.download"))}</button></div>` : "";
+  box.innerHTML = treeHtml + panel;
 }
 
 /* 后台按本课程刷新一次文件列表。失败静默 —— 保留已渲染的缓存，不把标签打回空态。 */

@@ -489,3 +489,13 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 .folder-row .fcaret[aria-expanded="true"] { transform:rotate(90deg); }
 .folder-name { font-size:13px; font-weight:600; }
 .fchildren[hidden] { display:none; }
+
+/* 课程中心「还没下载」清单 */
+.hub-dl-sep { border-top:1px dashed var(--border); margin:16px 0 10px; }
+.hub-dl-list { display:flex; flex-direction:column; }
+.hub-dl-row { display:flex; gap:8px; align-items:center; padding:5px 0;
+  border-top:1px dashed var(--border); cursor:pointer; }
+.hub-dl-row input { accent-color:var(--accent); }
+.hub-dl-name { font-size:13.5px; font-weight:500; }
+.hub-dl-path { color:var(--muted); font-size:12px; margin-left:auto; }
+.hub-dl-go-wrap { margin-top:10px; }
