@@ -640,8 +640,10 @@ $("btnLoadCourses").onclick = async () => {
     renderCourseCheckboxes(courseList);
     setStatus(t("status.courses_loaded", {n: courseList.length}),"ok");
   });
-  // 测试连接 → 顺带同步公告（只拉原文，不调 AI）
-  if(await syncAnnouncements()) switchPage("announce");
+  // 课程配置已搬进设置页：这里不再 switchPage("announce")。
+  // 旧行为会让用户在设置页点一下加载就被弹去公告页，莫名其妙。
+  // 公告同步改由这条自动路径补一次，且没有可选课程时不发请求、不弹错。
+  if (selectedCourses().length) syncAnnouncements();
 };
 function selectedCourses(){ return [...document.querySelectorAll("#courseCheckboxes input:checked")].map(i=>Number(i.dataset.id)); }
 

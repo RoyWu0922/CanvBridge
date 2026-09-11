@@ -188,23 +188,9 @@
     </div>
 
     <div id="page-courses" class="page" hidden>
-      <div class="page-head">
-        <h2 data-i18n="nav.courses"></h2>
-        <span class="sp"></span>
-        <button id="btnLoadCourses" class="btn btn-primary" data-i18n="btn.load_courses"></button>
-      </div>
-
-      <div class="range-row">
-        <label class="field"><span data-i18n="courses.range_label"></span></label>
-        <input id="inpStart" type="date">
-        <span class="range-dash">–</span>
-        <input id="inpEnd" type="date">
-        <span class="sp"></span>
-        <span class="muted" data-i18n="courses.hint_selected"></span>
-      </div>
-
-      <!-- 原有课程勾选容器：id 不变，renderCourseCheckboxes() 直接往里写 -->
-      <div id="courseCheckboxes" class="course-list"></div>
+      <!-- 课程中心（列表 ↔ 单课程四标签）。本轮先留骨架，内容由 Task 4 填。
+           原先放在这里的课程配置（加载按钮/日期范围/勾选列表）已搬进设置页。 -->
+      <div class="page-head"><h2 data-i18n="nav.courses"></h2></div>
     </div>
 
     <div id="page-settings" class="page" hidden>
@@ -279,7 +265,22 @@
         </section>
 
         <section class="set-card set-wide">
-          <span class="eyebrow" data-i18n="settings.group.ignore"></span>
+          <span class="eyebrow" data-i18n="settings.group.course"></span>
+          <div class="row" style="margin-bottom:12px">
+            <button id="btnLoadCourses" class="btn btn-primary" data-i18n="btn.load_courses"></button>
+            <span class="sp"></span>
+            <span class="muted" data-i18n="courses.hint_selected"></span>
+          </div>
+          <div class="range-row">
+            <label class="field"><span data-i18n="courses.range_label"></span></label>
+            <input id="inpStart" type="date">
+            <span class="range-dash">–</span>
+            <input id="inpEnd" type="date">
+          </div>
+          <!-- 原有课程勾选容器：id 不变，renderCourseCheckboxes() 直接往里写 -->
+          <div id="courseCheckboxes" class="course-list"></div>
+          <hr class="set-sep">
+          <div class="sub-label" data-i18n="settings.ignore_heading"></div>
           <div id="ignoreCourses" class="chips" style="margin-bottom:6px"></div>
           <div class="row" style="gap:10px;flex-wrap:wrap">
             <button id="btnClearIgnore" class="btn btn-ghost" data-i18n="settings.clear_ignore"></button>
