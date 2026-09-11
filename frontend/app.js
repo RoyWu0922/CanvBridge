@@ -1262,10 +1262,13 @@ function buildFileTree(files, folders){
   }));
   /* Canvas 的课程根文件夹（parent_folder_id 为 null）**不作为一个可见层**：课程本身就是根。
      它的子文件夹与直接挂在它下面的文件都提升到根层 —— 判据与后端 build_folder_path 剥根时
-     用的完全一致，因此屏幕上的层级与磁盘上的路径层级永远对得上。也正因如此，Canvas 文件页
-     上看到的顶层层级（Week 1 / Week 3 …）与这里一致，不会多出一个 course files 行。
-     rootIds 为空（Canvas 返回形态与预期不符）时，这个「提升」自动不发生 —— 退回不提升的
-     旧行为，而不是把路径算错。 */
+     用的完全一致，因此对 Canvas 实际会返回的数据，屏幕上的层级与磁盘上的路径层级都对得上。
+     例外只有一种：父链成环。那时本函数把环上的成员整个提到根层，而后端只把链就地截断、
+     被截断的链头 parent 仍非 null，磁盘路径于是多留一段 —— 屏幕上显示 A > f，磁盘上却是
+     …/B/A/f。Canvas 不会返回这种数据，所以这里只是把话说准，不是要改代码。
+     也正因如此，Canvas 文件页上看到的顶层层级（Week 1 / Week 3 …）与这里一致，不会多出
+     一个 course files 行。rootIds 为空（Canvas 返回形态与预期不符）时，这个「提升」自动
+     不发生 —— 退回不提升的旧行为，而不是把路径算错。 */
   const rootIds = new Set(list.filter(fo => fo && fo.parent_folder_id === null).map(fo => fo.id));
   const roots = [], loose = [];
   nodes.forEach(n => {
@@ -2502,16 +2505,18 @@ $("hubPanel").addEventListener("click", async (e) => {
   if (!items.length) return;
   const s = settings();
   btn.disabled = true;
-  const failed = [];
+  const downloaded = [], skipped = [], failed = [];
   try {
     for (const it of items) {
       const r = await api("download_files",
         { ...s, download_dir: downloadDir(), items: [it] });
-      if (r.ok !== true) failed.push({ file_id: it.file_id, error: r.error || "" });
-      else failed.push(...(r.failed || []));
+      if (r.ok !== true) { failed.push({ file_id: it.file_id, error: r.error || "" }); continue; }
+      downloaded.push(...(r.downloaded || []));
+      skipped.push(...(r.skipped || []));
+      failed.push(...(r.failed || []));
     }
     const doneMsg = t("status.download_done",
-      { a: items.length - failed.length, b: failed.length, s: 0 });
+      { a: downloaded.length, b: failed.length, s: skipped.length });
     setStatus(doneMsg, failed.length === 0 ? "ok" : "err");
     await hubRefreshFiles(hubCid);
   } finally {

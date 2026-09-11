@@ -955,3 +955,31 @@ def test_list_files_error_branches_still_return_folders_key(monkeypatch, exc):
     assert got["files"] == []
     assert got["error"] == str(exc)
     assert "no_files" not in got
+
+
+def test_download_files_skips_when_legacy_path_exists(tmp_path, monkeypatch):
+    """客户端回传的 legacy_path 命中磁盘 → 跳过、不重下、也不搬到新路径。
+
+    这是前端唯一依赖的那条接缝：/api/download_files 必须把 items 里的 legacy_path 透传到
+    download_items。把那一行透传删掉，本用例会红 —— 而除此之外全套测试仍然是绿的，
+    所以没有它就等于这条不变量完全没有回归保护。
+    """
+    legacy = tmp_path / "CS 101" / "course files" / "Week 3" / "a.pdf"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("old")
+    dest = tmp_path / "CS 101" / "Week 3" / "a.pdf"
+    called = []
+    monkeypatch.setattr(canvas_client, "get_file",
+                        lambda u, t, cid, fid: {"url": "http://x/f/9"})
+    monkeypatch.setattr(canvas_client, "download_file",
+                        lambda u, t, url, d: called.append(str(d)))
+    r = client.post("/api/download_files", json={
+        "canvas_url": "https://x", "canvas_token": "t", "download_dir": str(tmp_path),
+        "items": [{"course_id": 5, "file_id": 9,
+                   "dest_path": str(dest), "legacy_path": str(legacy)}]})
+    body = r.json()
+    assert body["ok"] is True
+    assert body["downloaded"] == []
+    assert body["skipped"] == [str(legacy)]
+    assert called == []          # 旧布局命中 → 一个字节都不下载
+    assert not dest.exists()     # 也不搬到新路径

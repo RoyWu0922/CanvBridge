@@ -145,6 +145,10 @@ def test_plan_downloads_path_and_rename(tmp_path):
     # 旧路径：保留课程根那一层，供「是否已下过」判定
     assert planned[0]["legacy_path"] == \
         str(tmp_path / "CS 101" / "course files" / "Week 3" / "a.pdf")
+    assert planned[1]["legacy_path"] == \
+        str(tmp_path / "CS 101" / "course files" / "Week 3" / "a_2.pdf")
+    assert planned[3]["legacy_path"] == \
+        str(tmp_path / "CS 101" / "course files" / "Week 3" / "a_3.pdf")
     # 根下文件（folder_id 为 None）的**新旧路径相同** —— 它在旧布局里也是直接落在
     # 课程目录下；只有子文件夹里的文件才会多出 "course files" 那一层。
     # 别把它的 legacy_path 也期望成带前缀的。

@@ -104,7 +104,8 @@ def plan_downloads(download_dir: str, course_name: str, files: list[dict],
             dest = base / f"{stem}_{counter}{suffix}"
             counter += 1
         used.add(str(dest))
-        legacy = root / legacy_folder / display if legacy_folder else root / display
+        legacy = (root / legacy_folder / dest.name if legacy_folder
+                  else root / dest.name)
         planned.append({
             "file_id": f["id"], "display_name": display, "dest_path": str(dest),
             "legacy_path": str(legacy),
