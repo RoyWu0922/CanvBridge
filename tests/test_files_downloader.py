@@ -66,6 +66,32 @@ def test_build_folder_path_degrades_when_no_root_marker():
     assert files_downloader.build_folder_path(2, folders) == "Week 3"
 
 
+def test_build_folder_path_strips_root_not_named_course_files():
+    """判据必须是**结构**（parent_folder_id is None），不是比对名字字符串。
+
+    根文件夹换个名字（Canvas 改文案 / 换语言）仍然要被剥掉。按名字比 "course files"
+    的实现会返回 "Files/Week 3" 而在这里失败。
+    """
+    folders = [
+        {"id": 1, "name": "Files", "parent_folder_id": None},
+        {"id": 2, "name": "Week 3", "parent_folder_id": 1},
+    ]
+    assert files_downloader.build_folder_path(2, folders) == "Week 3"
+
+
+def test_build_folder_path_keeps_nested_folder_named_course_files():
+    """反向证据：**非根**的那层就算正好叫 "course files" 也不能被剥掉。
+
+    按名字比字符串的实现会把它当根、错误地返回 ""。这条比上一条更锋利 ——
+    它证明剥离依据是 parent_folder_id is None，而不是名字。
+    """
+    folders = [
+        {"id": 1, "name": "Root", "parent_folder_id": None},
+        {"id": 2, "name": "course files", "parent_folder_id": 1},
+    ]
+    assert files_downloader.build_folder_path(2, folders) == "course files"
+
+
 def test_build_folder_path_survives_parent_cycle():
     """父链成环不得死循环、不得抛；环被截断，名字不会无限累积。"""
     folders = [

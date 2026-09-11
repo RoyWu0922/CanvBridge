@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from backend import apple_script, banweb, canvas_client, credentials, files_downloader, llm_client, main
@@ -916,3 +917,26 @@ def test_list_files_403_still_returns_folders_key(monkeypatch):
     got = r.json()["courses"][0]
     assert got["no_files"] is True
     assert got["folders"] == []
+
+
+@pytest.mark.parametrize("exc", [
+    canvas_client.CanvasError("HTTP 500"),
+    RuntimeError("boom"),
+])
+def test_list_files_error_branches_still_return_folders_key(monkeypatch, exc):
+    """非 403 的 CanvasError 与兜底 Exception 分支：形状同样必须统一。
+
+    前端凭「folders 键恒在」少一种分支判断 —— 上面 no_files 那条只盖了三条里的
+    403；这里补上另外两条（main.py 的 except CanvasError 的 else，以及 except Exception）。
+    """
+    def boom(u, t, cid):
+        raise exc
+    monkeypatch.setattr(canvas_client, "list_courses", lambda u, t: [{"id": 5, "name": "CS 101"}])
+    monkeypatch.setattr(canvas_client, "get_course_files", boom)
+    r = client.post("/api/list_files", json={"canvas_url": "https://x", "canvas_token": "t",
+                                             "course_ids": [5], "download_dir": "/tmp/dl"})
+    got = r.json()["courses"][0]
+    assert got["folders"] == []
+    assert got["files"] == []
+    assert got["error"] == str(exc)
+    assert "no_files" not in got
