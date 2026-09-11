@@ -638,7 +638,7 @@ $("btnLoadCourses").onclick = async () => {
     if(!r.ok){ setStatus(t("status.courses_fail")+r.error,"err"); return; }
     courseList=r.courses;
     renderCourseCheckboxes(courseList);
-    if (typeof renderCourseHubList === "function") renderCourseHubList();   // 课程中心列表跟着更新
+    renderCourseHubList();   // 课程中心列表跟着更新
     setStatus(t("status.courses_loaded", {n: courseList.length}),"ok");
   });
   // 课程配置已搬进设置页：这里不再 switchPage("announce")。
@@ -733,13 +733,13 @@ $("ignoreCourses").addEventListener("change", e => {
   const ids = [...document.querySelectorAll("#ignoreCourses input:checked")].map(i => Number(i.dataset.id));
   saveCourseIgnored(ids);
   if (courseList.length) renderCourseCheckboxes(courseList);  // 顶部课程区立即增删
-  if (typeof renderCourseHubList === "function") renderCourseHubList();
+  renderCourseHubList();
 });
 $("btnClearIgnore").onclick = () => {
   localStorage.removeItem(COURSE_IGNORE_KEY);
   if (courseList.length) renderCourseCheckboxes(courseList);
-  if (typeof renderCourseHubList === "function") renderCourseHubList();
-  fillIgnoreCourses();
+  fillIgnoreCourses();          // 先按新的忽略集重画忽略区，再让课程中心照同一份数据重排
+  renderCourseHubList();
 };
 
 /* 同步公告：只拉原始公告，不做 AI 总结 */
@@ -1085,6 +1085,10 @@ async function downloadModuleFile(rowEl){
 }
 /* ===== 文件直链：浏览器形态内联打开，桌面（内嵌窗口）形态退化为下载 =====
    三个调用点共用：侧栏文件页、课程 Modules 弹层、课程中心的文件子标签。
+   为什么不直接拿 Canvas 文件对象自带的 url 在新标签打开：那个 url 带 download_frd，
+   浏览器打开会被 Canvas 判定为附件下载、无法内联渲染；所以由后端
+   /api/module_file_stream 用 token 流式取回字节、按真实 content-type 回传，
+   前端 fetch→blob 再交给浏览器内置查看器。
    注意 api()（util.js:26-33）无条件 await r.json()，二进制端点必须走裸 fetch。 */
 async function openFileInline(courseId, fileId, name){
   const s = settings();
@@ -1101,11 +1105,18 @@ async function openFileInline(courseId, fileId, name){
     return { ok: false, error: t("status.backend_fail") };
   }
   const ctype = (resp.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
-  // 后端出错时同样是 200 + JSON（main.py 约定），所以 Content-Type 是判据，不能只看 resp.ok
+  /* 后端出错时同样是 200 + JSON（main.py 约定），所以 Content-Type 是判据，不能只看 resp.ok。
+     但后端是把 Canvas 文件对象的真实 content-type 原样回传的 —— 真·JSON 文件同样报
+     application/json，只凭它判错会让「点 .json 文件名」静默退化成下载（M28）。
+     所以再确认一层「响应体确实是后端约定的错误体」：ok === false 或带字符串 error。 */
   if (!resp.ok || ctype === "application/json"){
-    let msg = "";
-    try { const j = await resp.json(); msg = j.error || ""; } catch (e) { /* 忽略解析失败 */ }
-    return { ok: false, error: msg };
+    let j = null;
+    // 用 clone() 判体：json() 会吃掉 body，直接在 resp 上读会让后面的 resp.blob() 报
+    // “body stream already read”，真·JSON 文件仍旧打不开。
+    try { j = await resp.clone().json(); } catch (e) { /* 不是 JSON（或解析失败）→ 按内容照常处理 */ }
+    if (j && (j.ok === false || typeof j.error === "string")) return { ok: false, error: j.error || "" };
+    if (!resp.ok) return { ok: false, error: "" };   // HTTP 真失败且不是错误体（如网关的 HTML 页）→ 仍算失败
+    // 走到这里 = 200 + application/json 且不是错误体 → 就是个真·JSON 文件，落下去照常内联打开
   }
   let blob;
   try { blob = await resp.blob(); }
@@ -1154,12 +1165,17 @@ async function openFileSmart(courseId, fileId, name, courseName, moduleName, btn
       }
       const r = await openFileInline(courseId, fileId, name);
       if (r.ok) return;
-      setStatus(t("file.open_fail") + (r.error || ""), "err");
+      const failMsg = t("file.open_fail") + (r.error || "");
+      setStatus(failMsg, "err");
       const d = await downloadFileTo(courseId, fileId, name, courseName, moduleName);
-      if (d.ok) setStatus(t("file.downloaded", {p: d.dest}), "ok");
+      /* 降级下载成功也**不覆盖**上面那条错误（M9）：用户点的是「在浏览器里打开」，
+         它却变成了下载 —— 这件事被一句「已下载」抹掉，用户就永远不知道内联打开失效了。
+         两条并成一句显示（仍是 err 色，因为用户要的动作确实失败了）。 */
+      if (d.ok) setStatus(failMsg + " " + t("file.downloaded", {p: d.dest}), "err");
     });
   } catch (e) {
-    setStatus(t("file.open_fail") + (e && e.message ? e.message : ""), "err");
+    // 不把内部异常的 e.message 原样透给用户（M11）——那是实现措辞，不是用户能用的信息。
+    setStatus(t("file.open_fail_unexpected"), "err");
   }
 }
 $("detailBody").addEventListener("click", (e) => {
@@ -1354,6 +1370,10 @@ $("btnDownloadFiles").onclick = async () => {
 
 /* ===== 待办 + Canvas 日历事件 ===== */
 let todoItems = [];       // 归一化待办（/api/todo）
+/* todoItems 初值就是 []，加载后真为 0 条也还是 [] —— 光看它区分不了「未加载」与
+   「已加载但全局 0 条」。课程中心的待办标签要据此选空态文案，所以另立一个显式标志；
+   只在 loadTodo() 的成功路径置真（bgFetchTodoBadge 只是给页签红点占位、不渲染待办列表）。 */
+let todoLoaded = false;
 let todoEvents = [];      // Canvas 一次性事件（/api/calendar_events）
 let todoTabInit = false;
 /* 启动同步公告后后台顺带查一次待办，让「待办」页签未读红点能显示（不渲染、不遮罩）。
@@ -1459,6 +1479,7 @@ async function loadTodo(){
     const r = await api("todo", { canvas_url:s.canvas_url, canvas_token:s.canvas_token });
     if(r.ok !== true){ setStatus(t("todo.fail") + (r.error || ""), "err"); return; }
     todoItems = r.items || [];
+    todoLoaded = true;      // 成功拿到过一整批 → 之后 0 条就是「真的没有」，不是「还没加载」（M20）
     const ids = selectedCourses();
     if(!ids.length){
       todoEvents = [];
@@ -2161,6 +2182,7 @@ $("btnLang").onclick = () => {
   refreshBadges();                       // applyLang 会清掉页签内子节点，重画红点徽标
   renderCourseHubList();                 // 课程中心列表：内容是动态拼的，data-i18n 刷不到
   renderCourseHub();                     // 详情页标题/标签/面板：同上（无目标课程时它自己早退）
+  if (courseList.length) renderCourseCheckboxes(courseList);   // 设置页课程 chip 的「详情/忽略」，同上
 };
 applyLang();
 loadSettings();
@@ -2217,17 +2239,32 @@ function initCourseHubTab(){
 }
 async function loadCourseHubList(){
   const r = await api("courses", settings());
-  if (r.ok) courseList = r.courses || [];
-  else setStatus(t("status.courses_fail") + (r.error || ""), "err");   // 失败必须说失败，不能装成「没有课程」
-  renderCourseHubList();
+  if (r.ok){
+    courseList = r.courses || [];
+    /* 勾选区必须一并填：selectedCourses() 是从 #courseCheckboxes 的 DOM 里读的，
+       只填 courseList 会造成「课程中心列得出课、设置页一门都勾不上」——
+       而 syncAnnouncements / scheduleAutoSync / btnListFiles 全都以它为输入。 */
+    renderCourseCheckboxes(courseList);
+  } else {
+    setStatus(t("status.courses_fail") + (r.error || ""), "err");   // 失败必须说失败，不能装成「没有课程」
+  }
+  renderCourseHubList(!r.ok);
 }
 
-function renderCourseHubList(){
+/* 失败与「一门课都没有」是两件事：前者要说加载失败，后者才是 hub.empty。
+   loadFailed 由 loadCourseHubList() 显式传入，其余调用点不传（默认假），
+   所以这里没有粘滞状态，返回列表页 / 从缓存重绘都不会留下永久红字。
+   判定顺序：必须排在「未配置」之后 —— 未配置时该说 hub.need_config，不是失败。 */
+function renderCourseHubList(loadFailed){
   const box = $("hubListArea");
   if (!box) return;
   const s = settings();
   if (!s.canvas_url || !s.canvas_token){
     box.innerHTML = `<div class="empty">${t("hub.need_config")}</div>`;
+    return;
+  }
+  if (loadFailed){
+    box.innerHTML = `<div class="empty">${t("hub.load_fail")}</div>`;
     return;
   }
   const ignored = savedCourseIgnored() || new Set();
@@ -2277,12 +2314,31 @@ function renderCourseHub(){
     const on = b.dataset.tab === hubTab;
     b.classList.toggle("active", on);
     b.setAttribute("aria-selected", on ? "true" : "false");
+    b.tabIndex = on ? 0 : -1;                    // 漫游焦点：只有活动标签进 Tab 序列
+    if (on) $("hubPanel").setAttribute("aria-labelledby", b.id);
   });
   renderHubTab();
 }
 $("hubTabs").addEventListener("click", (e) => {
   const b = e.target.closest(".tab-item");
   if (b) switchHubTab(b.dataset.tab);
+});
+/* 漫游焦点（roving tabindex）的键盘一半：左右方向键在两个标签间移动、Home/End 到首尾。
+   焦点跟着走，随后 browser 的 click 语义由我们直接调 switchHubTab 复现。
+   不做焦点陷阱、不引第三方库 —— 与仓库既有的轻量做法一致。 */
+$("hubTabs").addEventListener("keydown", (e) => {
+  const tabs = $$("#hubTabs .tab-item");
+  const cur = tabs.findIndex(b => b.dataset.tab === hubTab);
+  if (cur < 0) return;
+  let next = null;
+  if (e.key === "ArrowRight") next = (cur + 1) % tabs.length;
+  else if (e.key === "ArrowLeft") next = (cur - 1 + tabs.length) % tabs.length;
+  else if (e.key === "Home") next = 0;
+  else if (e.key === "End") next = tabs.length - 1;
+  if (next == null) return;
+  e.preventDefault();
+  switchHubTab(tabs[next].dataset.tab);
+  tabs[next].focus();
 });
 /* 课程中心里的文件名点击：与侧栏文件页共用 openFileSmart，行为完全一致 */
 $("hubPanel").addEventListener("click", (e) => {
@@ -2328,9 +2384,14 @@ function hubRefreshCurrent(){
   if (hubCid == null) return;
   const key = hubCid + ":" + hubTab;
   if (!hubShouldRefresh(key)) return;
-  if (hubTab === "files") hubRefreshFiles(hubCid);
-  else if (hubTab === "discuss") hubRefreshDiscuss(hubCid);
-  else if (hubTab === "announce") hubRefreshAnnounce();
+  /* 后台刷新是 fire-and-forget（两个调用点都不 await），所以异常必须在这里就地兜住。
+     真实可抛点：settings() → saveSettings() 的 localStorage.setItem 在配额满 / 隐私模式下会抛，
+     而 hubRefresh* 一进来就调它 —— 不兜就是一个未处理的 promise rejection
+     （控制台报错、标签停在旧内容、没有任何用户可见反应）。兜一处，三个刷新共用。 */
+  const run = { files: () => hubRefreshFiles(hubCid),
+                discuss: () => hubRefreshDiscuss(hubCid),
+                announce: () => hubRefreshAnnounce() }[hubTab];
+  if (run) run().catch(() => {});
 }
 
 /* 文件子标签。只读 fileCourses 缓存，不触发网络（刷新由 hubRefreshCurrent 统一发起）。 */
@@ -2344,7 +2405,17 @@ function renderHubFiles(cid){
   }
   if (c.error){ box.innerHTML = `<div class="muted">${esc(c.error)}</div>`; return; }
   const files = c.files || [];
-  if (!files.length){ box.innerHTML = `<div class="muted">${t("hub.tab_empty.files")}</div>`; return; }
+  if (!files.length){
+    // 后端在 Canvas 对空文件区返回 403 时会带 no_files:true（backend/main.py 的 list_files）——
+    // 那种「确实为空 / 未对学生开放」用侧栏文件页的同一句措辞，比笼统的 hub.tab_empty.files 准。
+    // 两条分支各写一遍取词调用、而不是把它塞进三元表达式：check_i18n_keys.mjs 的悬空引用扫描
+    // 只认「t 后面紧跟一个引号字面量」这种形状，写成条件表达式后那两个键就查不到定义了。
+    // （同理，本注释里也不能出现 t 加引号的字样 —— 那个扫描读的是原文，连注释一起读。）
+    box.innerHTML = c.no_files
+      ? `<div class="muted">${t("files.no_files")}</div>`
+      : `<div class="muted">${t("hub.tab_empty.files")}</div>`;
+    return;
+  }
   box.innerHTML = files.map(f => `
     <div class="item">
       <div>
@@ -2373,7 +2444,16 @@ function renderHubAnnounce(cid){
   const box = $("hubPanel");
   if (!box) return;
   const g = (summaryResults || []).find(c => c.course_id === cid);
-  if (!g){ box.innerHTML = `<div class="muted">${t("hub.tab_empty.announce_unloaded")}</div>`; return; }
+  if (!g){
+    /* 批量同步只覆盖「已勾选课程」（syncAnnouncements 的 course_ids 取自 selectedCourses()），
+       未勾选的课点多少次「加载课程」也填不上它 —— 所以这里必须区分两种空态，
+       各自给对动作，而不是一律叫人去点「加载课程」（M22）。 */
+    // 两条分支同样分开写取词调用（理由见 renderHubFiles 里那段注释）
+    box.innerHTML = selectedCourses().includes(cid)
+      ? `<div class="muted">${t("hub.tab_empty.announce_unloaded")}</div>`
+      : `<div class="muted">${t("hub.tab_empty.announce_unchecked")}</div>`;
+    return;
+  }
   if (g.error){ box.innerHTML = `<div class="muted">${esc(g.error)}</div>`; return; }
   const anns = g.announcements || [];
   if (!anns.length){ box.innerHTML = `<div class="muted">${t("hub.tab_empty.announce")}</div>`; return; }
@@ -2405,8 +2485,8 @@ async function hubRefreshAnnounce(){
 function renderHubTodo(cid){
   const box = $("hubPanel");
   if (!box) return;
+  if (!todoLoaded){ box.innerHTML = `<div class="muted">${t("hub.tab_empty.todo_unloaded")}</div>`; return; }
   const all = todoItems || [];
-  if (!all.length){ box.innerHTML = `<div class="muted">${t("hub.tab_empty.todo_unloaded")}</div>`; return; }
   const mine = all.filter(i => i.course_id === cid);
   if (!mine.length){ box.innerHTML = `<div class="muted">${t("hub.tab_empty.todo")}</div>`; return; }
   box.innerHTML = mine.map(it => `

@@ -40,11 +40,13 @@ const I18N = {
     "tab.discuss": "讨论",
     "hub.back": "← 返回列表",
     "hub.empty": "还没有课程。请到设置页点「加载课程」。",
+    "hub.load_fail": "课程列表加载失败。请确认 Canvas 地址与令牌，再回设置页重试。",
     "hub.need_config": "尚未配置 Canvas。请到设置页填写地址与令牌。",
     "hub.no_canvas": "这门课在 Canvas 里没有匹配到（可能是本学期未开或未选）。以下只有课表信息。",
     "hub.tab_empty.files_unloaded": "文件尚未加载。",
     "hub.tab_empty.files": "这门课没有文件。",
     "hub.tab_empty.announce_unloaded": "公告尚未同步。请到设置页点「加载课程」。",
+    "hub.tab_empty.announce_unchecked": "公告尚未同步。这门课没有在设置页勾选 —— 勾上它才会参与公告同步。",
     "hub.tab_empty.announce": "这门课没有公告。",
     "hub.tab_empty.todo_unloaded": "待办尚未加载。请到「待办」页点一次刷新。",
     "hub.tab_empty.discuss_unloaded": "讨论尚未加载。",
@@ -84,6 +86,7 @@ const I18N = {
     "file.open": "打开文件",
     "file.opening": "正在打开 {f}…",
     "file.open_fail": "打开文件失败：",
+    "file.open_fail_unexpected": "打开文件失败：出现意外错误，请重试。",
     "file.downloaded": "已下载到 {p}",
     "file.downloaded_saved": "文件已存在，未重复下载：{f}",
     "files.course_sel": "全选本课文件",
@@ -391,11 +394,13 @@ const I18N = {
     "tab.discuss": "Discussion",
     "hub.back": "← Back to list",
     "hub.empty": "No courses yet. Go to Settings and click \"Load courses\".",
+    "hub.load_fail": "Failed to load the course list. Check the Canvas URL and token, then retry in Settings.",
     "hub.need_config": "Canvas is not configured. Fill in the URL and token in Settings.",
     "hub.no_canvas": "This course has no match in Canvas (not offered or not enrolled this term). Only schedule info is shown.",
     "hub.tab_empty.files_unloaded": "Files not loaded yet.",
     "hub.tab_empty.files": "No files in this course.",
     "hub.tab_empty.announce_unloaded": "Announcements not synced yet. Click \"Load courses\" in Settings.",
+    "hub.tab_empty.announce_unchecked": "Announcements not synced. This course isn't checked in Settings — check it to include it in announcement sync.",
     "hub.tab_empty.announce": "No announcements in this course.",
     "hub.tab_empty.todo_unloaded": "To-dos not loaded yet. Refresh once on the To-do page.",
     "hub.tab_empty.discuss_unloaded": "Discussions not loaded yet.",
@@ -406,7 +411,7 @@ const I18N = {
     "btn.write_calendar": "Write selected events",
     "announce.alert": "Alert",
     "btn.write_reminders": "Write selected reminders",
-    "announce.empty": "No sync results yet. Click \"Load courses\" above to start; afterwards the date range and course picks sync automatically.",
+    "announce.empty": "No sync results yet. Click “Load courses” above to start; afterwards the date range and course picks sync automatically.",
     "announce.calendar_events": "Calendar events",
     "announce.reminders": "Reminders",
     "announce.due": "Due",
@@ -435,6 +440,7 @@ const I18N = {
     "file.open": "Open file",
     "file.opening": "Opening {f}…",
     "file.open_fail": "Failed to open file: ",
+    "file.open_fail_unexpected": "Failed to open file: unexpected error, please try again.",
     "file.downloaded": "Saved to {p}",
     "file.downloaded_saved": "Already downloaded, skipped: {f}",
     "files.course_sel": "Select all files",
@@ -717,7 +723,11 @@ function applyLang() {
   $$("[data-i18n-aria]").forEach(el => { el.setAttribute("aria-label", t(el.dataset.i18nAria)); });
   const langBtn = $("btnLang"); if (langBtn) langBtn.textContent = LANG() === "zh" ? "EN" : "中";
   if (typeof fillAlert === "function") {
-    for (const id of ["selAlert", "selSchedAlert", "selDetailAlert"]) {
+    /* 选中项文案由 fillAlert() 内联写 t()，所以每个用到它的 <select> 都得在这里重填。
+       selTodoAlert 原先漏在名单外 —— 它只在 initTodoTab() 首次进入待办页时填，
+       而那个函数有 todoTabInit 守卫、且重填条件又是 `!options.length`，
+       所以切语言后它的选项会一直停在旧语言，直到重启应用（同类问题，见 M26 扫描）。 */
+    for (const id of ["selAlert", "selSchedAlert", "selDetailAlert", "selTodoAlert"]) {
       const el = $(id);
       const prev = el ? el.value : "";
       fillAlert(id);

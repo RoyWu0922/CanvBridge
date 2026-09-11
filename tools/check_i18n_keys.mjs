@@ -93,9 +93,13 @@ console.log(`✓ 被引用的键全部有定义（共 ${referenced.size} 个不�
 if (dead.length > DEAD_BASELINE) {
   console.error(`\n✗ 死键 ${dead.length} 个，超出基线 ${DEAD_BASELINE}：\n`);
   dead.forEach(k => console.error("  " + k));
-  console.error(`\n新增了键却没有引用它。要么用起来，要么删掉；`);
-  console.error(`确实要保留（例如给下一个任务预留）就下调 DEAD_BASELINE 并说明原因。`);
+  console.error(`\n新增了键却没有引用它 —— 死键不允许上升（见文件头注释与裁定 R6）。`);
+  console.error(`要么把新键用起来，要么删掉；只有确属有意保留（例如给下一个任务预留）`);
+  console.error(`才上调 DEAD_BASELINE，并在提交信息里说明原因。`);
   process.exit(1);
 }
 console.log(`✓ 死键 ${dead.length} 个（基线 ${DEAD_BASELINE}，允许持平或下降）`);
+if (dead.length < DEAD_BASELINE) {
+  console.log(`  ↑ 已低于基线：可把 DEAD_BASELINE 下调到 ${dead.length} 以收紧这道防线。`);
+}
 if (dead.length) dead.forEach(k => console.log(`    · ${k}`));

@@ -231,7 +231,6 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 /* 文件名可点：默认去掉下划线，hover 才提示可点，避免整页看起来到处是链接 */
 .file-open { color:inherit; text-decoration:none; border-bottom:1px solid transparent; cursor:pointer; }
 .file-open:hover { color:var(--accent); border-bottom-color:var(--accent); }
-.module-pop-title { cursor:pointer; }
 .announce-link { color:var(--link); text-decoration:none; }
 .announce-link:hover { text-decoration:underline; }
 .announce-msg-wrap { margin-top:2px; }
@@ -330,8 +329,12 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 .module-pop { position:fixed; z-index:60; min-width:170px; max-width:280px;
   background:var(--surface); border:1px solid var(--border); border-radius:10px;
   box-shadow:0 10px 32px rgba(0,0,0,.22); padding:10px 10px 12px; }
-.module-pop-title { font-size:13px; font-weight:600; color:var(--ink); margin-bottom:9px;
+/* 弹层标题 = 等于点「打开文件」的入口（见 $("modulePopTitle").onclick），
+   所以给出与 .file-open 同形的可点提示；原先这里另有一块只写了 cursor:pointer，
+   已并按类名合并（同优先级下后者胜出，取并集） */
+.module-pop-title { cursor:pointer; font-size:13px; font-weight:600; color:var(--ink); margin-bottom:9px;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.module-pop-title:hover { color:var(--accent); }
 .module-pop-actions { display:flex; gap:8px; }
 .module-pop-actions .btn { flex:1; padding:6px 8px; font-size:12.5px; }
 
@@ -416,7 +419,8 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
    轨道只被它占第一条，提示会挤在左侧 150px 里 */
 #homeTodayList > .muted { grid-column:1/-1; }
 .today-card { padding:10px 12px; border-radius:var(--radius-sm);
-  background:var(--surface-2); border:1px solid var(--panel-border); }
+  background:var(--surface-2); border:1px solid var(--panel-border);
+  transition:border-color .15s; }        /* 与同类的可点卡 .stat-card 一致，悬停不硬切 */
 .today-card b { display:block; font-size:12.5px; font-variant-numeric:tabular-nums;
   color:var(--accent); }
 .today-card span { display:block; font-size:12.5px; font-weight:600; }

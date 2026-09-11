@@ -202,13 +202,17 @@
           <h2 id="hubTitle"></h2>
           <span class="sp"></span>
         </div>
+        <!-- 四个子标签共用同一个 #hubPanel（同一时刻只有它是活的），所以都 aria-controls 到它，
+             panel 的 aria-labelledby 由 renderCourseHub() 跟着当前标签改。
+             tabindex 是漫游焦点初值：只有 files 进 Tab 序列，方向键在 renderCourseHub 之外由
+             #hubTabs 的 keydown 处理器搬运。 -->
         <div id="hubTabs" class="tab-bar" role="tablist">
-          <button class="tab-item" role="tab" data-tab="files" data-i18n="tab.files"></button>
-          <button class="tab-item" role="tab" data-tab="announce" data-i18n="tab.announce"></button>
-          <button class="tab-item" role="tab" data-tab="todo" data-i18n="tab.todo"></button>
-          <button class="tab-item" role="tab" data-tab="discuss" data-i18n="tab.discuss"></button>
+          <button class="tab-item" role="tab" id="hubTab-files" aria-controls="hubPanel" aria-selected="true" tabindex="0" data-tab="files" data-i18n="tab.files"></button>
+          <button class="tab-item" role="tab" id="hubTab-announce" aria-controls="hubPanel" aria-selected="false" tabindex="-1" data-tab="announce" data-i18n="tab.announce"></button>
+          <button class="tab-item" role="tab" id="hubTab-todo" aria-controls="hubPanel" aria-selected="false" tabindex="-1" data-tab="todo" data-i18n="tab.todo"></button>
+          <button class="tab-item" role="tab" id="hubTab-discuss" aria-controls="hubPanel" aria-selected="false" tabindex="-1" data-tab="discuss" data-i18n="tab.discuss"></button>
         </div>
-        <div id="hubPanel"></div>
+        <div id="hubPanel" role="tabpanel" aria-labelledby="hubTab-files"></div>
       </div>
     </div>
 
