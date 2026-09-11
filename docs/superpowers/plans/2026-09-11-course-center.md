@@ -360,16 +360,16 @@ Run:
 ```bash
 node tools/check_i18n_keys.mjs
 ```
-Expected: 退出码 0，且报出 `死键 23 个（基线 25…）`。键数从 338 变成 339（加 1 删 1）。
+Expected: 退出码 0，且报出 `死键 24 个（基线 25…）`。键数从 338 变成 339（加 1 删 1）。
 
-**若此处数字不是 23，停下来核对**：本计划预期 `settings.ignore_heading` 由死转活（−1）、`settings.group.ignore` 被删（−1），25 − 2 = 23。
+**若此处数字不是 24，停下来核对**：死键数**只**受"某个键由死转活"影响 —— 这里只有 `settings.ignore_heading` 由死转活（−1）。而 `settings.group.ignore` 被删时是**活键**，删一个活键不改变死键计数（键总数与活键数同时 −1）。25 − 1 = 24。
 
 - [ ] **Step 6: 更新死键基线**
 
-把 `tools/check_i18n_keys.mjs` 里的 `const DEAD_BASELINE = 25;` 改为 `const DEAD_BASELINE = 23;`。
+把 `tools/check_i18n_keys.mjs` 里的 `const DEAD_BASELINE = 25;` 改为 `const DEAD_BASELINE = 24;`。
 
 Run: `node tools/check_i18n_keys.mjs`
-Expected: 退出码 0，`死键 23 个（基线 23…）`。
+Expected: 退出码 0，`死键 24 个（基线 24…）`。
 
 - [ ] **Step 7: 跑全部静态门**
 
@@ -572,13 +572,13 @@ Run:
 ```bash
 node tools/check_i18n_keys.mjs
 ```
-Expected: 退出码 0，`死键 21 个（基线 23…）`。
+Expected: 退出码 0，`死键 24 个（基线 24…）`。
 
-**若数字不是 21，停下来核对**：预期加 5 键（全部立即被引用，不增死键）、删 2 键（删时都是活键 → 死键减 2），23 − 2 = 21。
+**若数字不是 24，停下来核对**：预期加 5 键（全部立即被引用，不增死键）、删 2 键。注意**删两个活键不改变死键计数**（键总数与活键数同时 −1），所以这一任务死键数**持平**，仍是 24。
 
 - [ ] **Step 7: 更新死键基线并跑全部静态门**
 
-把 `DEAD_BASELINE` 改为 `21`。
+`DEAD_BASELINE` **保持不变，仍是 `24`**（本任务死键数持平）。
 
 Run:
 ```bash
@@ -882,11 +882,9 @@ function hubRefreshDiscuss(cid){}
     "hub.tab_empty.announce_unloaded": "公告尚未同步。请到设置页点「加载课程」。",
     "hub.tab_empty.todo_unloaded": "待办尚未加载。请到「待办」页点一次刷新。",
     "hub.tab_empty.discuss_unloaded": "讨论尚未加载。",
-    "hub.tab_empty.files": "这门课没有文件。",
-    "hub.tab_empty.announce": "这门课没有公告。",
-    "hub.tab_empty.todo": "这门课没有待办。",
-    "hub.tab_empty.discuss": "这门课没有讨论。",
 ```
+
+**只有 9 个键加在这一步。** `hub.tab_empty.files` / `.announce` / `.todo` / `.discuss` 这**四个"确实没有"的文案由 Task 5/6/7 各自加入** —— 它们要到那三个任务才被引用。一次性加在这里会让它们立刻变成死键，把死键计数从 21 顶到 25，本任务自己的门就会失败。这正是 Task 1 建的基线门要防的事。
 
 在 `I18N.en` 段的同名位置之后加入：
 
@@ -900,10 +898,6 @@ function hubRefreshDiscuss(cid){}
     "hub.tab_empty.announce_unloaded": "Announcements not synced yet. Click \"Load courses\" in Settings.",
     "hub.tab_empty.todo_unloaded": "To-dos not loaded yet. Refresh once on the To-do page.",
     "hub.tab_empty.discuss_unloaded": "Discussions not loaded yet.",
-    "hub.tab_empty.files": "No files in this course.",
-    "hub.tab_empty.announce": "No announcements in this course.",
-    "hub.tab_empty.todo": "No to-dos in this course.",
-    "hub.tab_empty.discuss": "No discussions in this course.",
 ```
 
 **空态文案必须区分两种"空"**：这门课确实没有（Canvas 返回空，用 `hub.tab_empty.X`）vs 尚未加载（全局变量为 null 或无该课程条目，用 `hub.tab_empty.X_unloaded`）。两者混用一句"暂无"会让用户以为数据没了 —— 上一轮 `files.no_files` 与 `files.empty` 就是分开的，沿用该做法。
@@ -914,13 +908,13 @@ Run:
 ```bash
 node tools/check_i18n_keys.mjs
 ```
-Expected: 退出码 0，`死键 18 个（基线 21…）`。
+Expected: 退出码 0，`死键 21 个（基线 24…）`。
 
-**若数字不是 18，停下来核对**：预期加 13 键（全部立即被引用，不增死键）、三个 `tab.*` 孤儿转活（死键减 3），21 − 3 = 18。
+**若数字不是 21，停下来核对**：本步加 9 键（全部立即被引用，不增死键）、三个 `tab.*` 孤儿转活（死键减 3），24 − 3 = 21。
 
 - [ ] **Step 7: 更新死键基线并跑全部静态门**
 
-把 `DEAD_BASELINE` 改为 `18`。
+把 `DEAD_BASELINE` 改为 `21`。
 
 Run:
 ```bash
@@ -961,6 +955,7 @@ git commit -m "feat: 课程中心骨架——课程列表 ↔ 单课程详情（
 
 **Files:**
 - Modify: `frontend/app.js`（用真实实现替换 `renderHubFiles` / `hubRefreshFiles` 两个占位；`#hubPanel` 加点击委托）
+- Modify: `frontend/i18n.js`（zh/en 各加 1 键：`hub.tab_empty.files`）
 
 **Interfaces:**
 - Consumes: Task 3 的 `openFileSmart(courseId, fileId, name, courseName, moduleName, btnEl)`；Task 4 的 `hubCid` / `hubTab` / `hubCourseName()`；全局变量 `fileCourses`、函数 `downloadDir()`、`settings()`
@@ -1022,6 +1017,20 @@ async function hubRefreshFiles(cid){
 
 **注意**：`hubRefreshFiles` 走的是 `/api/list_files`（`app.js:1202` 的全局文件页用它），不是 `/api/files`。写代码前先 `grep -n 'api("list_files"\|api("files"' frontend/app.js` 确认端点名，用实际存在的那个。
 
+**同一步内还要补上本任务首次使用的 i18n 键**（它由 Task 4 的裁定移到这里，因为只有本任务的代码会引用它）。在 `frontend/i18n.js` 的 `I18N.zh` 段内、`hub.tab_empty.files_unloaded` 那一行之后加：
+
+```js
+    "hub.tab_empty.files": "这门课没有文件。",
+```
+
+在 `I18N.en` 段的同名位置之后加：
+
+```js
+    "hub.tab_empty.files": "No files in this course.",
+```
+
+加完即可被本步的 `renderHubFiles` 引用（`if (!files.length)` 分支），**不会引入死键**。
+
 - [ ] **Step 2: 给 `#hubPanel` 加文件点击委托**
 
 在 `frontend/app.js` 中 `$("hubTabs").addEventListener(...)` 那段之后插入：
@@ -1072,6 +1081,7 @@ git commit -m "feat: 课程中心文件子标签（复用文件直链打开器�
 
 **Files:**
 - Modify: `frontend/app.js`（替换 `renderHubAnnounce` / `hubRefreshAnnounce` 两个占位）
+- Modify: `frontend/i18n.js`（zh/en 各加 1 键：`hub.tab_empty.announce`）
 
 **Interfaces:**
 - Consumes: Task 4 的 `hubCid` / `hubTab`；全局 `summaryResults`、既有函数 `syncAnnouncements()`
@@ -1127,6 +1137,18 @@ async function hubRefreshAnnounce(){
 }
 ```
 
+**同一步内还要补上本任务首次使用的 i18n 键**（由 Task 4 的裁定移到这里）。在 `frontend/i18n.js` 的 `I18N.zh` 段内、`hub.tab_empty.announce_unloaded` 那一行之后加：
+
+```js
+    "hub.tab_empty.announce": "这门课没有公告。",
+```
+
+在 `I18N.en` 段的同名位置之后加：
+
+```js
+    "hub.tab_empty.announce": "No announcements in this course.",
+```
+
 - [ ] **Step 2: 跑全部静态门**
 
 Run:
@@ -1164,6 +1186,7 @@ git commit -m "feat: 课程中心公告子标签（全文展示，规避 clamp �
 
 **Files:**
 - Modify: `frontend/app.js`（替换 `renderHubTodo` / `renderHubDiscuss` / `hubRefreshDiscuss` 三个占位）
+- Modify: `frontend/i18n.js`（zh/en 各加 2 键：`hub.tab_empty.todo`、`hub.tab_empty.discuss`）
 
 **Interfaces:**
 - Consumes: Task 4 的 `hubCid` / `hubTab`；全局 `todoItems`、`discussData`；既有函数 `topicRowHtml(tp)`（`app.js:1321-1331`，纯行渲染、不绑容器）、`fmtDue()`、`refreshBadges()`
@@ -1243,6 +1266,22 @@ async function hubRefreshDiscuss(cid){
 ```
 
 `by[key] === undefined` 与 `!list.length` 必须分开判断：前者是"这门课还没拉过"（未加载），后者是"拉过了但这门课没有讨论"（确实没有）。这与 Task 4 的空态分工一致。
+
+**同一步内还要补上本任务首次使用的两个 i18n 键**（由 Task 4 的裁定移到这里）。在 `frontend/i18n.js` 的 `I18N.zh` 段内、`hub.tab_empty.discuss_unloaded` 那一行之后加：
+
+```js
+    "hub.tab_empty.todo": "这门课没有待办。",
+    "hub.tab_empty.discuss": "这门课没有讨论。",
+```
+
+在 `I18N.en` 段的同名位置之后加：
+
+```js
+    "hub.tab_empty.todo": "No to-dos in this course.",
+    "hub.tab_empty.discuss": "No discussions in this course.",
+```
+
+两个键在本步的 `renderHubTodo` / `renderHubDiscuss` 里都有对应分支引用，**不引入死键**。
 
 - [ ] **Step 2: 验证字符串键确实被用到（防回归）**
 
@@ -1437,9 +1476,9 @@ node tools/check_dom_ids.mjs
 node tools/check_i18n_keys.mjs
 .venv/bin/python -m pytest -q
 ```
-Expected: 全绿；pytest 输出 **`228 passed`**（与开工前一致，本轮不新增 pytest 用例）；`check_i18n_keys` 报 `死键 18 个（基线 18…）`。
+Expected: 全绿；pytest 输出 **`228 passed`**（与开工前一致，本轮不新增 pytest 用例）；`check_i18n_keys` 报 `死键 21 个（基线 21…）`。
 
-若死键数不是 18，**不要去改基线** —— 先查清是哪一步多留了键，把该步的预期值对回来。
+若死键数不是 21，**不要去改基线** —— 先查清是哪一步多留了键，把该步的预期值对回来。
 
 - [ ] **Step 3: 确认后端零改动**
 
@@ -1457,9 +1496,10 @@ Task 4 留下的六个占位必须在 Task 5-7 被逐个替换。Run:
 
 ```bash
 grep -n '占位：由 Task' frontend/app.js || echo "OK：没有遗留占位"
-grep -c 'hubPanel").innerHTML = `<div class="muted">${t("hub.tab_empty' frontend/app.js || true
 ```
-Expected: 第一条打印 `OK：没有遗留占位`；第二条输出 `0`。
+Expected: 打印 `OK：没有遗留占位`。
+
+（不要用「搜 `hub.tab_empty.*_unloaded` 应为 0 条」来判占位残留 —— Task 5/6/7 的**真实实现**里那些键仍被"未加载"分支合法引用，那个检查是假阳性。占位只认 `占位：由 Task` 这个注释锚点。）
 
 若还有残留，回到对应任务补齐。
 
@@ -1562,7 +1602,7 @@ Task 9 的 Step 2-6 即为收尾验收，不再重复。此处只记录**本轮�
 | `hubCourseName()` | Task 4 | Task 5 | ✓ |
 | `renderHubFiles/Announce/Todo/Discuss(cid)` | Task 4 建占位 → 5/6/7 换实现 | Task 4 的分发表 | ✓ 签名一致 |
 | `hubRefreshFiles(cid)` / `hubRefreshAnnounce()` / `hubRefreshDiscuss(cid)` | Task 4 建占位 → 5/6/7 换实现 | Task 4 的 `hubRefreshCurrent` | ✓ 签名一致（announce 无参） |
-| `DEAD_BASELINE` | Task 1 | Task 2(23) → 3(21) → 4(18) → 9(校验 18) | ✓ |
+| `DEAD_BASELINE` | Task 1 | 25（T1）→ 24（T2）→ 24（T3，持平）→ 21（T4）→ 21（T5-T9）；T9 Step 2 校验 21 | ✓ |
 
 **4. 实测数据核对** —— 计划中所有"当前值"均来自本轮真实执行，非估计：
 
