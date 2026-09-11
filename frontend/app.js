@@ -2378,7 +2378,7 @@ function renderHubAnnounce(cid){
   const cvUrl = (settings().canvas_url || "").replace(/\/+$/, "");
   box.innerHTML = anns.map(a => {
     const titleHtml = (cvUrl && a.id)
-      ? `<a href="${escAttr(cvUrl)}/courses/${escAttr(cid)}/announcements/${escAttr(a.id)}" target="_blank" rel="noopener">${esc(a.title)}</a>`
+      ? `<a class="announce-link" href="${escAttr(cvUrl)}/courses/${escAttr(cid)}/announcements/${escAttr(a.id)}" target="_blank" rel="noopener">${esc(a.title)}</a>`
       : esc(a.title);
     return `<div class="item"><div>
       <div class="item-title">${titleHtml} <span class="muted">${esc(String(a.posted_at || "").slice(0, 10))}</span></div>
@@ -2387,10 +2387,13 @@ function renderHubAnnounce(cid){
   }).join("");
 }
 
-/* 公告没有"按单门课拉取"的端点：syncAnnouncements() 是跨全部选中课程的批量操作
-   （app.js:741-758）。所以这里只在缓存里没有这门课时才主动同步一次，
+/* 公告没有"按单门课拉取"的端点：syncAnnouncements() 是跨全部选中课程的批量操作。
+   所以这里只在缓存里没有这门课时才主动同步一次，
    否则每次切到公告标签都跑一遍全量同步，代价过大（裁定 R3）。 */
 async function hubRefreshAnnounce(){
+  // 该课不在勾选集合里 → 同步永远填不上它（syncAnnouncements 的 course_ids 取自 selectedCourses()），
+  // 面板会永久停在「尚未同步」，且每次 TTL 过期都白跑一次全量同步。与 scheduleAutoSync 同一约定。
+  if (!selectedCourses().includes(hubCid)) return;
   if ((summaryResults || []).some(c => c.course_id === hubCid)) return;   // 有缓存 → 不重复批量拉
   const ok = await syncAnnouncements();
   if (ok && hubCid != null && hubTab === "announce") renderHubAnnounce(hubCid);
