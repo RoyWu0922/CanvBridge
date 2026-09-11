@@ -550,6 +550,9 @@ def list_files(req: ListFilesRequest):
                 "course_id": cid, "name": name,
                 "files": [{
                     "file_id": f["id"], "display_name": f["display_name"],
+                    # folder_id 前端建树要用（把文件挂到对应文件夹节点）。
+                    # Canvas 不回该字段时取 None —— 前端按「挂根层」兜底（spec §5.1）。
+                    "folder_id": f.get("folder_id"),
                     "path": files_downloader.build_folder_path(f.get("folder_id"), folders),
                     "content_type": f["content_type"], "size": f["size"],
                     "dest_path": by_id.get(f["id"], {}).get("dest_path", ""),

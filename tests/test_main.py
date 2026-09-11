@@ -883,7 +883,14 @@ def test_planner_failure_is_flat_error(monkeypatch):
 def test_list_files_returns_folders_with_position(monkeypatch):
     """folders 必须回传给前端（建树用），并透传 position（Canvas 不一定给，取不到即 None）。"""
     files = [{"id": 9, "display_name": "a.pdf", "folder_id": 2,
-              "content_type": "application/pdf", "size": 1, "url": "http://x/f/9"}]
+              "content_type": "application/pdf", "size": 1, "url": "http://x/f/9"},
+             # 第二个文件 folder_id 显式为 None → 响应里应是 None（前端按挂根层兜底）
+             {"id": 10, "display_name": "b.pdf", "folder_id": None,
+              "content_type": "application/pdf", "size": 2, "url": "http://x/f/10"},
+             # 第三个文件**整个键都缺**（Canvas 真的不回这个字段）→ 响应仍须有键且为 None。
+             # 只有这条能区分 .get 与 []：上一条的键是在的，两种写法结果一样。
+             {"id": 11, "display_name": "c.pdf",
+              "content_type": "application/pdf", "size": 3, "url": "http://x/f/11"}]
     folders = [
         {"id": 1, "name": "course files", "parent_folder_id": None, "position": 1},
         {"id": 2, "name": "Week 3", "parent_folder_id": 1, "position": None},
@@ -904,6 +911,14 @@ def test_list_files_returns_folders_with_position(monkeypatch):
     assert got["files"][0]["dest_path"].endswith("CS 101/Week 3/a.pdf")
     # 旧路径随 files 一并回传，供前端原样转交给下载端点
     assert got["files"][0]["legacy_path"].endswith("CS 101/course files/Week 3/a.pdf")
+    # folder_id 必须回传 —— 前端建树靠它把文件挂到正确的文件夹节点上。
+    # 少了它，nodes.get(undefined) 会让所有文件落到根层：树变平铺且不报错。
+    assert got["files"][0]["folder_id"] == 2
+    # 容缺：Canvas 不回 folder_id 时键仍在、值为 None（前端据此挂根层）
+    assert got["files"][1]["folder_id"] is None
+    assert "folder_id" in got["files"][1]
+    # 输入里连键都没有时也要有：这条才真正钉住 .get（用 f["folder_id"] 会 KeyError）
+    assert got["files"][2]["folder_id"] is None
 
 
 def test_list_files_403_still_returns_folders_key(monkeypatch):
