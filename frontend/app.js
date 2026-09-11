@@ -1037,14 +1037,15 @@ function openModuleFilePop(itemEl){
     moduleName: modEl ? modEl.dataset.module : "",
   };
   $("modulePopTitle").textContent = modulePopCtx.title;
+  $("modulePopTitle").title = t("file.open");
   const pageBtn = $("btnModuleOpenPage");
   pageBtn.hidden = !pageUrl;           // 无 Canvas 页面链接 → 只给「打开文件」
   if (pageUrl) pageBtn.textContent = t("module.open_page");
   if (window.CanvBridgeShell && window.CanvBridgeShell.isWebview()){
-    // 内嵌窗口没有“新标签页内联 PDF”：页内预览不可用。
-    // 有 Canvas 链接 → 走系统浏览器「打开页面」；纯文件项 → 直接下载到本地，不弹空 popover。
-    const fbtn = $("btnModuleOpenFile");
-    if (fbtn) fbtn.hidden = true;
+    // 内嵌窗口没有“新标签页内联 PDF”，所以「打开文件」在这里不做内联预览。
+    // 但它不再是死按钮：经 openFileSmart 分叉后它落盘下载（见 Step 1），所以保持可见 ——
+    // 隐藏它会让弹层里唯一带标签的文件入口消失，只剩标题上那个没有任何提示的点击。
+    // 纯文件项（无 Canvas 链接）仍然直接下载并关掉弹窗，省一次点击。
     if (!pageUrl){ closeModulePop(); downloadModuleFile(itemEl); return; }
   }
   modulePop.hidden = false;            // 先显示再量尺寸，无闪动
@@ -1084,11 +1085,18 @@ async function downloadModuleFile(rowEl){
    注意 api()（util.js:26-33）无条件 await r.json()，二进制端点必须走裸 fetch。 */
 async function openFileInline(courseId, fileId, name){
   const s = settings();
-  const resp = await fetch("/api/module_file_stream", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ canvas_url: s.canvas_url, canvas_token: s.canvas_token,
-                           course_id: courseId, file_id: fileId }),
-  });
+  let resp;
+  try {
+    resp = await fetch("/api/module_file_stream", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ canvas_url: s.canvas_url, canvas_token: s.canvas_token,
+                             course_id: courseId, file_id: fileId }),
+    });
+  } catch (e) {
+    // 与 api()（util.js:26-28）同一约定：网络失败返回错误对象而不是抛出。
+    // 三个调用点都不 await 本函数，抛出会变成未处理的 rejection。
+    return { ok: false, error: t("status.backend_fail") };
+  }
   const ctype = (resp.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
   // 后端出错时同样是 200 + JSON（main.py 约定），所以 Content-Type 是判据，不能只看 resp.ok
   if (!resp.ok || ctype === "application/json"){
@@ -1096,13 +1104,19 @@ async function openFileInline(courseId, fileId, name){
     try { const j = await resp.json(); msg = j.error || ""; } catch (e) { /* 忽略解析失败 */ }
     return { ok: false, error: msg };
   }
-  const blob = await resp.blob();
+  let blob;
+  try { blob = await resp.blob(); }
+  catch (e) { return { ok: false, error: t("status.backend_fail") }; }
   const url = URL.createObjectURL(blob);
-  /* window.open 在 await 之后调用已脱离用户手势上下文，被弹窗拦截器拦下会**静默返回 null**
-     而不抛错。若不当成失败，openFileSmart 的降级分支永远不会触发 —— 用户点了没反应、
-     也没提示。所以这里把"没拿到窗口"判成失败，交给上层走下载兜底。 */
-  const win = window.open(url, "_blank", "noopener");
-  if (!win){ URL.revokeObjectURL(url); return { ok: false, error: "" }; }
+  /* 这里**不能**拿 window.open 的返回值判断成败。HTML 规范在 window open 步骤末尾规定：
+     "If noopener is true or windowType is 'new with no opener', then return null."
+     —— 带 noopener 时返回值**无条件**为 null，与标签页是否真的打开无关。
+     若写成 `const win = window.open(...); if (!win) return {ok:false}`，本函数将永远走降级
+     分支，「浏览器内联打开」这个功能会整个消失、每次点击都变成下载 —— 而且所有静态门都是绿的。
+     noopener 必须保留：Canvas 上的 .html 文件经 blob: 渲染后与本站同源，去掉它便可经
+     window.opener 反向操控本页。代价是弹窗被拦时无法探测；这与既有的 btnModuleOpenPage
+     （app.js:1173，同样的调用且忽略返回值）取舍一致，用户已接受。 */
+  window.open(url, "_blank", "noopener");
   // objectURL 交给新打开的文档用；延迟释放避免新标签还没加载完就被回收
   setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 60000);
   return { ok: true };
@@ -1123,20 +1137,27 @@ async function downloadFileTo(courseId, fileId, name, courseName, moduleName){
    而不是只丢一句红字让他自己再找下载按钮。 */
 async function openFileSmart(courseId, fileId, name, courseName, moduleName, btnEl){
   if (!fileId){ setStatus(t("file.open_fail"), "err"); return; }
-  await withBusy(t("file.opening", {f: name}), btnEl || null, async () => {
-    if (window.CanvBridgeShell && window.CanvBridgeShell.isWebview()){
-      const r = await downloadFileTo(courseId, fileId, name, courseName, moduleName);
-      if (!r.ok){ setStatus(t("file.open_fail") + (r.error || ""), "err"); return; }
-      setStatus(r.saved ? t("file.downloaded_saved", {f: name})
-                        : t("file.downloaded", {p: r.dest}), "ok");
-      return;
-    }
-    const r = await openFileInline(courseId, fileId, name);
-    if (r.ok) return;
-    setStatus(t("file.open_fail") + (r.error || ""), "err");
-    const d = await downloadFileTo(courseId, fileId, name, courseName, moduleName);
-    if (d.ok) setStatus(t("file.downloaded", {p: d.dest}), "ok");
-  });
+  /* 三个调用点都不 await 本函数（点一下就返回），所以这里必须自己兜住所有异常：
+     withBusy 只有 try/finally、没有 catch（util.js:34-40），抛出去就成了未处理的 rejection ——
+     遮罩消失、没有提示、降级下载也不会跑，正是"点了没反应"那种失败。 */
+  try {
+    await withBusy(t("file.opening", {f: name}), btnEl || null, async () => {
+      if (window.CanvBridgeShell && window.CanvBridgeShell.isWebview()){
+        const r = await downloadFileTo(courseId, fileId, name, courseName, moduleName);
+        if (!r.ok){ setStatus(t("file.open_fail") + (r.error || ""), "err"); return; }
+        setStatus(r.saved ? t("file.downloaded_saved", {f: name})
+                          : t("file.downloaded", {p: r.dest}), "ok");
+        return;
+      }
+      const r = await openFileInline(courseId, fileId, name);
+      if (r.ok) return;
+      setStatus(t("file.open_fail") + (r.error || ""), "err");
+      const d = await downloadFileTo(courseId, fileId, name, courseName, moduleName);
+      if (d.ok) setStatus(t("file.downloaded", {p: d.dest}), "ok");
+    });
+  } catch (e) {
+    setStatus(t("file.open_fail") + (e && e.message ? e.message : ""), "err");
+  }
 }
 $("detailBody").addEventListener("click", (e) => {
   const dl = e.target.closest(".module-dl-btn");
