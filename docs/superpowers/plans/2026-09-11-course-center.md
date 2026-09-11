@@ -35,6 +35,7 @@
 | R5 | 给 `#courseCheckboxes` 所在的 `.course-list` 补一条 flex 规则 | `.course-list` 这个类名在 `index.html:207` 出现，但 `app.css` 里**没有任何规则**（本轮已实测确认）。它现在落在设置页卡片内，而 `.chip` 自身无 margin，靠 `.chips` 的 `gap` 才有间距 —— 搬进设置页后会挤成一坨，看起来像"搬迁搬坏了"。 | 极小：仅课程勾选区的外观比现状好看，无功能面。 |
 | R6 | 删除被本轮废弃的 `module.open_file_fail` 与 `module.fetching`，以及 `settings.group.ignore` | 这三个键在本轮之后不再有任何引用，留着就是死键，而本轮正好引入了死键基线门（Task 1）—— 让门一开工就自带"新增即失败"的压力，是任务范围内的清理，不是无关重构。 | 若误判（仍有引用），`check_i18n_keys.mjs` 的悬空引用检查会立刻报错，不会静默。 |
 | R7 | Tasks 5–8 里「起真身，人工确认」的目视步骤**不在实施者侧执行**：换成结构性替代（新 id/结构确在 HTML 中、四文件拼接 `--check` 通过），并在报告中**逐条列出哪些目视项未验证**；浏览器实机核对改由控制方用 chrome-devtools 执行 | 实施者是子代理，看不见浏览器，无法诚实签收目视项——写"确认通过"就是不实报告。而 Task 3 那个 Critical 的教训恰恰是**静态门全绿、运行时行为全错**：把唯一能发现这类缺陷的环节交给看不见画面的人，等于没有这道环节 | 若控制方也漏做，这四步的目视项就无人验证；代价是缺陷漏到用户人工验收，已列入验收清单，不会静默消失 |
+| R9 | Task 9 的「切语言重渲课程中心」两行**挂进 `app.js` 的 `btnLang` 处理器**，不是原稿写的 `i18n.js` `applyLang()`；相应地 Task 9 改为只改 `frontend/app.js` | 原稿会**打瘫整个应用**（非只坏课程中心）：`applyLang()` 在 `app.js:2163` 有一次**顶层**调用，而 `hubCid` 的 `let` 声明在 `app.js:2179` —— 晚于该调用。那一刻 `typeof renderCourseHub === "function"` 为**真**（同脚本内的函数声明已提升），守卫失效，`renderCourseHub()` 首行读 TDZ 中的 `hubCid` 抛 `ReferenceError`；顶层抛错中止 app.js 其余**全部**顶层语句，含其下所有 `addEventListener`。已用 `vm.runInNewContext` 复刻该时序实证：`ReferenceError: Cannot access 'hubCid' before initialization` + 后续顶层语句未执行。修法是**换挂载点**而非补守卫：语言真正会变的路径只有 `btnLang` 处理器这一次（2163 那次顶层调用时页面上尚无课程中心内容，重渲无意义）。 | 若判断有误，代价是「不经按钮触发切语言时课程中心不重渲」——但 `applyLang()` 全仓只有 2158/2163 两个调用点，且处理器里紧跟的既有三行（`renderSummaries`/`renderFiles`/`refreshBadges`）本就是同类动态重渲的范例 |
 
 ---
 
@@ -1494,39 +1495,54 @@ git commit -m "feat: 首页今日课表卡片可点击，直达该课程的课�
 ## Task 9: 收尾 —— 切语言接线 + 全量验收
 
 **Files:**
-- Modify: `frontend/i18n.js`（`applyLang()` 挂课程中心的渲染函数）
+- Modify: `frontend/app.js`（在 `btnLang` 处理器里挂课程中心的重渲 —— 不是 `applyLang()`，理由见 Step 1）
 - Modify: `tools/check_i18n_keys.mjs`（仅在实测值与预期不符时）
 
 **Interfaces:**
 - Consumes: 前八个任务的全部产物
 - Produces: 无
 
-**为什么必须接线**：`applyLang()`（`i18n.js:680-706`）在切语言时重渲所有既有板块 —— 因为 `$$("[data-i18n]").forEach(...)` 只刷新**静态**节点，动态渲染的内容必须显式重渲（注释见 `i18n.js:701-702` 与 `705`）。课程中心的列表与四个标签都是动态渲染的，不挂进去就会**切语言后文案停留在旧语言**。
+**为什么必须接线**：切语言时，`applyLang()` 里的 `$$("[data-i18n]").forEach(...)` 只刷新**静态**节点；动态渲染出来的内容必须在 `btnLang` 处理器里紧随其后显式重渲（该处理器里 `renderSummaries` / `renderFiles` / `refreshBadges` 三行及其注释就是既有范例）。课程中心的列表与四个标签都是动态渲染的，不挂进去就会**切语言后文案停留在旧语言**。
 
 - [ ] **Step 1: 挂上课程中心的渲染函数**
 
-在 `frontend/i18n.js` 的 `applyLang()` 中，把最后那三行：
+**挂进 `frontend/app.js` 的 `btnLang` 处理器，不要挂进 `applyLang()`。**
+
+> **这是对原稿的修正（裁定 R9）。** 原稿把这两行挂进 `i18n.js` 的 `applyLang()`。那样做会**打瘫整个应用**，不是只坏课程中心。原因：`applyLang()` 的调用点只有两处 —— `app.js:2158`（在 `btnLang` 处理器里）与 `app.js:2163`（**顶层语句**）；而 `hubCid` 是 `let`，声明在 `app.js:2179`，**晚于 2163**。在 2163 那一刻 `typeof renderCourseHub === "function"` 为**真**（`renderCourseHub` 是同脚本内的函数声明，已提升），守卫形同虚设，`renderCourseHub()` 真的被调用，其函数体首行 `if (hubCid == null && !hubBanweb) return;` 读到处于 TDZ 的 `hubCid` → 抛 `ReferenceError`。顶层抛错会**中止 app.js 其余全部顶层语句**：`let hubCid` 永不初始化，其下所有 `addEventListener` 都不注册 —— 课程中心连同语言切换、日期范围、课表渲染一起死掉。
+>
+> 原稿的推理错在把 `typeof` 守卫当护身符。该守卫只在「函数尚未定义」时为假；对同脚本内的函数声明它永远为真，保护不了 TDZ。原稿说「判断交给 `renderCourseHub()` 自己做」—— 而这个判断本身就要读 `hubCid`，正是踩雷的那一步。
+>
+> 修法不是给守卫打补丁，而是**换挂载点**：语言真正会变的路径只有用户点按钮这一次，而那次走的就是 `btnLang` 处理器（2163 那次顶层 `applyLang()` 执行时，页面上还没有任何课程中心内容，重渲没有意义）。把两行挂到处理器里，与紧邻的既有三行同形，既躲开 TDZ，也避开「重排 app.js 声明顺序」这种风险更大的改法。
+
+在 `frontend/app.js` 中找到：
 
 ```js
-  if (typeof renderHomeAnnounceList === "function") renderHomeAnnounceList();
-  if (typeof renderHomeDdlList === "function") renderHomeDdlList();
-  if (typeof renderHomeGradeCard === "function") renderHomeGradeCard();
+$("btnLang").onclick = () => {
+  localStorage.setItem("sc_lang", LANG() === "zh" ? "en" : "zh");
+  applyLang();
+  renderSummaries();                     // 重渲动态文案（AI 总结按钮等）
+  renderFiles();                         // 重渲文件全选按钮标签
+  refreshBadges();                       // applyLang 会清掉页签内子节点，重画红点徽标
+};
 ```
 
-替换为：
+改为：
 
 ```js
-  if (typeof renderHomeAnnounceList === "function") renderHomeAnnounceList();
-  if (typeof renderHomeDdlList === "function") renderHomeDdlList();
-  if (typeof renderHomeGradeCard === "function") renderHomeGradeCard();
-  /* 课程中心：列表与标签内容都是动态渲染的，data-i18n 那一轮刷不到它们。
-     renderCourseHub() 自己在没有目标课程时会早退，所以这里不必碰 hubCid
-     （它是 app.js 的 let，i18n.js 在它之前加载，直接读会踩 TDZ）。 */
-  if (typeof renderCourseHubList === "function") renderCourseHubList();
-  if (typeof renderCourseHub === "function") renderCourseHub();
+$("btnLang").onclick = () => {
+  localStorage.setItem("sc_lang", LANG() === "zh" ? "en" : "zh");
+  applyLang();
+  renderSummaries();                     // 重渲动态文案（AI 总结按钮等）
+  renderFiles();                         // 重渲文件全选按钮标签
+  refreshBadges();                       // applyLang 会清掉页签内子节点，重画红点徽标
+  renderCourseHubList();                 // 课程中心列表：内容是动态拼的，data-i18n 刷不到
+  renderCourseHub();                     // 详情页标题/标签/面板：同上（无目标课程时它自己早退）
+};
 ```
 
-`typeof 函数声明 === "function"` 这个守卫写法与上方既有行一致：函数声明是 var 作用域，在 `app.js` 执行前 `typeof` 得到 `"undefined"`，不会抛错。而 `hubCid` 是 `let`，在 `app.js` 执行前处于 TDZ，`typeof` 也会抛 —— 所以**绝不能在 i18n.js 里直接引用 `hubCid`**，判断交给 `renderCourseHub()` 自己做。
+这两行**不加 `typeof` 守卫** —— 与紧邻三行保持一致：同文件的函数声明必然已定义；`refreshBadges` 甚至定义在 `shell.js`，既有代码照样不守卫。`renderCourseHub()` 在 `hubCid == null && !hubBanweb` 时立即早退，代价可忽略；`renderCourseHubList()` 只写隐藏容器的 `innerHTML`，安全。
+
+**一个附带事实**（避免后来者误判）：`applyLang()` 里既有的三行 `if (typeof renderHome* === "function") …`，在 2163 那一刻 `shell.js` 尚未加载，守卫全为假；它们实际生效的路径也只有这个处理器。所以本步改挂载点，与仓库既有形态并不矛盾。
 
 - [ ] **Step 2: 跑全部静态门（本轮的回归门）**
 
@@ -1593,7 +1609,7 @@ Run: `.venv/bin/python run_app.py`（不带参数，内嵌原生窗口）
 - [ ] **Step 7: 提交**
 
 ```bash
-git add frontend/i18n.js
+git add frontend/app.js
 git commit -m "feat: 切语言时重渲课程中心（列表 + 详情标签）"
 ```
 
