@@ -39,13 +39,53 @@ def test_confine_dest_neutralizes_traversal(tmp_path):
 
 
 def test_build_folder_path():
+    """新路径不含课程根文件夹那一段（Canvas 里那层 "course files"）。"""
     folders = [
-        {"id": 1, "name": "Slides", "parent_folder_id": None},
+        {"id": 1, "name": "course files", "parent_folder_id": None},
         {"id": 2, "name": "Week 3", "parent_folder_id": 1},
     ]
-    assert files_downloader.build_folder_path(2, folders) == "Slides/Week 3"
-    assert files_downloader.build_folder_path(1, folders) == "Slides"
+    assert files_downloader.build_folder_path(2, folders) == "Week 3"
+    assert files_downloader.build_folder_path(1, folders) == ""
+    assert files_downloader.build_folder_path(None, folders) == ""
     assert files_downloader.build_folder_path(999, folders) == ""
+
+
+def test_build_folder_path_nested_two_levels():
+    folders = [
+        {"id": 1, "name": "course files", "parent_folder_id": None},
+        {"id": 2, "name": "Week 3", "parent_folder_id": 1},
+        {"id": 3, "name": "Lab", "parent_folder_id": 2},
+    ]
+    assert files_downloader.build_folder_path(3, folders) == "Week 3/Lab"
+
+
+def test_build_folder_path_degrades_when_no_root_marker():
+    """folders 里没有任何 parent_folder_id 为 None 的节点（Canvas 返回形态与预期不符）
+    → 退回「保留全部段」＝本轮改动前的行为。宁可多一层，也不把真实文件夹名算丢。"""
+    folders = [{"id": 2, "name": "Week 3", "parent_folder_id": 1}]  # 父 1 不在表里
+    assert files_downloader.build_folder_path(2, folders) == "Week 3"
+
+
+def test_build_folder_path_survives_parent_cycle():
+    """父链成环不得死循环、不得抛；环被截断，名字不会无限累积。"""
+    folders = [
+        {"id": 1, "name": "A", "parent_folder_id": 2},
+        {"id": 2, "name": "B", "parent_folder_id": 1},
+    ]
+    p = files_downloader.build_folder_path(1, folders)
+    assert isinstance(p, str)
+    assert p.count("A") <= 1 and p.count("B") <= 1
+
+
+def test_build_legacy_folder_path_keeps_root_segment():
+    """旧路径必须逐字复现改动前的形状（含课程根那一段）—— 兼容检测全靠它。"""
+    folders = [
+        {"id": 1, "name": "course files", "parent_folder_id": None},
+        {"id": 2, "name": "Week 3", "parent_folder_id": 1},
+    ]
+    assert files_downloader.build_legacy_folder_path(2, folders) == "course files/Week 3"
+    assert files_downloader.build_legacy_folder_path(1, folders) == "course files"
+    assert files_downloader.build_legacy_folder_path(999, folders) == ""
 
 
 def test_module_dest_builds_path(tmp_path):

@@ -36,15 +36,47 @@ def confine_dest(download_dir: str, dest_path: str) -> Path | None:
     return root.joinpath(*parts)
 
 
-def build_folder_path(folder_id, folders: list[dict]) -> str:
-    """返回 folder_id 的斜杠路径；课程根目录返回 ''。"""
+def _folder_chain(folder_id, folders: list[dict]) -> list[dict]:
+    """从课程根到 folder_id 的文件夹节点链（根在前、folder_id 在后）。带环保护。
+
+    链上首节点的 parent_folder_id 为 None 时，它就是课程根文件夹 —— 即 Canvas
+    网页里显示为 "course files" 的那一层。用结构判据而不是比较名字字符串：硬编码
+    名字会在 Canvas 改文案（或换语言）时静默失效 —— 表现是那层文件夹又冒出来，
+    且不报任何错。folder_id 不在 folders 里（含 None）→ 返回空链。
+    """
     by_id = {f["id"]: f for f in folders}
-    parts: list[str] = []
+    chain: list[dict] = []
+    seen: set = set()
     cur = by_id.get(folder_id)
     while cur is not None:
-        parts.append(_safe_name(cur.get("name", "")))
+        cid = cur.get("id")
+        if cid in seen:          # 父链成环 → 就地截断，不挂起
+            break
+        seen.add(cid)
+        chain.append(cur)
         cur = by_id.get(cur.get("parent_folder_id"))
-    return "/".join(reversed(parts))
+    chain.reverse()
+    return chain
+
+
+def build_folder_path(folder_id, folders: list[dict]) -> str:
+    """返回 folder_id 的斜杠路径，**不含课程根文件夹**；课程根下的文件返回 ''。
+
+    folders 里找不到 parent_folder_id 为 None 的节点时（Canvas 返回形态与预期不符），
+    退回「保留全部段」——即本轮改动前的行为：宁可多一层，也不把真实文件夹名当根丢掉。
+    """
+    chain = _folder_chain(folder_id, folders)
+    if chain and chain[0].get("parent_folder_id") is None:
+        chain = chain[1:]
+    return "/".join(_safe_name(f.get("name", "")) for f in chain)
+
+
+def build_legacy_folder_path(folder_id, folders: list[dict]) -> str:
+    """返回**含**课程根文件夹的旧路径 —— 复现本轮改动前的 build_folder_path 行为。
+
+    只用于「这个文件是不是已经在旧位置下过了」的兼容判定（见 plan_downloads）。
+    """
+    return "/".join(_safe_name(f.get("name", "")) for f in _folder_chain(folder_id, folders))
 
 
 def plan_downloads(download_dir: str, course_name: str, files: list[dict],
