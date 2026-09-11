@@ -512,6 +512,9 @@ def get_course_files(canvas_url: str, token: str, course_id: int) -> tuple[list[
         "id": fo["id"],
         "name": fo.get("name", ""),
         "parent_folder_id": fo.get("parent_folder_id"),
+        # position 供前端按 Canvas 的顺序排文件夹。Canvas 不一定回这个字段，
+        # 取不到就是 None —— 前端按「有 position 就用它排，没有就按名字排」容缺。
+        "position": fo.get("position"),
     } for fo in folders_data]
     return files, folders
 

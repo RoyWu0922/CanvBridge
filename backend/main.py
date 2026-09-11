@@ -553,19 +553,28 @@ def list_files(req: ListFilesRequest):
                     "path": files_downloader.build_folder_path(f.get("folder_id"), folders),
                     "content_type": f["content_type"], "size": f["size"],
                     "dest_path": by_id.get(f["id"], {}).get("dest_path", ""),
+                    "legacy_path": by_id.get(f["id"], {}).get("legacy_path", ""),
                     "saved": bool(by_id.get(f["id"], {}).get("saved")),
                 } for f in files],
+                "folders": [{
+                    "id": fo["id"], "name": fo.get("name", ""),
+                    "parent_folder_id": fo.get("parent_folder_id"),
+                    "position": fo.get("position"),
+                } for fo in folders],
             })
         except canvas_client.CanvasError as exc:
             # Canvas 对文件区为空 / 未对学生开放的课程返回 403。这里按「暂无文件」处理，
             # 前端灰色弱提示，不再把它当权限错误红字吓人。真正的异常照旧走 error。
             msg = str(exc)
             if "HTTP 403" in msg:
-                results.append({"course_id": cid, "name": name, "files": [], "no_files": True})
+                results.append({"course_id": cid, "name": name, "files": [], "folders": [],
+                                "no_files": True})
             else:
-                results.append({"course_id": cid, "name": name, "files": [], "error": msg})
+                results.append({"course_id": cid, "name": name, "files": [], "folders": [],
+                                "error": msg})
         except Exception as exc:
-            results.append({"course_id": cid, "name": name, "files": [], "error": str(exc)})
+            results.append({"course_id": cid, "name": name, "files": [], "folders": [],
+                            "error": str(exc)})
     return {"ok": True, "courses": results}
 
 

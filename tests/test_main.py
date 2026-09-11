@@ -877,3 +877,42 @@ def test_planner_failure_is_flat_error(monkeypatch):
         "start_date": "2026-09-10", "end_date": "2026-09-17"}).json()
     assert body["ok"] is False
     assert body["error"] == "boom"
+
+
+def test_list_files_returns_folders_with_position(monkeypatch):
+    """folders 必须回传给前端（建树用），并透传 position（Canvas 不一定给，取不到即 None）。"""
+    files = [{"id": 9, "display_name": "a.pdf", "folder_id": 2,
+              "content_type": "application/pdf", "size": 1, "url": "http://x/f/9"}]
+    folders = [
+        {"id": 1, "name": "course files", "parent_folder_id": None, "position": 1},
+        {"id": 2, "name": "Week 3", "parent_folder_id": 1, "position": None},
+    ]
+    monkeypatch.setattr(canvas_client, "list_courses", lambda u, t: [{"id": 5, "name": "CS 101"}])
+    monkeypatch.setattr(canvas_client, "get_course_files", lambda u, t, cid: (files, folders))
+    r = client.post("/api/list_files", json={"canvas_url": "https://x", "canvas_token": "t",
+                                             "course_ids": [5], "download_dir": "/tmp/dl"})
+    body = r.json()
+    assert body["ok"] is True
+    got = body["courses"][0]
+    assert [f["name"] for f in got["folders"]] == ["course files", "Week 3"]
+    assert got["folders"][0]["parent_folder_id"] is None
+    assert got["folders"][1]["position"] is None
+    # 路径语义随之改变：不含课程根那一段
+    assert got["files"][0]["path"] == "Week 3"
+    # 落盘目标也不含那一段
+    assert got["files"][0]["dest_path"].endswith("CS 101/Week 3/a.pdf")
+    # 旧路径随 files 一并回传，供前端原样转交给下载端点
+    assert got["files"][0]["legacy_path"].endswith("CS 101/course files/Week 3/a.pdf")
+
+
+def test_list_files_403_still_returns_folders_key(monkeypatch):
+    """空文件夹区/未开放 → no_files，且 folders 键存在（形状统一，前端少一种分支）。"""
+    def boom(u, t, cid):
+        raise canvas_client.CanvasError("HTTP 403")
+    monkeypatch.setattr(canvas_client, "list_courses", lambda u, t: [{"id": 5, "name": "CS 101"}])
+    monkeypatch.setattr(canvas_client, "get_course_files", boom)
+    r = client.post("/api/list_files", json={"canvas_url": "https://x", "canvas_token": "t",
+                                             "course_ids": [5], "download_dir": "/tmp/dl"})
+    got = r.json()["courses"][0]
+    assert got["no_files"] is True
+    assert got["folders"] == []

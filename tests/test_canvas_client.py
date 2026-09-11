@@ -146,7 +146,9 @@ def test_get_course_files_maps(monkeypatch):
     files, folders = canvas_client.get_course_files("https://x", "tok", 1)
     assert files[0]["id"] == 9
     assert files[0]["content_type"] == "application/pdf"
-    assert folders == [{"id": 1, "name": "Slides", "parent_folder_id": None}]
+    # position 也一并透传；Canvas 没回这个字段时取 None（此处的 folders_data 就没有）
+    assert folders == [{"id": 1, "name": "Slides", "parent_folder_id": None,
+                        "position": None}]
 
 
 def test_get_file_returns_url(monkeypatch):
