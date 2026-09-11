@@ -113,11 +113,15 @@ def _course_score(course: dict, kind: str):
 
 
 def get_course(canvas_url: str, token: str, course_id: int) -> dict:
-    """返回单课程详情 {id, name, syllabus_text, teachers}。
+    """返回单课程详情 {id, name, syllabus_text, syllabus_html, teachers}。
 
-    syllabus_body 用 strip_html 转纯文本（前端只渲染纯文本，不碰原始 HTML）。
+    syllabus 给两份，用途不同，都不能省：
+      - syllabus_text 是 strip_html 过的纯文本 —— AI 总结（main.py 的 summarize 端点）在用它。
+      - syllabus_html 是**原始 HTML** —— Canvas 大纲里的表格、列表、图片只能靠它还原。
+    安全约束：原始 HTML **只允许进 sandbox 的 iframe**（前端 setRichFrame），
+    **绝不可直接 innerHTML 进主文档**，否则等于把 XSS 面开给 Canvas 侧任意内容。
     teachers 取 TeacherEnrollment + TaEnrollment 的 user 名字。
-    syllabus 缺失（空课程）返回空串；认证错误抛 CanvasError。
+    syllabus 缺失（空课程）两个字段都是空串；认证错误抛 CanvasError。
     """
     base = canvas_url.rstrip("/")
     with requests.Session() as s:
@@ -140,6 +144,7 @@ def get_course(canvas_url: str, token: str, course_id: int) -> dict:
         "id": course.get("id", course_id),
         "name": course.get("name", f"Course {course_id}"),
         "syllabus_text": strip_html(course.get("syllabus_body", "")),
+        "syllabus_html": course.get("syllabus_body") or "",
         "teachers": [t.get("name", "") for t in teachers if t.get("name")],
     }
 
@@ -331,10 +336,13 @@ def get_pages(canvas_url: str, token: str, course_id: int) -> list[dict]:
 
 def get_page_body(canvas_url: str, token: str, course_id: int,
                   page_url: str) -> dict:
-    """单个 Page 的正文。
+    """单个 Page 的正文，给两份。
 
-    原始 body **实测是 HTML 片段** → 必须过 strip_html 转纯文本；前端插入时再过
-    esc() 防注入。两道处理各司其职，都不能省。
+    原始 body **实测是 HTML 片段**，所以：
+      - body_text 是 strip_html 过的纯文本（兜底渲染用）。
+      - body_html 是**原始 HTML** —— 课程安排表、评分标准表这类内容只在它里面。
+    安全约束同 get_course：原始 HTML **只允许进 sandbox 的 iframe**（前端 setRichFrame），
+    **绝不可直接 innerHTML 进主文档**。
     """
     base = canvas_url.rstrip("/")
     with requests.Session() as s:
@@ -350,6 +358,7 @@ def get_page_body(canvas_url: str, token: str, course_id: int,
         "url": p.get("url") or page_url,
         "title": p.get("title") or "",
         "body_text": strip_html(p.get("body") or ""),
+        "body_html": p.get("body") or "",
         "updated_at": p.get("updated_at") or "",
         "html_url": p.get("html_url") or "",      # 此端点实测是绝对 URL
     }

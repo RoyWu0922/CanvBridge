@@ -49,6 +49,19 @@ body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Pin
 /* 超链接统一样式（此前裸 <a> 落到浏览器默认深蓝 #0000EE，暗色也不提亮） */
 a { color:var(--link); }
 
+/* 长串防溢出。Canvas 的讨论标题 / 文件名 / 邮箱 / 网址可能是一整段没有断行机会的长串，
+   浏览器不会在「词」内部断行，于是直接从卡片右侧漏出去（实测：105 字符的下划线文件名
+   在 720px 宽的讨论行里右溢 90px）。中文不受影响 —— CJK 默认就允许任意处断行，
+   真正打中的只有 ASCII 长串。
+   overflow-wrap 是可继承属性，写在 body 上即覆盖全站文本；
+   已有的 white-space:nowrap + ellipsis（.hr-name / .module-file-link / .module-pop-title）
+   不受影响，仍是截断而非折行。 */
+body { overflow-wrap:anywhere; }
+/* 上面那条治不了 flex/grid 子项：它们的默认 min-width:auto 会拒绝收缩到内容宽度以下，
+   此时整条轨道被撑破而不是文字漏出（实测 .stat-card / .home-cards 的卡片被撑到 1575px），
+   必须显式给 0。 */
+.item > div, .stat-row > *, .today-grid > *, .home-cards > *, .set-grid > * { min-width:0; }
+
 /* 语言切换按钮 */
 .lang-btn { padding:6px 12px; border:1px solid var(--border); background:var(--surface);
   border-radius:8px; font-weight:600; font-size:12.5px; color:var(--ink); cursor:pointer; }
@@ -263,6 +276,11 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 .detail-syllabus { white-space:pre-wrap; font-size:13px; line-height:1.7; color:var(--ink);
   background:var(--surface-2); border:1px solid var(--border); border-radius:var(--radius-sm);
   padding:10px 12px; max-height:260px; overflow-y:auto; margin-bottom:10px; }
+/* 富内容（syllabus / Page 正文）的沙箱 iframe：固定高 + 内部滚动，观感与上面的纯文本兜底一致。
+   内边距由 iframe 内部的 <style> 负责（见 app.js 的 richThemeCss），这里不能再给，
+   否则框内框外两份 padding 叠加。 */
+.rich-frame { display:block; width:100%; height:260px; margin-bottom:10px;
+  border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--surface-2); }
 .assignment-row { display:block; padding:8px 10px; margin:4px 0; text-decoration:none; color:var(--ink);
   border:1px solid var(--border); border-left:4px solid var(--warn); border-radius:8px; }
 .assignment-row:hover { background:var(--surface-2); }

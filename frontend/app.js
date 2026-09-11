@@ -46,6 +46,9 @@ try { const _v = localStorage.getItem(THEME_KEY); if (_v === "light" || _v === "
 function applyThemeAttr(){
   const dark = themeMode === "dark" || (themeMode === "system" && _themeMQ.matches);
   document.documentElement.dataset.theme = dark ? "dark" : "light";
+  // 沙箱 iframe 是独立文档，拿不到父页面的 :root 变量，配色要单独同步一次
+  // （函数声明提升，所以即便本文件靠后定义，这里也调得到）
+  refreshRichFrames();
 }
 function _themeMQChanged(){ if (themeMode === "system") applyThemeAttr(); }
 function applyTheme(mode){
@@ -244,6 +247,102 @@ async function fetchDetailPages(canvasId){
   }
 }
 
+/* ===== Canvas 富内容（syllabus / Page 正文）的沙箱渲染 =====
+   Canvas 给的是原始 HTML（表格、列表、图片、站内链接），纯文本渲染会把它们全拍平 ——
+   课程安排表、评分标准表这类内容只在 HTML 里。这里用 sandbox 的 iframe 还原。
+
+   安全约束（改动前务必读完）：sandbox 只给 allow-same-origin，**永远不要加 allow-scripts**。
+   「脚本不执行」是这套方案成立的前提；allow-same-origin 只是为了让父页面能读
+   contentDocument 去挂链接拦截和换主题样式 —— 一旦同时给了 allow-scripts，
+   iframe 就拿到了与本应用同源的脚本执行权，等于把 XSS 面开给 Canvas 侧任意内容。
+   同理：原始 HTML 只许进 srcdoc，**不许拼进主文档的 innerHTML**。 */
+function richThemeCss(){
+  const cs = getComputedStyle(document.documentElement);
+  const v = (n, fb) => (cs.getPropertyValue(n).trim() || fb);
+  const dark = document.documentElement.dataset.theme === "dark";
+  const border = v("--border", "#e5e6ea"), s2 = v("--surface-2", "#f1f2f4");
+  return `
+    html { color-scheme:${dark ? "dark" : "light"}; }
+    body { margin:0; padding:10px 12px; background:transparent; overflow-wrap:anywhere;
+      font:13px/1.7 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;
+      color:${v("--ink", "#1a1d23")}; }
+    a { color:${v("--link", "#2563eb")}; }
+    img { max-width:100%; height:auto; }
+    h1,h2,h3,h4,h5,h6 { font-size:14px; margin:12px 0 6px; }
+    p { margin:8px 0; }
+    ul,ol { margin:8px 0; padding-left:22px; }
+    table { border-collapse:collapse; width:100%; margin:8px 0; font-size:12.5px; }
+    th,td { border:1px solid ${border}; padding:6px 8px; text-align:left; vertical-align:top; }
+    th { background:${s2}; font-weight:600; }
+    code,pre { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+    pre { background:${s2}; padding:8px 10px; border-radius:6px; overflow:auto; }
+    blockquote { margin:8px 0; padding:4px 12px; border-left:3px solid ${border};
+      color:${v("--muted", "#6b7280")}; }
+    hr { border:none; border-top:1px solid ${border}; margin:12px 0; }`;
+}
+
+/* 相对链接与图片（Canvas 大纲里很常见）要按 Canvas 站点解析，而不是本应用地址 */
+function richFrameDoc(rawHtml){
+  let base = "";
+  try {
+    const u = settings().canvas_url;
+    if (/^https?:\/\//i.test(u)) base = `<base href="${escAttr(u.replace(/\/+$/, "") + "/")}">`;
+  } catch (e) {}
+  return `<!doctype html><html><head><meta charset="utf-8">${base}` +
+         `<style id="cb-theme">${richThemeCss()}</style></head><body>${rawHtml}</body></html>`;
+}
+
+/* 用 srcdoc 而不是拼进主文档 —— 属性转义一份长 HTML 文档极易出错 */
+function setRichFrame(frame, rawHtml){
+  if(!frame || !rawHtml){ return; }
+  frame.setAttribute("sandbox", "allow-same-origin");   // 绝不加 allow-scripts，见上方注
+  frame.srcdoc = richFrameDoc(rawHtml);
+  const onload = () => {
+    // srcdoc 之前 iframe 会先加载一次 about:blank —— 用 cb-theme 认出真正那一次
+    let d = null;
+    try { d = frame.contentDocument; } catch (e) { return; }
+    if(!d || !d.body || !d.getElementById("cb-theme")){ return; }
+    frame.removeEventListener("load", onload);
+    wireRichFrameLinks(frame);
+  };
+  frame.addEventListener("load", onload);
+}
+
+/* iframe 内的点击不会冒泡到主文档，app.js 顶部那个外链桥（挂父文档捕获阶段）够不着它，
+   必须伸进 contentDocument 自己挂一个 —— 否则点链接会把 Canvas 页面加载进这个小框。 */
+function wireRichFrameLinks(frame){
+  let d = null;
+  try { d = frame.contentDocument; } catch (e) { return; }   // 跨源或不允许 → 放弃拦截
+  if(!d){ return; }
+  d.addEventListener("click", (e) => {
+    const a = e.target && e.target.closest ? e.target.closest("a[href]") : null;
+    if(!a){ return; }
+    const href = a.getAttribute("href") || "";
+    if(href.charAt(0) === "#"){ return; }                    // 页内锚点留给框内自己滚
+    let abs = "";
+    try { abs = new URL(href, d.baseURI).href; } catch (err) { return; }   // baseURI 认 <base>
+    if(!/^https?:/i.test(abs)){ return; }
+    e.preventDefault();                                      // 这个框只用来展示，不导航
+    window.open(abs, "_blank", "noopener");                  // 有壳桥时被接管 → 系统浏览器
+  }, true);
+}
+
+/* 渲染后调用：把容器里那个占位 iframe 装上内容。rawHtml 为空则不接管，保留纯文本兜底。 */
+function mountRichFrame(container, rawHtml){
+  if(!container || !rawHtml){ return; }
+  setRichFrame(container.querySelector("iframe.rich-frame"), rawHtml);
+}
+
+/* 主题切换时只替换 iframe 里那段 <style>，不重设 srcdoc —— 重设会重新加载并丢掉滚动位置 */
+function refreshRichFrames(){
+  $$("iframe.rich-frame").forEach(f => {
+    try {
+      const st = f.contentDocument && f.contentDocument.getElementById("cb-theme");
+      if(st){ st.textContent = richThemeCss(); }
+    } catch (e) {}
+  });
+}
+
 /* 展开单条 Page 时才拉正文；pageBodyCache 命中则直接渲染，不发请求。 */
 async function loadPageBody(courseId, pageUrl, hostEl){
   const key = `${courseId}:${pageUrl}`;
@@ -259,10 +358,16 @@ async function loadPageBody(courseId, pageUrl, hostEl){
     }
   }
   const hit = pageBodyCache[key];
+  const pg = hit.error ? {} : (hit.page || {});
   hostEl.innerHTML = hit.error
     ? `<div class="muted">${t("courses.page_fail")}${esc(hit.error)}</div>`
-    // 纯文本插入：不注入 Canvas 返回的原始 HTML
-    : `<div class="detail-syllabus">${esc((hit.page && hit.page.body_text) || "")}</div>`;
+    // 有原始 HTML 就交给沙箱 iframe（表格/图片/站内链接靠它还原），否则退回纯文本
+    : pg.body_html
+        // sandbox 写在标记里而不是只靠 setRichFrame：这样它从创建的第一刻就是沙箱，
+        // 不存在「先无沙箱加载 about:blank、再补属性」的窗口
+        ? `<iframe class="rich-frame" sandbox="allow-same-origin" title="${escAttr(pg.title || "")}"></iframe>`
+        : `<div class="detail-syllabus">${esc(pg.body_text || "")}</div>`;
+  mountRichFrame(hostEl, pg.body_html);
 }
 
 async function openCourseDetail(canvasId, banwebCourse){
@@ -416,9 +521,14 @@ function renderDetail(){
       `</div>`
     : "";
   let syl = "";
-  if (c && c.syllabus_text) {
+  if (c && (c.syllabus_html || c.syllabus_text)) {
+    // 有原始 HTML 就交给沙箱 iframe（表格/图片/站内链接靠它还原），否则退回纯文本
+    const sylBody = c.syllabus_html
+      // sandbox 写在标记里而不是只靠 setRichFrame：这样它从创建的第一刻就是沙箱
+      ? `<iframe class="rich-frame" sandbox="allow-same-origin" title="${escAttr(t("detail.syllabus"))}"></iframe>`
+      : `<div class="detail-syllabus">${esc(c.syllabus_text)}</div>`;
     syl = `<div class="detail-section"><div class="sub-label">${t("detail.syllabus")}</div>
-         <div class="detail-syllabus">${esc(c.syllabus_text)}</div>
+         ${sylBody}
          <button id="btnSummarize" class="btn btn-ghost">${t("detail.summarize")}</button>
          ${summaryHtml}${sylExtractHtml}</div>`;
   } else if (c) {
@@ -448,6 +558,8 @@ function renderDetail(){
     ${loc}
     ${syl}
     ${c ? `<div class="detail-section"><div class="sub-label">${t("detail.assignments")}</div>${asg}</div>` : ""}`;
+  // 上面那串里 syllabus 那格是空 iframe 占位，内容在这里装（原始 HTML 不许拼进 innerHTML）
+  mountRichFrame($("detailBody"), c && c.syllabus_html);
   // 有提取项才显示底部写入条（写日历/写提醒下拉与按钮在 index.html 静态区块）
   const wb = $("detailWriteBar");
   if (wb) wb.hidden = !(detailSylEvents.length || detailSylReminders.length);

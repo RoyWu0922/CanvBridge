@@ -260,6 +260,7 @@ def test_get_course_maps_fields(monkeypatch):
     assert result["id"] == 42
     assert result["name"] == "CS 101"
     assert result["syllabus_text"] == "Welcome to CS 101"   # strip_html 去标签
+    assert result["syllabus_html"] == "<p>Welcome to <b>CS 101</b></p>"   # 原始 HTML 原样保留
     assert result["teachers"] == ["Alice", "Bob"]
 
 
@@ -275,6 +276,7 @@ def test_get_course_no_syllabus(monkeypatch):
     monkeypatch.setattr(canvas_client, "_paginate", lambda s, u, p, t: [])
     result = canvas_client.get_course("https://x.instructure.com", "tok", 42)
     assert result["syllabus_text"] == ""
+    assert result["syllabus_html"] == ""        # 缺失也必须是空串，不能是 None（前端按真值判断）
     assert result["teachers"] == []
 
 
@@ -605,6 +607,10 @@ def test_get_page_body_strips_html(monkeypatch):
     assert "<a href" not in out["body_text"]
     assert "Adapted from" in out["body_text"]
     assert "要点一" in out["body_text"]
+    # 同一份 body 的两种形态必须并存：text 拍平（兜底），html 原样（表格/链接靠它还原）
+    assert "<p>" in out["body_html"]
+    assert '<a href="https://x">' in out["body_html"]
+    assert "<li>" in out["body_html"]
     assert out["html_url"] == "https://x/courses/1/pages/home"   # 此端点实测是绝对 URL
     assert s.calls[0][0] == "https://x/api/v1/courses/1/pages/home"
 
