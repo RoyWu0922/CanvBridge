@@ -443,7 +443,11 @@ async function openFileInline(courseId, fileId, name){
   }
   const blob = await resp.blob();
   const url = URL.createObjectURL(blob);
-  window.open(url, "_blank", "noopener");
+  /* window.open 在 await 之后调用已脱离用户手势上下文，被弹窗拦截器拦下会**静默返回 null**
+     而不抛错。若不当成失败，openFileSmart 的降级分支永远不会触发 —— 用户点了没反应、
+     也没提示。所以这里把"没拿到窗口"判成失败，交给上层走下载兜底。 */
+  const win = window.open(url, "_blank", "noopener");
+  if (!win){ URL.revokeObjectURL(url); return { ok: false, error: "" }; }
   // objectURL 交给新打开的文档用；延迟释放避免新标签还没加载完就被回收
   setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 60000);
   return { ok: true };
