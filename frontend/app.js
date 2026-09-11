@@ -2365,9 +2365,36 @@ async function hubRefreshFiles(cid){
   // 用户可能已经切走或返回列表：只在仍停留在本课程的文件标签时才重渲染
   if (hubCid === cid && hubTab === "files") renderHubFiles(cid);
 }
-/* 占位：由 Task 6 替换为真实实现 */
-function renderHubAnnounce(cid){ $("hubPanel").innerHTML = `<div class="muted">${t("hub.tab_empty.announce_unloaded")}</div>`; }
-function hubRefreshAnnounce(){}
+/* 公告子标签。只读 summaryResults 缓存。正文用 .announce-msg.expanded 保持全文 ——
+   展开按钮的布线与委托都只扫 #summaries，这里复制一个按钮会点不动（裁定 R4）。 */
+function renderHubAnnounce(cid){
+  const box = $("hubPanel");
+  if (!box) return;
+  const g = (summaryResults || []).find(c => c.course_id === cid);
+  if (!g){ box.innerHTML = `<div class="muted">${t("hub.tab_empty.announce_unloaded")}</div>`; return; }
+  if (g.error){ box.innerHTML = `<div class="muted">${esc(g.error)}</div>`; return; }
+  const anns = g.announcements || [];
+  if (!anns.length){ box.innerHTML = `<div class="muted">${t("hub.tab_empty.announce")}</div>`; return; }
+  const cvUrl = (settings().canvas_url || "").replace(/\/+$/, "");
+  box.innerHTML = anns.map(a => {
+    const titleHtml = (cvUrl && a.id)
+      ? `<a href="${escAttr(cvUrl)}/courses/${escAttr(cid)}/announcements/${escAttr(a.id)}" target="_blank" rel="noopener">${esc(a.title)}</a>`
+      : esc(a.title);
+    return `<div class="item"><div>
+      <div class="item-title">${titleHtml} <span class="muted">${esc(String(a.posted_at || "").slice(0, 10))}</span></div>
+      <div class="announce-msg-wrap"><div class="announce-msg expanded"><div class="announce-msg-inner">${esc(a.message)}</div></div></div>
+    </div></div>`;
+  }).join("");
+}
+
+/* 公告没有"按单门课拉取"的端点：syncAnnouncements() 是跨全部选中课程的批量操作
+   （app.js:741-758）。所以这里只在缓存里没有这门课时才主动同步一次，
+   否则每次切到公告标签都跑一遍全量同步，代价过大（裁定 R3）。 */
+async function hubRefreshAnnounce(){
+  if ((summaryResults || []).some(c => c.course_id === hubCid)) return;   // 有缓存 → 不重复批量拉
+  const ok = await syncAnnouncements();
+  if (ok && hubCid != null && hubTab === "announce") renderHubAnnounce(hubCid);
+}
 /* 占位：由 Task 7 替换为真实实现 */
 function renderHubTodo(cid){ $("hubPanel").innerHTML = `<div class="muted">${t("hub.tab_empty.todo_unloaded")}</div>`; }
 function renderHubDiscuss(cid){ $("hubPanel").innerHTML = `<div class="muted">${t("hub.tab_empty.discuss_unloaded")}</div>`; }
