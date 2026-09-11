@@ -1371,8 +1371,10 @@ $("btnDownloadFiles").onclick = async () => {
 /* ===== 待办 + Canvas 日历事件 ===== */
 let todoItems = [];       // 归一化待办（/api/todo）
 /* todoItems 初值就是 []，加载后真为 0 条也还是 [] —— 光看它区分不了「未加载」与
-   「已加载但全局 0 条」。课程中心的待办标签要据此选空态文案，所以另立一个显式标志；
-   只在 loadTodo() 的成功路径置真（bgFetchTodoBadge 只是给页签红点占位、不渲染待办列表）。 */
+   「已加载但全局 0 条」。课程中心的待办标签要据此选空态文案，所以另立一个显式标志。
+   凡成功拿到**完整一整批** todoItems 的路径都要置真，现共两处：loadTodo() 与
+   bgFetchTodoBadge()。注意 bgFetchTodoBadge 自身不渲染待办列表，但它填的 todoItems
+   会被 renderHubTodo 读走 —— 漏置真会让待办标签误报「尚未加载」，故必须一并置真。 */
 let todoLoaded = false;
 let todoEvents = [];      // Canvas 一次性事件（/api/calendar_events）
 let todoTabInit = false;
@@ -1388,7 +1390,11 @@ async function bgFetchTodoBadge(){
     if(r.ok === true && Array.isArray(r.items)){
       if(todoTabInit) return;
       bgTodoDone = true;
-      todoItems = r.items;                 // 占位即可：待办页签打开时会再 loadTodo 刷新
+      todoItems = r.items;
+      /* 同一端点 /api/todo、同样是**完整成功的一整批** → 与 loadTodo 成功路径语义相同，
+         故必须一并置真，否则课程中心的待办标签会把「已在内存里的待办」误报成「尚未加载」。
+         （此批为空时 todoItems=[] + todoLoaded=true → 「没有待办」，正是正确语义。） */
+      todoLoaded = true;
       refreshBadges();
     }
   } catch (e) {}
