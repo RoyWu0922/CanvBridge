@@ -2398,7 +2398,54 @@ async function hubRefreshAnnounce(){
   const ok = await syncAnnouncements();
   if (ok && hubCid != null && hubTab === "announce") renderHubAnnounce(hubCid);
 }
-/* 占位：由 Task 7 替换为真实实现 */
-function renderHubTodo(cid){ $("hubPanel").innerHTML = `<div class="muted">${t("hub.tab_empty.todo_unloaded")}</div>`; }
-function renderHubDiscuss(cid){ $("hubPanel").innerHTML = `<div class="muted">${t("hub.tab_empty.discuss_unloaded")}</div>`; }
-function hubRefreshDiscuss(cid){}
+/* 待办子标签。只读 todoItems 缓存，不做后台刷新 ——
+   /api/todo 没有课程参数，只能整批取（spec §4.4 明确本轮不刷新）。 */
+function renderHubTodo(cid){
+  const box = $("hubPanel");
+  if (!box) return;
+  const all = todoItems || [];
+  if (!all.length){ box.innerHTML = `<div class="muted">${t("hub.tab_empty.todo_unloaded")}</div>`; return; }
+  const mine = all.filter(i => i.course_id === cid);
+  if (!mine.length){ box.innerHTML = `<div class="muted">${t("hub.tab_empty.todo")}</div>`; return; }
+  box.innerHTML = mine.map(it => `
+    <div class="item"><div>
+      <div class="item-title">${it.html_url
+        ? `<a href="${escAttr(it.html_url)}" target="_blank" rel="noopener">${esc(it.title)}</a>`
+        : esc(it.title)}
+        ${it.overdue ? `<span class="sched-badge err">${esc(t("todo.overdue_badge"))}</span>` : ""}</div>
+      <div class="file-path">${esc(it.type || "")}${it.due_at ? " · " + esc(t("announce.due")) + " " + esc(fmtDue(it.due_at)) : ""}${it.points_possible != null ? " · " + esc(t("common.points", { n: it.points_possible })) : ""}</div>
+    </div></div>`).join("");
+}
+
+/* 讨论子标签。复用既有 topicRowHtml（纯行渲染，不绑容器），不复制一份。
+   ⚠️ discussData.by_course 的键经 JSON 往返后是字符串，必须 String(cid) 取用。 */
+function renderHubDiscuss(cid){
+  const box = $("hubPanel");
+  if (!box) return;
+  if (!discussData){ box.innerHTML = `<div class="muted">${t("hub.tab_empty.discuss_unloaded")}</div>`; return; }
+  const key = String(cid);
+  const errs = discussData.errors || {};
+  if (errs[key] !== undefined){ box.innerHTML = `<div class="muted">${t("discuss.course_fail")}${esc(errs[key])}</div>`; return; }
+  const by = discussData.by_course || {};
+  const list = by[key];
+  if (list === undefined){ box.innerHTML = `<div class="muted">${t("hub.tab_empty.discuss_unloaded")}</div>`; return; }
+  if (!list.length){ box.innerHTML = `<div class="muted">${t("hub.tab_empty.discuss")}</div>`; return; }
+  box.innerHTML = list.map(topicRowHtml).join("");
+}
+
+/* 后台按本课程刷新讨论。只替换这一门课的结果，不动其它课程的缓存。 */
+async function hubRefreshDiscuss(cid){
+  const s = settings();
+  if (!s.canvas_url || !s.canvas_token) return;
+  const r = await api("discussions", { canvas_url: s.canvas_url, canvas_token: s.canvas_token, course_ids: [cid] });
+  if (r.ok !== true) return;
+  const key = String(cid);                                    // 同上：字符串键
+  const prev = discussData || { by_course: {}, errors: {} };
+  const by = Object.assign({}, prev.by_course || {});
+  const errs = Object.assign({}, prev.errors || {});
+  by[key] = (r.by_course || {})[key] || [];
+  if (r.errors && r.errors[key] !== undefined) errs[key] = r.errors[key]; else delete errs[key];
+  discussData = { by_course: by, errors: errs };
+  if (hubCid === cid && hubTab === "discuss") renderHubDiscuss(cid);
+  refreshBadges();                                            // 讨论未读数影响侧栏徽章
+}
