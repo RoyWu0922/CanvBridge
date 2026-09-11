@@ -34,6 +34,7 @@
 | R4 | 公告子标签的正文用 `.announce-msg expanded`（**始终全文**），不复制"展开"按钮 | `.announce-msg` 默认 `-webkit-line-clamp:4; overflow:hidden`（`app.css:226-227`），而展开按钮的布线与点击委托都**只扫 `#summaries`**（`wireAnnounceExpands()` `app.js:869-870`、委托 `app.js:888`）。直接复用 `.announce-msg` 而不复用按钮，会导致长公告被**静默截断且无法展开**。加 `expanded` 一行解决，且不必改动正在跑的 `#summaries` 代码。 | 课程中心里公告不折叠，长公告卡片较长；功能正确，仅观感差异。 |
 | R5 | 给 `#courseCheckboxes` 所在的 `.course-list` 补一条 flex 规则 | `.course-list` 这个类名在 `index.html:207` 出现，但 `app.css` 里**没有任何规则**（本轮已实测确认）。它现在落在设置页卡片内，而 `.chip` 自身无 margin，靠 `.chips` 的 `gap` 才有间距 —— 搬进设置页后会挤成一坨，看起来像"搬迁搬坏了"。 | 极小：仅课程勾选区的外观比现状好看，无功能面。 |
 | R6 | 删除被本轮废弃的 `module.open_file_fail` 与 `module.fetching`，以及 `settings.group.ignore` | 这三个键在本轮之后不再有任何引用，留着就是死键，而本轮正好引入了死键基线门（Task 1）—— 让门一开工就自带"新增即失败"的压力，是任务范围内的清理，不是无关重构。 | 若误判（仍有引用），`check_i18n_keys.mjs` 的悬空引用检查会立刻报错，不会静默。 |
+| R7 | Tasks 5–8 里「起真身，人工确认」的目视步骤**不在实施者侧执行**：换成结构性替代（新 id/结构确在 HTML 中、四文件拼接 `--check` 通过），并在报告中**逐条列出哪些目视项未验证**；浏览器实机核对改由控制方用 chrome-devtools 执行 | 实施者是子代理，看不见浏览器，无法诚实签收目视项——写"确认通过"就是不实报告。而 Task 3 那个 Critical 的教训恰恰是**静态门全绿、运行时行为全错**：把唯一能发现这类缺陷的环节交给看不见画面的人，等于没有这道环节 | 若控制方也漏做，这四步的目视项就无人验证；代价是缺陷漏到用户人工验收，已列入验收清单，不会静默消失 |
 
 ---
 
@@ -1112,7 +1113,11 @@ node tools/check_dom_ids.mjs
 node tools/check_i18n_keys.mjs
 .venv/bin/python -m pytest -q
 ```
-Expected: 全绿，`228 passed`，死键 `18 个（基线 18…）`（本任务不增删键）。
+Expected: 全绿，`228 passed`，死键 `21 个（基线 21…）`（本任务不增删死键）。
+
+**若数字不是 21，停下来核对。** 门的判定是 `dead.length > DEAD_BASELINE` 才失败 —— **只允许持平或下降**。
+本任务只加 1 个键（`hub.tab_empty.files`）且**当场就被 `renderHubFiles` 引用**，故不增死键；删/加活键都不改变死键计数。
+所以死键数与基线都**停在 Task 4 结束时的 21，不要下调**。把它下调到实际值以下会让**下一次**跑门直接失败（`21 > 18` → 退出码 1）。
 
 - [ ] **Step 4: 起真身，人工确认文件标签**
 
@@ -1463,7 +1468,7 @@ node tools/check_dom_ids.mjs
 node tools/check_i18n_keys.mjs
 .venv/bin/python -m pytest -q
 ```
-Expected: 全绿，`228 passed`，死键 `18 个（基线 18…）`。
+Expected: 全绿，`228 passed`，死键 `21 个（基线 21…）`（本任务不增删死键，与 Task 4 结束值持平）。
 
 - [ ] **Step 6: 起真身，人工确认**
 
