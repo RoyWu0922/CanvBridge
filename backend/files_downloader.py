@@ -81,15 +81,19 @@ def build_legacy_folder_path(folder_id, folders: list[dict]) -> str:
 
 def plan_downloads(download_dir: str, course_name: str, files: list[dict],
                    folders: list[dict]) -> list[dict]:
-    """规划 dest_path = 下载目录/科目/原文件夹路径/文件名；同名加 _N 后缀。
+    """规划落盘目标；同名加 _N 后缀。
 
-    saved 表示目标路径在磁盘上已存在（供前端显示「已保存」并默认不勾选）。
+    dest_path 是不含课程根文件夹的新路径（真正落盘的位置）；legacy_path 是含课程根
+    那一层的旧路径，只用于「是否已经下过」的判定 —— 老用户磁盘上是旧布局，不能因为
+    换了布局就把它当成没下过、再下一份。
+    saved = 新路径存在 **或** 旧路径存在（供前端显示「已保存」并默认不勾选）。
     """
     root = Path(download_dir).expanduser() / _safe_name(course_name)
     planned: list[dict] = []
     used: set[str] = set()
     for f in files:
         folder_path = build_folder_path(f.get("folder_id"), folders)
+        legacy_folder = build_legacy_folder_path(f.get("folder_id"), folders)
         base = root / folder_path if folder_path else root
         display = _safe_name(f.get("display_name", "file"))
         dest = base / display
@@ -100,9 +104,11 @@ def plan_downloads(download_dir: str, course_name: str, files: list[dict],
             dest = base / f"{stem}_{counter}{suffix}"
             counter += 1
         used.add(str(dest))
+        legacy = root / legacy_folder / display if legacy_folder else root / display
         planned.append({
             "file_id": f["id"], "display_name": display, "dest_path": str(dest),
-            "saved": dest.exists(),
+            "legacy_path": str(legacy),
+            "saved": dest.exists() or legacy.exists(),
         })
     return planned
 
@@ -139,6 +145,14 @@ def download_items(canvas_url: str, token: str, files_by_id: dict[int, dict],
         try:
             if dest.exists():
                 skipped.append(str(dest))
+                continue
+            # 旧布局（含课程根那层）里已有同一文件 → 同样算「已下过」：跳过，不重下、
+            # 也不搬动（D1）。legacy_path 由客户端回传、同样经 confine_dest 重新锚定；
+            # 它只影响「跳不跳」，写不出下载目录、也覆盖不了任何文件。
+            legacy = (confine_dest(download_dir, item["legacy_path"])
+                      if item.get("legacy_path") else None)
+            if legacy is not None and legacy.exists():
+                skipped.append(str(legacy))
                 continue
             canvas_client.download_file(canvas_url, token, info["url"], str(dest))
             downloaded.append(str(dest))

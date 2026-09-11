@@ -106,15 +106,24 @@ def test_plan_downloads_path_and_rename(tmp_path):
         {"id": 4, "display_name": "a.pdf", "folder_id": 2},
     ]
     folders = [
-        {"id": 1, "name": "Slides", "parent_folder_id": None},
+        {"id": 1, "name": "course files", "parent_folder_id": None},
         {"id": 2, "name": "Week 3", "parent_folder_id": 1},
     ]
     planned = files_downloader.plan_downloads(str(tmp_path), "CS 101", files, folders)
     assert len(planned) == 4
-    assert planned[0]["dest_path"] == str(tmp_path / "CS 101" / "Slides" / "Week 3" / "a.pdf")
-    assert planned[1]["dest_path"] == str(tmp_path / "CS 101" / "Slides" / "Week 3" / "a_2.pdf")
+    # 新路径：不含课程根文件夹那一层（真正落盘的位置）
+    assert planned[0]["dest_path"] == str(tmp_path / "CS 101" / "Week 3" / "a.pdf")
+    assert planned[1]["dest_path"] == str(tmp_path / "CS 101" / "Week 3" / "a_2.pdf")
     assert planned[2]["dest_path"] == str(tmp_path / "CS 101" / "b.pdf")
-    assert planned[3]["dest_path"] == str(tmp_path / "CS 101" / "Slides" / "Week 3" / "a_3.pdf")
+    assert planned[3]["dest_path"] == str(tmp_path / "CS 101" / "Week 3" / "a_3.pdf")
+    # 旧路径：保留课程根那一层，供「是否已下过」判定
+    assert planned[0]["legacy_path"] == \
+        str(tmp_path / "CS 101" / "course files" / "Week 3" / "a.pdf")
+    # 根下文件（folder_id 为 None）的**新旧路径相同** —— 它在旧布局里也是直接落在
+    # 课程目录下；只有子文件夹里的文件才会多出 "course files" 那一层。
+    # 别把它的 legacy_path 也期望成带前缀的。
+    assert planned[2]["legacy_path"] == str(tmp_path / "CS 101" / "b.pdf")
+    assert planned[2]["legacy_path"] == planned[2]["dest_path"]
     # 磁盘上已存在的目标文件应标记 saved=True，其余 False
     assert planned[0]["saved"] is False  # 规划时该文件还不存在
     dest0 = Path(planned[0]["dest_path"])
@@ -123,6 +132,50 @@ def test_plan_downloads_path_and_rename(tmp_path):
     planned2 = files_downloader.plan_downloads(str(tmp_path), "CS 101", files, folders)
     assert planned2[0]["saved"] is True
     assert planned2[1]["saved"] is False
+
+
+def test_plan_downloads_marks_saved_when_only_legacy_exists(tmp_path):
+    """老用户磁盘上是旧布局：文件只存在于 legacy_path → 同样算已保存（不重下）。"""
+    files = [{"id": 1, "display_name": "a.pdf", "folder_id": 2}]
+    folders = [
+        {"id": 1, "name": "course files", "parent_folder_id": None},
+        {"id": 2, "name": "Week 3", "parent_folder_id": 1},
+    ]
+    legacy = tmp_path / "CS 101" / "course files" / "Week 3" / "a.pdf"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_bytes(b"old")
+    planned = files_downloader.plan_downloads(str(tmp_path), "CS 101", files, folders)
+    assert planned[0]["saved"] is True
+    assert not Path(planned[0]["dest_path"]).exists()   # 检测不得凭空创建新路径
+
+
+def test_plan_downloads_legacy_equals_dest_when_no_folders(tmp_path):
+    """folders 为空（含文件全在课程根）时两条路径重合，saved 仍按磁盘真实情况给。"""
+    files = [{"id": 1, "display_name": "a.pdf", "folder_id": None}]
+    planned = files_downloader.plan_downloads(str(tmp_path), "CS 101", files, [])
+    assert planned[0]["dest_path"] == planned[0]["legacy_path"]
+    assert planned[0]["saved"] is False
+
+
+def test_download_items_skips_when_legacy_path_exists(monkeypatch, tmp_path):
+    """只有旧路径存在时，手动勾选下载也不得再下一份到新路径（D1）。"""
+    calls = []
+    def ok(canvas_url, token, url, dest):
+        calls.append(dest)
+    monkeypatch.setattr(canvas_client, "download_file", ok)
+    legacy = tmp_path / "CS 101" / "course files" / "a.pdf"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_bytes(b"old")
+    files_by_id = {1: {"url": "http://x/f/1"}}
+    planned = [{"file_id": 1, "dest_path": str(tmp_path / "CS 101" / "a.pdf"),
+                "legacy_path": str(legacy)}]
+    result = files_downloader.download_items("https://x", "tok", files_by_id, planned,
+                                             str(tmp_path))
+    assert result["ok"] is True
+    assert result["downloaded"] == []
+    assert result["skipped"] == [str(legacy)]
+    assert calls == []                                    # 没有真的去下
+    assert not (tmp_path / "CS 101" / "a.pdf").exists()   # 新路径没被创建
 
 
 def test_download_items_reports_failure(monkeypatch, tmp_path):
