@@ -2206,7 +2206,7 @@ function hubCourseName(){
    所以这里自行拉一次（有缓存就直接渲染，不闪空白）。与 discuss/grades/home
    的"首次进入才拉"是同一个 house pattern。 */
 function initCourseHubTab(){
-  if (hubInit) return;
+  if (hubInit){ renderCourseHubList(); return; }   // 已初始化过：从缓存重绘，不重复打网络
   hubInit = true;
   if ((courseList || []).length){ renderCourseHubList(); return; }
   const s = settings();
@@ -2216,6 +2216,7 @@ function initCourseHubTab(){
 async function loadCourseHubList(){
   const r = await api("courses", settings());
   if (r.ok) courseList = r.courses || [];
+  else setStatus(t("status.courses_fail") + (r.error || ""), "err");   // 失败必须说失败，不能装成「没有课程」
   renderCourseHubList();
 }
 
