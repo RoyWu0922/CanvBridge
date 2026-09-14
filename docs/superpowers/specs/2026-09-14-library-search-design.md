@@ -89,7 +89,16 @@ GET https://julac-cuh.primo.exlibrisgroup.com/primaws/rest/pub/pnxs
 
 > **⚠️ 这套分类没有 API。** `app3.lib.cityu.edu.hk/ereslist/` 是老 PHP 站，实测 `format=json` / `output=json` **都是假的**（照样返回 `text/html`），只能解析 HTML。
 
-**因此 area→数据库 的映射必须抓一次、缓存到本地**，搜索时不重复抓取。这是全设计里唯一脆弱的依赖，**必须与主链路解耦**：缓存缺失或解析失败时，降级为「不做库级收窄」，搜索本身照常工作，**不得整个功能失败**。
+**因此 area→数据库 的映射必须抓一次、缓存到本地**，搜索时不重复抓取。这是全设计里唯一脆弱的依赖，**必须与主链路解耦**。
+
+**拿不到就不显示**（用户裁定）。分两种拿不到，行为不同：
+
+| 拿不到的东西 | 行为 |
+|---|---|
+| **area 清单**（供选择器渲染） | **整个 area 选择器不渲染**。不显示空下拉、不显示禁用态、不显示报错——就当这个功能不存在。 |
+| **已选 area 的数据库清单**（供收窄） | 照常搜索，**跳过 `domain` 收窄**，在结果区顶部挂一条 `warnings`「未能限定到 <area> 的数据库，已按全库检索」。 |
+
+第二种只是没窄化，结果仍然正确，所以出声提示而不是隐藏。**两种情况都不得让搜索本身失败**——area 本来就是可选的。
 
 ## 5. 架构
 
@@ -110,12 +119,13 @@ GET https://julac-cuh.primo.exlibrisgroup.com/primaws/rest/pub/pnxs
 ### 5.2 数据流
 
 ```
-① 用户选 area（可选，留空则交给检索式判断）
+① 用户选 area（可选；选了就是硬约束，留空则交给检索式判断）
 ② 用户输入任意语言的自然语言
-③ LLM → 结构化检索式 JSON
-④ 编译成 Primo 参数
+③ LLM → 结构化检索式 JSON          ← 只在第 1 页发生（见 §5.3）
+④ 编译成 Primo 参数（按 scope 编两份）
 ⑤ 并发两个 scope：MyInstitution（馆藏）/ CentralIndex（外部数据库）
 ⑥ 归一化 → 前端双栏
+⑦ 用户翻页 → 回传 ③ 的 JSON，跳过 LLM，只重走 ④⑤⑥
 ```
 
 ### 5.3 端点
@@ -123,12 +133,32 @@ GET https://julac-cuh.primo.exlibrisgroup.com/primaws/rest/pub/pnxs
 **第一阶段**
 
 ```
-POST /api/library/areas   → {ok, areas:[{code,name,parent?}], cached:bool}
-POST /api/library/search  → {ok, parsed:{...}, local:{items,count}, external:{items,count}, warnings[]}
+POST /api/library/areas   → {ok, areas:[{code,name,parent?}], available:bool}
+POST /api/library/search  → {ok, parsed:{...},
+                             local:   {items, count, page, has_more},
+                             external:{items, count, page, has_more},
+                             warnings[]}
 ```
 
-`/api/library/search` 请求体：`{text, area?, language, limit?, filters?}`。
-响应回带 `parsed`，供前端把「我理解你要找的是…」原样显示给用户。
+`/api/library/areas` 抓取失败时**不是错误**：返回 `{ok:true, areas:[], available:false}`，前端据此**不渲染 area 选择器**（见 §4）。前端不去猜「空数组是不是失败」，只看 `available`。
+
+`/api/library/search` 请求体分两种，**由 `page` 决定走哪条**：
+
+| | 第 1 页 | 第 N 页（N > 1） |
+|---|---|---|
+| 发送 | `{text, area?, language}` | `{parsed, page: N}` |
+| 后端 | 调 LLM 解析 → `parsed` | **不调 LLM**，直接用传来的 `parsed` |
+
+**翻页绝不重新调 LLM。** LLM 每次产出未必逐字相同，重解析会让第 2 页的检索式与第 1 页不同——结果集在翻页中途漂移，翻出来的东西对不上，而且不报任何错。所以第 1 页解析一次，之后前端把后端回给的 `parsed` 原样带回。
+
+代价是 `parsed` 变成**客户端可传的输入**，后端必须**按 §6 的 schema 校验并归一化**后才编译成参数（字段类型、枚举取值、年份上下界、字符串长度）。这不是安全问题（用户查的是自己的东西），是**健壮性问题**：畸形 `parsed` 不能变成畸形上游请求。
+
+`page` 从 1 起，缺省 1；越界（`page < 1` 或 `page > MAX_PAGES`）**后端拒绝**（见 §9）。
+`parsed` 与 `text` 都缺 → 拒绝。
+
+`has_more` 由后端按「本页取满 **且** `page < MAX_PAGES`」算出，**前端不自己推算**——否则上限一改，前端就骗人。
+
+响应回带 `parsed`，供前端把「我理解你要找的是…」原样显示给用户，并供翻页回传。
 
 **第二阶段**（形状对齐 `banweb` 那套）
 
@@ -174,6 +204,14 @@ LLM 的产物是**结构化 JSON，不是 Primo 查询串**。理由：可校验
 
 **降级**：LLM 调用失败或返回非法 JSON 时，退化为「把用户原文直接当 `q` 的关键词」并置 `warnings`，**不得整个搜索失败**。
 
+> **注意两个同名不同层的东西**：请求体里的 `area`（**单数**）是用户在界面上选的**一个**领域；`parsed.areas`（**复数**）是检索式里的领域列表。
+>
+> **`area` 是约束，不是提示**（设计裁定）。用户选了它，它就**必定**出现在 `parsed.areas` 里 —— 一个会被系统静默丢掉的控件是坏控件，用户看到「按领域收窄」的指示却拿不到收窄结果，比没有这个控件更糟。
+>
+> LLM 可以**补充**它自己判断出的领域（用户选 `comp`、问了教育场景 → `["comp","edu"]`），但**不得删除用户选的那个**。留空时 `parsed.areas` 完全由 LLM 判断。
+>
+> `parsed.areas` 随 `parsed` 一起回显，所以「实际生效的是哪几个领域」用户看得见，不必猜。第 1 页之后 `area` 不再参与（翻页只用 `parsed`），不存在两处各自演化的问题。
+
 ## 7. 分阶段：登录是增强，不是主干
 
 **检索整条链零登录**——两块结果、每条的记录页链接，第一阶段即可交付。登录只多拿两样：**全文直链**、**馆藏可用性**（索书号/在架状态）。
@@ -198,13 +236,34 @@ LLM 的产物是**结构化 JSON，不是 Primo 查询串**。理由：可校验
 - **不打真实网络**。测试用**合成的 Primo JSON 形状**做 fixture（本仓既有 `tests/test_canvas_client.py` 就是这个模式）。
 - `library_client`：参数拼装（尤其 vid/inst/scope 三个坑、rtype 复数、qInclude 语法）、分页、结果归一化、facet 解析、异常路径。
 - `library_areas`：HTML 解析、缓存命中、**抓取失败时必须降级而不是抛错**。
-- `library_query`：JSON 解析、**非法/残缺 JSON 的降级路径**、编译成 params 的映射。
+- `library_query`：JSON 解析、**非法/残缺 JSON 的降级路径**、编译成 params 的映射、**`parsed` 入参的校验与归一化**（畸形输入不得变成畸形上游请求）。
 - `main.py`：端点契约（成功 / 上游报错 / 降级三态），错误一律 200 + JSON（本仓既有约定，判别字段是 `Content-Type`）。
+- **翻页不调 LLM**：断言 `page=2` 的请求**没有触达 LLM**（把 LLM 调用替身设成「被调用即失败」），且两次翻页编译出的 params **逐字节相同**。
+- **上限是后端挡的**：`page=6`（> `MAX_PAGES`）必须被拒，且断言光靠前端不显示按钮是不够的。
 - **新测试必须做变异检验**（临时改坏实现，确认测试真的失败），本仓既有要求。
 
 ## 9. 合规与边界
 
-Primo Central 是**授权内容**。本工具是**个人只读检索**：用户手动触发、结果限量（`limit` 有上限）、**不做定时/批量收割**、不做全量分页拉取。实施时限速，不做并发轰炸。
+Primo Central 是**授权内容**。本工具是**个人只读检索**，用户裁定：**允许翻页取更多结果，但仍只手动触发**。
+
+**允许**：同一个检索式由用户点击「下一页」往后翻，到上限为止。
+
+**不允许**（实施时必须挡住）：
+
+- **不做定时/后台任务** —— 没有任何调度器，没有「保存检索式定期重跑」。每一次请求都由用户当次点击产生。
+- **不做全量收割** —— 翻页有硬上限，不是「一页页翻到底」。
+- **不做并发轰炸** —— 见下面的限速。
+
+**限速与上限**（在计划里定成具名常量，便于日后调）：
+
+| 项 | 值 | 理由 |
+|---|---|---|
+| 每页条数 `PAGE_SIZE` | 20 | 两栏各 20 条，够看，不大 |
+| 最大页数 `MAX_PAGES` | 5 | **硬上限 100 条/栏**；到顶后前端不再显示「下一页」，后端也拒绝 `page > MAX_PAGES` |
+| 请求间隔 | 相邻翻页请求之间 ≥ 1s | 用户手动翻页天然慢于此，这条只是兜住连点 |
+| 并发 | **只允许两个 scope 并发**（同一次查询的两栏） | 这是唯一的一处并发；不同查询之间串行 |
+
+**后端必须自己挡，不能只靠前端不显示按钮** —— `page > MAX_PAGES` 的请求直接拒绝，否则上限形同虚设。
 
 ## 10. 本仓既有约束（实施必须遵守）
 
@@ -219,6 +278,6 @@ Primo Central 是**授权内容**。本工具是**个人只读检索**：用户�
 1. **日期区间参数**：`creationdate` 的区间过滤写法（facet 值是年份桶，区间语法未验）。
 2. **记录页链接的构造**：从记录的 `recordid` / `@id` 拼 Primo permalink（`discovery/fulldisplay?docid=...&vid=...`）需实测确认格式。
 3. **`domain` 过滤的多个库**：`qInclude` 传多个 `domain,exact,` 时的语义（OR / AND）。
-4. **分页上限**：`limit` 的最大值与深分页行为。
+4. **分页上限**：`limit` 允许的最大值、以及 `offset` 能推多深。`PAGE_SIZE=20` 应无风险，但 `MAX_PAGES=5` 意味着最深 `offset=80`，需实测确认这个深度还在 Primo 的允许范围内（若不允许，调小 `MAX_PAGES`，**不要**改成前端乐观显示）。
 
 以上四条都不影响架构，属参数细节，实施第一步验掉即可。
