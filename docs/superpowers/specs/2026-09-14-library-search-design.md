@@ -83,22 +83,45 @@ GET https://julac-cuh.primo.exlibrisgroup.com/primaws/rest/pub/pnxs
 
 ## 4. 学科领域（area）
 
-图书馆自带分类，**9 个一级、约 30 个二级，每个有稳定 code**（`comp`=Computer Science、`law`、`busgen`、`econ`、`maths`、`phy`、`psy`、`edu`、`comm`…）。
+图书馆自带分类，**实测得 28 个领域**，每个有稳定 code 和显示名（`comp`=Computer Science、`law`=Law、`busgen`=Business、`econ`=Economics & Finance、`maths`=Mathematics、`phy`=Physics/Materials Science/Engineering、`psy`=Psychology、`edu`=Education、`comm`=Media & Communication、`human`=Arts & Humanities…）。
 
-每个 area 的页面（`ereslist/index.php?type=db&format=subj&subj=comp`）**直接给出该领域的数据库清单**。
+来源：`https://app3.lib.cityu.edu.hk/ereslist/db_subject.php`（**注意是 `.php`**；`.htm` 是一段 63 字节的 JS 跳转桩）。
 
-> **⚠️ 这套分类没有 API。** `app3.lib.cityu.edu.hk/ereslist/` 是老 PHP 站，实测 `format=json` / `output=json` **都是假的**（照样返回 `text/html`），只能解析 HTML。
+> **⚠️ 这套分类没有 API。** 那是老 PHP 站，实测 `format=json` / `output=json` **都是假的**（照样返回 `text/html`），只能解析 HTML。**这是全设计里唯一脆弱的依赖。**
 
-**因此 area→数据库 的映射必须抓一次、缓存到本地**，搜索时不重复抓取。这是全设计里唯一脆弱的依赖，**必须与主链路解耦**。
+### 4.1 area 不窄化数据库（2026-09-14 修正）
 
-**拿不到就不显示**（用户裁定）。分两种拿不到，行为不同：
+**原设计「area → 该领域数据库清单 → `qInclude=domain,exact,<库名>`」是错的，已废弃。**
+
+实测发现两边词表根本不是一套：
+
+| 领域页写的（ereslist，订阅目录的厂商/产品名） | Primo `domain` facet（索引平台名） |
+|---|---|
+| `ScienceDirect` | `Elsevier ScienceDirect Journals`、`Elsevier SD Backfile Complete` |
+| `IEEE Xplore` | `IEEE Electronic Library (IEL) Conference Proceedings` |
+| `ProQuest Ebook Central` | `ProQuest Ebook Central Perpetual Titles` |
+| `Scopus`、`ACM Digital Library`、`Wiley Online Library` | **Primo 里没有对应项** |
+
+`qInclude=domain,exact,...` 这个**机制**是实测可用的（`Publicly Available Content Database`：2,071,906 → 40,609），但**喂 ereslist 的名字进去匹配不上**。先前把「机制可用」误当成了「这套名字可用」。
+
+**因此 area 的作用改为**：作为**领域提示**交给 LLM，影响它选 `keywords` / `rtype` / `domains`，**本身不编译成任何 Primo 参数**。
+
+> **诚实标注**：这意味着用户选的 area **不再有机械保证**——它靠提示词约束 LLM，不像 `qInclude` 那样可验证。这是本次修正付出的代价，换来的是这条链不再依赖一份对不上的名称映射表。提示词里会明确写「用户已限定 <area>，你选的 terms / rtype / domains 必须与该领域一致」，但没有代码层面的强制。
+
+### 4.2 「自动选择合适的数据库」改走 Primo 自己的词表
+
+用户的「自动选库」需求**保留**，但候选值改从 **Primo `domain` facet** 取——值出自 Primo 本身，`qInclude` 能对上。
+
+`library_client.list_domains()` 用一次宽查询把 `facets[domain]` 拉回来，缓存（与 area 同策略），喂给 LLM；LLM 在 `parsed.domains` 里挑。挑不到就空着，不做收窄。
+
+### 4.3 拿不到就不显示（用户裁定）
 
 | 拿不到的东西 | 行为 |
 |---|---|
 | **area 清单**（供选择器渲染） | **整个 area 选择器不渲染**。不显示空下拉、不显示禁用态、不显示报错——就当这个功能不存在。 |
-| **已选 area 的数据库清单**（供收窄） | 照常搜索，**跳过 `domain` 收窄**，在结果区顶部挂一条 `warnings`「未能限定到 <area> 的数据库，已按全库检索」。 |
+| **domain 词表**（供 LLM 选库） | 照常搜索，**LLM 不在 `parsed.domains` 里挑**，即不做库级收窄。 |
 
-第二种只是没窄化，结果仍然正确，所以出声提示而不是隐藏。**两种情况都不得让搜索本身失败**——area 本来就是可选的。
+两者都**不得让搜索本身失败**——它们都是增强，不是主干。
 
 ## 5. 架构
 
@@ -106,8 +129,8 @@ GET https://julac-cuh.primo.exlibrisgroup.com/primaws/rest/pub/pnxs
 
 | 文件 | 职责 | 新增/改动 |
 |---|---|---|
-| `backend/library_client.py` | Primo 客户端：检索、分页、facet 解析、结果归一化 | 新增 |
-| `backend/library_areas.py` | area 分类的抓取、解析、缓存、降级 | 新增 |
+| `backend/library_client.py` | Primo 客户端：检索、分页、facet 解析、结果归一化、domain 词表 | 新增 |
+| `backend/library_areas.py` | 28 个领域的抓取（`db_subject.php`）、解析、缓存；拿不到当没有 | 新增 |
 | `backend/library_query.py` | 自然语言 → 结构化检索式（走 `llm_client` 的调用方式） | 新增 |
 | `backend/library_login.py` | Primo SAML 无头登录 → JWT（**第二阶段**） | 新增 |
 | `backend/main.py` | 新端点（见 §5.3） | 改 |
@@ -119,9 +142,10 @@ GET https://julac-cuh.primo.exlibrisgroup.com/primaws/rest/pub/pnxs
 ### 5.2 数据流
 
 ```
-① 用户选 area（可选；选了就是硬约束，留空则交给检索式判断）
+① 用户选 area（可选；作为领域提示交给 LLM，本身不编译成参数 —— §4.1）
 ② 用户输入任意语言的自然语言
 ③ LLM → 结构化检索式 JSON          ← 只在第 1 页发生（见 §5.3）
+   （提示词里带上 area、以及 §4.2 的 domain 词表）
 ④ 编译成 Primo 参数（按 scope 编两份）
 ⑤ 并发两个 scope：MyInstitution（馆藏）/ CentralIndex（外部数据库）
 ⑥ 归一化 → 前端双栏
@@ -183,6 +207,7 @@ LLM 的产物是**结构化 JSON，不是 Primo 查询串**。理由：可校验
   "peer_reviewed_only": true,
   "exclude_retracted": true,
   "areas": ["comp"],
+  "domains": ["Elsevier ScienceDirect Journals"],
   "explanation": "找 2020 年后的机器学习在教育领域的同行评审论文"
 }
 ```
@@ -191,8 +216,9 @@ LLM 的产物是**结构化 JSON，不是 Primo 查询串**。理由：可校验
 
 - `keywords + synonyms` → `q=any,contains,...`
 - `rtype` → `qInclude=rtype,exact,<值>`（**复数形式**）
-- `areas` → 该 area 的数据库清单 → `qInclude=domain,exact,<库名>,...`（已实测可用）
+- `domains` → `qInclude=domain,exact,<值>`，**值必须来自 Primo 自己的 domain 词表**（§4.2），LLM 只能从词表里挑。**只作用于 `CentralIndex`**——`domain` 是 PC 侧的来源库概念，本馆馆藏记录没有这个维度。
 - `year_from/to` → `qInclude=creationdate,exact,<年>`，逐年一条（`qInclude` 语法已实测；区间形式的专用参数未验，**不作为默认**，验通后可换成区间优化，属性能改进不属功能）
+- **`areas` 不编译成任何参数**（§4.1）——它只是提示词的输入，用来引导 LLM 选上面那些值。回显出来让用户看见 LLM 理解成了什么。
 
 **只在「外部数据库块」生效的过滤**（`tlevel` / `attribute` 是 Primo Central 的 facet，本馆馆藏记录没有这两个维度，套到 `MyInstitution` 上会得到 0 或静默失效）：
 
@@ -204,13 +230,13 @@ LLM 的产物是**结构化 JSON，不是 Primo 查询串**。理由：可校验
 
 **降级**：LLM 调用失败或返回非法 JSON 时，退化为「把用户原文直接当 `q` 的关键词」并置 `warnings`，**不得整个搜索失败**。
 
-> **注意两个同名不同层的东西**：请求体里的 `area`（**单数**）是用户在界面上选的**一个**领域；`parsed.areas`（**复数**）是检索式里的领域列表。
+> **注意两个同名不同层的东西**：请求体里的 `area`（**单数**）是用户在界面上选的**一个**领域；`parsed.areas`（**复数**）是 LLM 理解的领域列表。
 >
-> **`area` 是约束，不是提示**（设计裁定）。用户选了它，它就**必定**出现在 `parsed.areas` 里 —— 一个会被系统静默丢掉的控件是坏控件，用户看到「按领域收窄」的指示却拿不到收窄结果，比没有这个控件更糟。
+> **`area` 是提示，但必须是「不被丢弃的提示」**。§4.1 修正后 area 已无法机械强制（不编译成参数），所以约束落在提示词上：LLM **必须**把用户选的 area 放进 `parsed.areas`，可以补充自己判断的其它领域，**不得删掉用户选的那个**；留空时完全由 LLM 判断。
 >
-> LLM 可以**补充**它自己判断出的领域（用户选 `comp`、问了教育场景 → `["comp","edu"]`），但**不得删除用户选的那个**。留空时 `parsed.areas` 完全由 LLM 判断。
+> 这比原先那版弱——**提示词是可以不被遵守的**，代码拦不住。作为补偿，`parsed.areas` 随 `parsed` 一起回显，用户能立刻看见 LLM 有没有照做。若日后发现 LLM 频繁无视，再考虑把 area 硬编码进 `q` 关键词。
 >
-> `parsed.areas` 随 `parsed` 一起回显，所以「实际生效的是哪几个领域」用户看得见，不必猜。第 1 页之后 `area` 不再参与（翻页只用 `parsed`），不存在两处各自演化的问题。
+> **`parsed.domains` 的每个值都必须能在 §4.2 的词表里找到**——后端校验时把不在词表里的值**剔除**（不是报错），免得 LLM 编出一个 Primo 里不存在的平台名，导致 `qInclude` 一过滤就 0 命中。
 
 ## 7. 分阶段：登录是增强，不是主干
 
@@ -277,7 +303,7 @@ Primo Central 是**授权内容**。本工具是**个人只读检索**，用户�
 
 1. **日期区间参数**：`creationdate` 的区间过滤写法（facet 值是年份桶，区间语法未验）。
 2. **记录页链接的构造**：从记录的 `recordid` / `@id` 拼 Primo permalink（`discovery/fulldisplay?docid=...&vid=...`）需实测确认格式。
-3. **`domain` 过滤的多个库**：`qInclude` 传多个 `domain,exact,` 时的语义（OR / AND）。
+3. **`domain` 过滤的多个库**：`qInclude` 传多个 `domain,exact,` 时的语义（OR / AND）。**若实际是 AND，多选库会得到 0 命中**——那就退化为只取第一个，或干脆不传（此时 §4.2 的选库等于失效，要如实告知用户）。
 4. **分页上限**：`limit` 允许的最大值、以及 `offset` 能推多深。`PAGE_SIZE=20` 应无风险，但 `MAX_PAGES=5` 意味着最深 `offset=80`，需实测确认这个深度还在 Primo 的允许范围内（若不允许，调小 `MAX_PAGES`，**不要**改成前端乐观显示）。
 
 以上四条都不影响架构，属参数细节，实施第一步验掉即可。
