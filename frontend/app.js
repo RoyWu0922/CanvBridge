@@ -2749,12 +2749,14 @@ function initLibraryTab(){
   if (libraryState.loaded) return;      // 只绑一次
   libraryState.loaded = true;
 
-  $("librarySearchBtn").onclick = () => runLibrarySearch(1);
-  $("libraryPrev").onclick = () => runLibrarySearch(libraryState.page - 1);
-  $("libraryNext").onclick = () => runLibrarySearch(libraryState.page + 1);
+  /* 两个入口给的是**两种不同语义**，所以要显式区分（见 runLibrarySearch 的注释）：
+     检索按钮/回车 = 用户给了新输入，必须重新解析；上/下一页 = 同一份结果，绝不重解析。 */
+  $("librarySearchBtn").onclick = () => runLibrarySearch(1, "query");
   $("libraryQuery").addEventListener("keydown", e => {
-    if (e.key === "Enter") runLibrarySearch(1);
+    if (e.key === "Enter") runLibrarySearch(1, "query");
   });
+  $("libraryPrev").onclick = () => runLibrarySearch(libraryState.page - 1, "page");
+  $("libraryNext").onclick = () => runLibrarySearch(libraryState.page + 1, "page");
   loadLibraryAreas();
 }
 
@@ -2791,7 +2793,15 @@ function renderLibraryPage(){
   renderLibraryPager(libraryState.last);
 }
 
-async function runLibrarySearch(page){
+/* `mode` 是**入口**，不是「有没有 parsed」：
+     "query" = 检索按钮 / 回车 —— 用户给了新输入 → 发 text，后端重新解析；
+     "page"  = 上一页 / 下一页 —— 同一份结果换个页码 → 原样回传 parsed，绝不重解析。
+   判据必须是「谁发起的」，不能是 `if (libraryState.parsed)`：用户先搜了一次（parsed 已
+   有值）、再改输入框搜新问题，按「有 parsed 就用 parsed」就会**拿上一次的解析结果去搜
+   新问题** —— 比原本的缺陷更糟（用户以为在搜新东西，实际搜的是旧的）。
+   反过来，按 `page > 1` 分流同样是错的：从第 2 页点「上一页」回到 page=1 会退回解析
+   分支，既违反「翻页绝不重新调 LLM」，又多花一次真实 LLM 的钱，还会让结果集中途漂移。 */
+async function runLibrarySearch(page, mode){
   if (page < 1) return;
   /* 请求在途就忽略这一次触发：**第 1 页请求会调用真实 LLM**，连点两下就是两次真实花费。
      回车与按钮走的是同一个函数，所以守卫必须在这里，光把按钮置灰挡不住回车。
@@ -2806,17 +2816,23 @@ async function runLibrarySearch(page){
   const body = { llm_base_url: s.llm_base_url, llm_api_key: s.llm_api_key,
                  llm_model: s.llm_model, page };
 
-  /* 第 1 页：发原文，后端调 LLM 解析。
-     第 2 页起：回传上一页拿到的 parsed，后端不调 LLM —— 否则每页的检索式
-     都可能不同，结果集在翻页中途漂移，而且不报任何错（spec §5.3）。 */
-  if (page > 1){
-    if (!libraryState.parsed) return;      // 没解析过就没有第 2 页
-    body.parsed = libraryState.parsed;
-  } else {
+  if (mode === "query"){
+    /* 新输入 → 解析路径：发原文，后端调 LLM。 */
     body.text = $("libraryQuery").value.trim();
     const area = $("libraryArea").hidden ? "" : $("libraryArea").value;
-    if (area) body.area = area;
+    /* 空输入的早退放在**清 parsed 之前**：这一次没有真要发出去的请求，
+       就不该把状态改掉 —— 否则屏幕上还挂着上一次的结果、翻页却已经没得可翻
+       （点了没反应，也不报错）。 */
     if (!body.text){ setStatus(t("library.need_input"), "err"); return; }
+    if (area) body.area = area;
+    /* 上一次的 parsed **必须在发请求前清掉**：这一份对应的是上一个问题，留着它，
+       这次失败之后（或任何一次翻页）就会被当成当前查询的解析结果用出去。 */
+    libraryState.parsed = null;
+  } else {
+    /* 翻页 → 复用路径：原样回传 parsed，后端不调 LLM（spec §5.3 的加粗不变量）。
+       **包括翻回第 1 页**：第 1 页也走这里，只有用户重新检索才会再次解析。 */
+    if (!libraryState.parsed) return;      // 没有解析结果就没有可翻的页
+    body.parsed = libraryState.parsed;
   }
 
   $("libraryLocal").textContent = t("library.loading");
@@ -2852,7 +2868,9 @@ async function runLibrarySearch(page){
     return;
   }
 
-  if (page === 1) libraryState.parsed = r.parsed;
+  /* 只有解析路径才更新 parsed（翻页路径原样带回的就是后端归一化后的同一份，
+     不需要、也不该在这里重设）。 */
+  if (mode === "query") libraryState.parsed = r.parsed;
   libraryState.page = page;
   libraryState.last = r;
   renderLibraryPage();
