@@ -309,8 +309,11 @@ def test_build_prompt_states_area_consistency_constraint():
     p = library_query.build_prompt("q", "comp", {"comp": "Computer Science"}, [])
     assert "Computer Science" in p
     assert "必须与该领域一致" in p
-    for field in ("terms", "rtype", "domains"):
-        assert field in p
+    # 原先这里是 `for field in ("terms","rtype","domains"): assert field in p` —— **恒真**：
+    # 这三个词在提示词**下方的输出字段清单里本来就出现**（`- rtype: ...` / `- domains: ...`），
+    # 于是变异「把那句一致性要求缩成只提 terms」**存活**。逐个 `in` 测不出「同一句」。
+    # 判据换成**整句**：三个词必须在**同一句**里同时出现（短语逐字取自 spec :109 的规格原文）。
+    assert "你选的 terms / rtype / domains 必须与该领域一致" in p
 
 
 def test_build_prompt_omits_area_constraint_when_no_area():

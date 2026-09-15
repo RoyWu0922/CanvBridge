@@ -60,6 +60,8 @@ def _read_cache() -> list[dict]:
         return []
     if not isinstance(areas, list) or not areas:
         return []
+    if not all(isinstance(a, dict) and a.get("code") and a.get("name") for a in areas):
+        return []
     if time.time() - fetched_at > CACHE_TTL:
         return []          # 过期。调用方会重抓；重抓失败时再单独回退到它
     return areas
@@ -70,9 +72,13 @@ def _read_stale_cache() -> list[dict]:
     try:
         raw = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
         areas = raw.get("areas")
-        return areas if isinstance(areas, list) and areas else []
     except Exception:
         return []
+    if not isinstance(areas, list) or not areas:
+        return []
+    if not all(isinstance(a, dict) and a.get("code") and a.get("name") for a in areas):
+        return []
+    return areas
 
 
 def _write_cache(areas: list[dict]) -> None:

@@ -1087,6 +1087,66 @@ def test_library_search_requires_text_or_parsed(monkeypatch):
     assert body["ok"] is False
 
 
+def test_library_search_page_below_one_rejected(monkeypatch):
+    """F2：`page < 1` 的拒绝。
+
+    变异 `A2_lower_guard`（把守卫的 `req.page < 1 or` 那一半去掉）原先**存活** ——
+    `page > MAX_PAGES` 那一半有 `test_library_search_page_beyond_max_rejected` 守着，
+    下界这一半没有任何用例。而 `page=0` 会算成 `offset = -20`，把畸形页码原样送给上游。
+    错误信息里必须带上**页码本身**，否则用户看到「页码越界」却不知道该改哪个值。
+    """
+    _patch_library(monkeypatch)
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
+        "text": "x", "page": 0}).json()
+    assert body["ok"] is False
+    assert "页码" in body["error"]
+    assert "0" in body["error"]           # 回显的是请求里那个具体的页码
+
+
+def test_library_search_rejects_parsed_without_keywords(monkeypatch):
+    """F3-a：**翻页路径**（带 `parsed`、不带 `text`）送来的空检索式必须被拒。
+
+    变异 `W`（删掉那次 `not parsed["keywords"] and not parsed["synonyms"]` 判断）
+    原先**存活**：`keywords` / `synonyms` 双空时 `build_q` 会拼出 `"any,contains,"`
+    —— 一个语法合法、语义为「匹配一切」的检索式，于是用户拿到的是**全库结果**
+    而不是一个明确错误。走翻页路径（而不是带 text）才钉得住：带 text 的实现会在
+    「缺少 text 或 parsed」那里提前返回，红在别处。
+    """
+    _patch_library(monkeypatch)
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "page": 2,
+        "parsed": {"keywords": [], "synonyms": [], "rtype": [], "domains": [],
+                   "year_from": None, "year_to": None}}).json()
+    assert body["ok"] is False
+    assert "keywords" in body["error"]
+
+
+def test_library_search_sends_the_compiled_q_to_the_client(monkeypatch):
+    """F3-b：断言**真正发给客户端的那个 `q`**（不是返回体里的 `parsed`）。
+
+    变异 `U`（`q = library_query.build_q(parsed)` 被改坏 / 换成常量）原先**存活** ——
+    既有用例都只看返回体，没有任何一条看得见送上游的检索式。
+    这里断言的是字面值，不是 `== library_query.build_q(parsed)`：后者是同义反复，
+    两边一起变，`build_q` 被架空时照样绿。
+    """
+    _patch_library(monkeypatch)
+    seen = {}
+    from backend import library_client
+
+    def spy(scope, q, **k):
+        seen[scope] = q
+        return {"scope": scope, "items": [], "count": 0, "page": 1, "has_more": False}
+
+    monkeypatch.setattr(library_client, "search", spy)
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "page": 2,
+        "parsed": {"keywords": ["ml", "papers"], "synonyms": []}}).json()
+    assert body["ok"] is True
+    assert seen[library_client.SCOPE_LOCAL] == "any,contains,ml papers"
+    assert seen[library_client.SCOPE_EXTERNAL] == "any,contains,ml papers"
+
+
 def test_library_search_wraps_upstream_failure(monkeypatch):
     _patch_library(monkeypatch)
     from backend import library_client
@@ -1211,8 +1271,47 @@ def test_library_search_degrades_without_inventing_an_area(monkeypatch):
     #      `..._validate_parsed_none_...` / `test_mutating_returned_parsed_...`）
     #      会同时变红并指向同一根因。
     # 保留断言本身（成本几行，作为整包级哨兵仍有价值）；处置由控制者裁定，本轮不动。
-    assert library_query.EMPTY_PARSED["areas"] == []
-    assert library_query.EMPTY_PARSED["domains"] == []
+    assert library_query.EMPTY_PARSED["areas"] == [], (
+        "整包级哨兵（**顺序相关**）：EMPTY_PARSED 是**模块级常量**，本断言只保证"
+        "**整个测试包跑完之后**它的值没有被改动过 —— 它不是「防就地改写」的守卫，"
+        "对 reintroduce 没有判别力。失败信息里的值**可能来自另一个测试文件**，"
+        "别据此断定是本文件的哪一行干的；先查谁在别处就地改写了共享的 list。"
+        "`validate_parsed` 返回的是 `dict(EMPTY_PARSED)` 的**浅拷贝**，list 字段与"
+        "常量**共用同一个对象**，这个结构隐患仍在。")
+    assert library_query.EMPTY_PARSED["domains"] == [], (
+        "整包级哨兵（**顺序相关**）：同上一行。EMPTY_PARSED 是模块级常量，"
+        "本断言只保证整包跑完时它没被改动过；失败值**可能来自另一个测试文件**，"
+        "不要据此定位到本文件。浅拷贝共享 list 对象的结构隐患仍在。")
+
+
+def test_library_search_surfaces_a_non_degraded_warning(monkeypatch):
+    """F-6：成功分支的 `warnings` 必须原样透出**非降级**警告码。
+
+    缺口是这一层：删掉整个 `warnings` 键已经有人守了（上面那条降级用例的
+    `assert body["warnings"] == ["llm_degraded"]`），但把端点改成**只放行
+    `llm_degraded`、丢掉其余码**（`[w for w in warnings if w == "llm_degraded"]`）
+    曾经是 **378 全绿** ⇒ `domains_dropped` 以及将来新增的任何码在端点层毫无绑定，
+    可以被静默抹掉而用户永远看不见。成因：`domains_dropped` 只在**库层**被绑
+    （tests/test_library_query.py 的那条），**没有任何端点用例产生过一条非降级警告**。
+
+    这里走**真实的** `parse_natural`（只把 LLM 出口换掉），让 `domains_dropped`
+    真的被产生出来，而不是把警告码手搓进替身 —— 那样连「端点有没有转发库层警告」
+    这件事都测不到。
+    """
+    import json as _json
+    from backend import library_query, llm_client
+    real_parse_natural = library_query.parse_natural
+    _patch_library(monkeypatch)
+    monkeypatch.setattr(library_query, "parse_natural", real_parse_natural)
+    # LLM 编了一个词表里没有的库名。词表由 `_patch_library` 钉成 ["MEDLINE"]，
+    # 于是 validate_parsed 会把它整批丢掉 ⇒ 真实地产生 `domains_dropped`。
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: _json.dumps({
+        "keywords": ["ml"], "synonyms": [], "domains": ["NotInTheCatalog"]}))
+
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "text": "x"}).json()
+    assert body["ok"] is True
+    assert body["warnings"] == ["domains_dropped"]
 
 
 def test_library_search_normalizes_client_supplied_parsed(monkeypatch):
@@ -1220,6 +1319,12 @@ def test_library_search_normalizes_client_supplied_parsed(monkeypatch):
     都必须在端点上被归一化掉，不能原样编译进上游查询（会静默 0 命中）。
 
     这些值都是第 2 页起前端原样回传的，中间可能被改过、也可能是旧版本存的。
+
+    **输入里好坏值混着给**（`bogus_type` 与 `articles` 并存、`NotInTheCatalog` 与
+    `MEDLINE` 并存）是刻意的：全是坏值时归一化后的过滤集本来就是空的，负向断言
+    「不包含 X」在**什么都没产出**时照样成立 —— 变异 `E_filters_discarded`
+    （`q_include` 被清空）当时就是在这组全负向断言下**假绿**的。
+    混入能存活的值之后，下面那组正向断言才真的在管「产出了什么」。
     """
     _patch_library(monkeypatch)
     seen = {}
@@ -1232,10 +1337,16 @@ def test_library_search_normalizes_client_supplied_parsed(monkeypatch):
     monkeypatch.setattr(library_client, "search", spy)
     body = client.post("/api/library/search", json={
         "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "page": 2,
-        "parsed": {"keywords": ["x"], "rtype": ["bogus_type"],
-                   "domains": ["NotInTheCatalog"], "year_from": 1500}}).json()
+        "parsed": {"keywords": ["x"], "rtype": ["bogus_type", "articles"],
+                   "domains": ["NotInTheCatalog", "MEDLINE"], "year_from": 1500,
+                   "peer_reviewed_only": True}}).json()
     assert body["ok"] is True
     include = seen["CentralIndex"].get("q_include") or []
+    # 正向：归一化后**确实产出了**这些过滤器（清空 q_include 的实现会在这里红）
+    assert "rtype,exact,articles" in include
+    assert "domain,exact,MEDLINE" in include
+    assert "tlevel,exact,peer_reviewed" in include
+    # 负向：坏值被剔
     assert not any("bogus_type" in f for f in include)          # 未知 rtype 被剔
     assert not any("NotInTheCatalog" in f for f in include)     # 词表外的库名被剔
     assert not any(f.startswith("creationdate") for f in include)   # 1800 年前的年份被剔
@@ -1544,3 +1655,54 @@ def test_an_area_fetch_never_overlaps_a_query(monkeypatch, tmp_path):
         assert state["areas_calls"] == baseline + 1
     assert [r["ok"] for r in results] == [True, True]
     assert state["peak"] == 2                # 全程峰值 2，不是 3
+
+
+# ---------- F-2：端点的两处取词表调用必须在 try 之内 ----------
+
+def test_library_search_returns_json_when_a_malformed_area_cache_slips_through(monkeypatch):
+    """F-2：畸形 area 缓存**绕过了 R13-a** 时，端点也不得返 500。
+
+    终审实测的原始形态：cache 写成合法 JSON 但形状不对（`{"areas": [1,2,3]}`）⇒
+    `library_areas.load_areas()` 返回坏条目 ⇒ 端点的
+    `{a["code"]: a["name"] for a in area_catalog["areas"]}` 抛
+    `TypeError: 'int' object is not subscriptable` ⇒ **HTTP 500 裸栈**，违反
+    Global Constraints「后端错误一律返回 200 + JSON」。根因是这两句**不在任何 try 里**。
+
+    R13-a 已从**源头**堵住这条链（形状校验），所以本用例**不能**只把缓存写成畸形 ——
+    那样 R13-a 会兜住，F-2 有没有改都绿，就又造出一条假绑定（本批要消灭的正是它）。
+    这里显式模拟「缓存被未来某次改动放行」：把 `_read_cache` 换成会原样交出坏形状的
+    版本，让坏形状**真的流进**端点那次字典推导 —— 这才是 F-2 那道 try 的判据。
+
+    变异：把这两次调用移回 `try` 之外 ⇒ 本用例红（TestClient 会把异常抛出来）。
+    """
+    from backend import library_areas
+    real_load_areas = library_areas.load_areas          # 必须在 _patch_library 之前抓
+    _patch_library(monkeypatch)
+    monkeypatch.setattr(library_areas, "load_areas", real_load_areas)   # 撤掉替身，走真路径
+    monkeypatch.setattr(library_areas, "_read_cache", lambda: [1, 2, 3])  # 模拟 R13-a 被放行
+
+    r = client.post("/api/library/search", json=dict(_LIB_SEARCH_BODY))
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    body = r.json()
+    # area 拿不到只该退化成「没有 area 名」，**不拖垮检索**（spec §4.3）。
+    assert body["ok"] is True
+    assert body["local"]["items"][0]["title"] == "MyInstitution"
+
+
+def test_library_search_returns_json_when_the_domain_catalog_raises(monkeypatch):
+    """F-2 的另一处：`list_domains()` 抛错时同样必须是 200 + JSON。
+
+    选库是增强不是主干（spec §4.2）—— 词表炸了不该把一次检索升级成 500。
+    """
+    from backend import library_client
+    _patch_library(monkeypatch)
+
+    def boom(**k):
+        raise RuntimeError("词表炸了")
+
+    monkeypatch.setattr(library_client, "list_domains", boom)
+    r = client.post("/api/library/search", json=dict(_LIB_SEARCH_BODY))
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    assert r.json()["ok"] is True

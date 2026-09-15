@@ -850,14 +850,27 @@ def library_search(req: LibrarySearchRequest):
         return {"ok": False, "error": f"页码越界：{req.page}"}
 
     warnings: list[str] = []
-    domains = library_client.list_domains()
+    # **F-2：这两次「端点边界的取词表」调用原先都在任何 `try` 之外。** 畸形缓存
+    # （合法 JSON、非空 list、但条目不是 `{"code","name"}`）会让 `load_areas` 抛错，
+    # 一路冒成 HTTP 500 裸栈 —— 违反 Global Constraints「后端错误一律返回 200 + JSON」。
+    # 现在各自兜住、退化成「拿不到」：area 见 spec §4.3「拿不到就当没有……
+    # **绝不让它拖垮检索**」，domain 见 §4.2「选库是增强，不是主干」。
+    # 注意这不是新增降级语义：两条链各自的**正常**失败（网络挂、页面改版）本来就已经
+    # 被 `load_areas` / `list_domains` 自己兜成空值，这里补的是「意料外形状」那一层。
+    try:
+        domains = library_client.list_domains()
+    except Exception:
+        domains = []
     # area 词表走的是 `library_areas` 自己那条 `requests` 路径（不经过 `_get`），
     # 所以必须**显式**套上同一个门外纪律：冷缓存（官网抓不到时不会写缓存 ⇒ 每次
     # 检索都重抓）时它是一次真实的上游调用，不套就会与下面门内的两栏并发
     # —— 复审实测上游在飞峰值 3，spec §9 只允许同一次查询的两栏并发。
-    with library_client.out_of_query():
-        area_catalog = library_areas.load_areas()
-    area_names = {a["code"]: a["name"] for a in area_catalog["areas"]}
+    try:
+        with library_client.out_of_query():
+            area_catalog = library_areas.load_areas()
+        area_names = {a["code"]: a["name"] for a in area_catalog["areas"]}
+    except Exception:
+        area_names = {}
 
     if req.parsed is not None:
         # 翻页路径：不碰 LLM（spec §5.3）。parsed 是客户端可传的输入，必须归一化。

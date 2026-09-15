@@ -335,6 +335,23 @@ def test_list_domains_reads_domain_facet(monkeypatch):
     assert s.calls[0]["timeout"] == 30
 
 
+def test_domain_probe_query_is_pinned_and_actually_sent(monkeypatch):
+    """R11-b：`_DOMAIN_PROBE_Q` 是**词表探测的输入**，值可被静默改坏而既有用例全绿
+    —— 而 `list_domains` 正是靠它拿回那 66 个数据库。
+
+    两件事一起钉，缺一不可：
+      - 常量的**字面值**（写死 `"any,contains,the"`，不写
+        `== library_client._DOMAIN_PROBE_Q` —— 那是同义反复，两边一起变，改坏了也绿）；
+      - 它**真的被送上请求**（改值 / 删接线两种改坏方式各有一条断言管）。
+    """
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    assert library_client._DOMAIN_PROBE_Q == "any,contains,the"
+
+    s = _Session(_facet_payload(["MEDLINE"]))
+    library_client.list_domains(session=s)
+    assert s.calls[0]["params"]["q"] == "any,contains,the"
+
+
 def test_list_domains_returns_empty_when_facet_absent(monkeypatch):
     """没有 domain facet（上游改版）→ 空列表，不是抛错。调用方据此不做收窄。"""
     monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
@@ -473,6 +490,30 @@ def test_throttle_sleeps_between_two_calls(monkeypatch):
     library_client._throttle()   # _last_call 是 0（很久以前）→ 不该睡
     library_client._throttle()   # 第二次必须睡
     assert len(slept) == 1 and slept[0] > 0
+
+
+def test_min_interval_production_value_actually_throttles(monkeypatch):
+    """R11-a：**生产取值的** `_MIN_INTERVAL` 必须真有节流力度，且真的被用上。
+
+    为什么不能只靠 `test_throttle_sleeps_between_two_calls`：那条自己把常量
+    monkeypatch 成 `0.05` —— 它验的是**机制**，从头到尾没碰过生产取值，所以把
+    `_MIN_INTERVAL = 1.0` 改成 `0.0` 时它照样绿。而这条常量是「不做全量收割」那道
+    闸的机械保证（spec §9「相邻翻页请求之间 ≥ 1s」）。
+
+    判据刻意**不 monkeypatch 这个常量**：把 `_last_call` 拨成「刚刚」、spy 住
+    `time.sleep`，于是 `_throttle()` 请求的睡眠时长必须 ≈ 当前取值 —— 一次同时钉住
+    「取值有力度」与「它真的被用上」（少了后者的实现可以直接把 `_throttle` 架空）。
+    """
+    slept = []
+    monkeypatch.setattr(library_client.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(library_client, "_last_call", time.monotonic())   # 刚刚调过一次
+    library_client._throttle()
+    # 距上次调用的真实间隔是微秒级，所以睡眠 ≈ _MIN_INTERVAL（少那一丁点）
+    assert slept == [pytest.approx(library_client._MIN_INTERVAL, abs=0.01)]
+    # 下界取 0.5 的理由：spec §9 的原文下限是 **1s**；0.5 是「这条常量仍在履行限流
+    # 职责」的下界（连规格的一半都不到就已经不是同一件事了），同时给将来**向上**
+    # 调参留空间 —— 本批要杀的是「→ 0.0 静默废掉限流」，不是钉死某个具体数字。
+    assert library_client._MIN_INTERVAL >= 0.5
 
 
 def test_get_actually_goes_through_throttle(monkeypatch):
