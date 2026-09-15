@@ -2876,11 +2876,26 @@ async function runLibrarySearch(page, mode){
   renderLibraryPage();
 }
 
+/* 「理解为：…」+ spec §6 的补偿：`parsed.areas` 一并回显。
+   area 在 §4.1 修正后**只是提示词**（代码不强制、LLM 可以无视），所以唯一能让人
+   看见「LLM 到底有没有照做」的窗口就是这里。没有这一行，用户选了领域、界面看着
+   生效，实际被无视也无人能知 —— 那正是 §6 要求回显的原因。
+   areas 的值来自 LLM ⇒ **入 DOM 必须转义**（本文件统一纪律：文本位 esc()、
+   属性位 escAttr()；本分支曾因 area 下拉漏转义出过真 XSS）。 */
 function renderLibraryParsed(parsed){
   const el = $("libraryParsed");
   const text = parsed && parsed.explanation;
-  if (!text){ el.hidden = true; return; }
-  el.textContent = t("library.parsed", { s: text });
+  const areas = (parsed && parsed.areas) || [];
+  /* 两个都空才整个不显示：LLM 降级时 explanation 是空的，但 areas 可能非空
+     （端点会把用户选的 area 补进去）—— 那一条恰恰最需要被看见。 */
+  if (!text && !areas.length){ el.hidden = true; return; }
+  let html = "";
+  if (text) html += esc(t("library.parsed", { s: text }));
+  if (areas.length){
+    if (html) html += " ";
+    html += esc(t("library.areas", { s: areas.join(", ") }));
+  }
+  el.innerHTML = html;
   el.hidden = false;
 }
 

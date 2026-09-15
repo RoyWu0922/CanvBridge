@@ -92,6 +92,27 @@ def test_build_q_falls_back_to_any_when_empty():
     assert library_query.build_q({"keywords": [], "synonyms": []}).startswith("any,contains,")
 
 
+def test_build_q_dedupes_terms_keeping_first_order():
+    """同一个词不能出现在 q 里两次。
+
+    改动前实测复现：LLM 只给 synonyms 时 `parse_natural` 拿它顶上 keywords 却不清空
+    来源字段 → `q = "any,contains,machine learning deep learning machine learning
+    deep learning"`（每个词两遍）。
+    """
+    q = library_query.build_q({"keywords": ["ML", "DL"], "synonyms": ["ML", "DL"]})
+    assert q == "any,contains,ML DL"
+    assert q.count("ML") == 1 and q.count("DL") == 1
+
+
+def test_synonym_promotion_does_not_duplicate_q(monkeypatch):
+    """端到端走一遍 LLM 只给 synonyms 的降级提升路径，钉住 q 里的重复。"""
+    monkeypatch.setattr(llm_client, "_call_chat",
+                        lambda *a, **k: '{"keywords":[],"synonyms":["ML","DL"]}')
+    parsed, warnings = library_query.parse_natural("u", "k", "m", "x")
+    assert library_query.build_q(parsed) == "any,contains,ML DL"
+    assert warnings == []
+
+
 def test_compile_filters_uses_plural_rtype():
     """实测：rtype 的值是复数。'database' 返回 0，'databases' 才对。"""
     inc, exc = library_query.compile_filters({"rtype": ["articles"]}, "CentralIndex")
@@ -371,6 +392,19 @@ def test_compile_filters_year_cap_keeps_the_recent_end():
     assert "creationdate,exact,2026" in cds
     assert "creationdate,exact,1900" not in cds
     assert len(cds) == 30
+
+
+def test_year_span_cap_is_silent_and_does_not_rewrite_parsed():
+    """F-7：30 年是**实现自定**的界（规格 §6 只写「逐年一条」，没有任何上限），
+    截断只发生在**编译出的过滤集**上 —— `parsed.year_from` 照旧是用户原值，
+    所以这次收窄是静默的（回显写着 1900–2026，实际只过滤 1997–2026）。
+    钉住「选定的行为」：保留靠今年的一端、只收窄过滤集、`_YEAR_SPAN_CAP` 不动。
+    """
+    parsed = {"year_from": 1900, "year_to": 2026}
+    inc, _ = library_query.compile_filters(parsed, "MyInstitution")
+    cds = [e for e in inc if e.startswith("creationdate")]
+    assert cds == [f"creationdate,exact,{y}" for y in range(1997, 2027)]   # 恰好 30 条
+    assert parsed["year_from"] == 1900      # 用户输入不被改写 —— 这正是「静默」之处
 
 
 # ---------- F6：把 3 条弱断言补出判别力（新增用例，原用例不动） ----------

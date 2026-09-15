@@ -18,7 +18,16 @@ KNOWN_RTYPE = ["articles", "books", "journals", "databases", "dissertations",
 _MAX_ITEMS = 12        # 每个列表最多几条
 _MAX_STR = 200         # 单个字符串最长多少字符
 _MIN_YEAR = 1800
-_YEAR_SPAN_CAP = 30    # 年份区间最多生成多少条 creationdate 过滤
+
+# 年份区间最多生成多少条 `creationdate` 过滤（**每条一个重复的 qInclude 参数**，
+# 区间语法未验证，spec §6 明确不作默认）。**规格没有规定这个上限** —— 规格 §6 只说
+# 「逐年一条」，30 是实现自己定的界，理由是：不设界的话「1900 年以前至今」会生成
+# 227 个 qInclude 参数，既撑大请求也可能被上游拒。**真的被截断时用户看不到**：
+# `parsed.year_from` 照旧回显 1900，被悄悄收窄的是实际编译出的过滤集
+# （1900–2026 → 只过滤 1997–2026）。已知的静默收窄，故意保留在 30，
+# 不改数值也不加提示（要改就得先有依据）。详见
+# tests/test_library_query.py 里钉住这条行为的两个用例。
+_YEAR_SPAN_CAP = 30
 
 EMPTY_PARSED = {
     "keywords": [], "synonyms": [], "year_from": None, "year_to": None,
@@ -185,9 +194,23 @@ def parse_natural(base_url: str, api_key: str, model: str, text: str, *,
 
 
 def build_q(parsed: dict) -> str:
-    """关键词 + 同义词 → Primo 的 q 参数。空的话给个合法兜底，上游才不 400。"""
-    terms = list(parsed.get("keywords") or []) + list(parsed.get("synonyms") or [])
-    return "any,contains," + " ".join(terms)
+    """关键词 + 同义词 → Primo 的 q 参数。空的话给个合法兜底，上游才不 400。
+
+    **去重（保序）**：`parse_natural` 在 LLM 只给 synonyms 时会拿它顶上 keywords，
+    却不清空来源字段（那份 parsed 还要原样回显给用户，不该被改），于是同一批词会
+    同时出现在两个字段里 —— 不去重的话 q 里每个词都写两遍
+    （`any,contains,ML DL ML DL`，实测复现）。LLM 自己把同一个词写进两个字段时同理。
+
+    在 build_q 里做而不是在提升处清空 synonyms：路由回传的 `parsed` 要原样重编译，
+    两边走同一个函数才能保证第 2 页的 q 与第 1 页**逐字节相同**（spec §8）。
+    """
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for term in list(parsed.get("keywords") or []) + list(parsed.get("synonyms") or []):
+        if term not in seen:
+            seen.add(term)
+            uniq.append(term)
+    return "any,contains," + " ".join(uniq)
 
 
 def compile_filters(parsed: dict, scope: str) -> tuple[list[str], list[str]]:
@@ -217,6 +240,10 @@ def compile_filters(parsed: dict, scope: str) -> tuple[list[str], list[str]]:
             end = year_from
         # +1 是为了让**闭区间**长度不超过 _YEAR_SPAN_CAP（end - start + 1 ≤ CAP）。
         # 写成 end - CAP 会得到 CAP+1 条，正好越过上限一条。
+        # 区间比 CAP 宽时**保留靠今年的一端**（1900–2026 → 1997–2026）：用户写
+        # 「1900 年以来」要的是「老到今」，丢掉近端等于把最相关的那几年排除掉。
+        # 这一步只收窄**编译出的过滤集**，不动 `parsed.year_from` —— 回显仍是用户
+        # 输入的原值，所以收窄是静默的（见 _YEAR_SPAN_CAP 处的说明）。
         start = max(year_from, end - _YEAR_SPAN_CAP + 1)
         for year in range(start, end + 1):
             include.append(f"creationdate,exact,{year}")
