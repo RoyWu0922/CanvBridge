@@ -34,6 +34,18 @@
 静默返回会把「测试其实在打网络」变成「测试悄悄拿到空数据」—— 后者更难发现。
 异常会在用例里炸开，指向本文件的说明。
 
+## 但**只拦还不够**：拦截日志非空 ⇒ 用例判红
+
+抛出会被上层的降级 `except` 吞掉：`library_areas.load_areas()` 自己就写着
+「任何问题一律当没有」，`library_client.list_domains()` 同理，F-2 之后端点那两处
+也各自有兜底。于是**一次真实外发**会以「`BLOCKED` 里多一行 + 用例照旧全绿」的形态
+出现 —— 拦是拦住了，**但它是静默的**。R69 之所以存在，正是因为这条约束
+**在同一天内静默失守过两次**（见上）。所以每个用例结束时
+`_block_real_network` 会**断言 `BLOCKED` 为空**，失败消息里带入口、目标与用例 id。
+
+默认即「拦截即失败」；需要**故意**制造一次被拦尝试的用例（验证守卫本身的那些）
+必须显式请求 `allow_network_block` fixture —— 见该 fixture 的说明。
+
 ## 放行
 
 - **回环**（`127.0.0.0/8` / `localhost` / `::1` / `0.0.0.0` / `::`）—— 否则会打死本仓
@@ -59,8 +71,14 @@ class NetworkBlocked(RuntimeError):
 
 
 #: 每一次被拦下的出网尝试都会记在这里（`"<入口>: <目标>"` 一行）。
-#: 干净态下它必须是空的 —— 这正是本守卫「在位且真的没漏」的判据。
+#: **拦截本身还不够**：光拦的话，被拦下的那次尝试会被上层的降级 `except` 吞掉，
+#: 于是「一次真实外发」= 一条无人断言的日志 + **一个绿色的用例**。所以本列表
+#: 每个用例结束时会被断言为空 —— 见 `_block_real_network` 的收尾。
 BLOCKED: list[str] = []
+
+#: 「拦截即失败」的**按用例**退出开关。只有显式请求了 `allow_network_block`
+#: fixture 的用例才会进来（用于验证守卫本身的用例）；没有全局开关。
+_OPT_OUT: set[str] = set()
 
 #: 明文放行的主机（回环 / 未指定）。`127.0.0.0/8` 另按前缀放行。
 _LOOPBACK_HOSTS = {"localhost", "::1", "0.0.0.0", "::", ""}
@@ -97,9 +115,48 @@ def _deny(entry_point: str, target):
         f"requests 路径，只拦 library_client 会漏掉它。详见 tests/conftest.py 顶部。")
 
 
+def _blocked_failure_message(nodeid: str) -> str:
+    """拦截日志非空时的失败说明 —— 必须**自足**：入口、目标、出事的用例都在里面。"""
+    entries = "\n".join(f"    - {line}" for line in BLOCKED)
+    return (
+        f"[netguard] 用例 {nodeid} 期间发生了 {len(BLOCKED)} 次**真实出网尝试**"
+        f"（已被 socket 层拦下，没有真的发出去）：\n{entries}\n"
+        f"  拦住它们不等于没事：这次尝试**被上层的降级 except 吞掉了**，所以用例照样绿 ——\n"
+        f"  这正是本条断言存在的理由（R69：这个约束曾在同一天内**静默**失守两次）。\n"
+        f"  请改用合成 fixture + monkeypatch 替身（范式见 tests/test_canvas_client.py 的 _Resp/_Session）。\n"
+        f"  ⚠️ 注意 library_areas 走的是它自己那条 requests 路径（不经过 library_client._get），\n"
+        f"     替身要打在**它自己**的出口上（见 tests/test_library_areas.py 的 _Session）。\n"
+        f"  如果本用例是**故意**要验证守卫本身，请显式请求 `allow_network_block` fixture。"
+    )
+
+
+@pytest.fixture
+def allow_network_block(_block_real_network):
+    """**显式的、按用例的**「拦截即失败」退出开关。
+
+    只有「验证守卫本身、故意制造一次被拦尝试」的用例才该请求它 —— 默认（不请求）
+    一律是拦截即失败。刻意做成 **fixture 参数**而不是全局开关：它必须出现在
+    **用到它的那个用例的签名里**，读代码的人一眼就能看见「这个用例知道自己在碰网络」。
+
+    形参 `_block_real_network` 是**故意的**：它把顺序钉死 —— 守卫先建立、后收尾，
+    于是守卫的收尾一定发生在**本 fixture 之后**，也就读得到下面那个标志。
+    （曾经在本地 `yield` 之后 `discard`，结果本 fixture 先收尾、标志先被清掉，
+    守卫收尾读不到 ⇒ 自检用例被自己判红。这条依赖就是那个 bug 的修复。）
+    """
+    _OPT_OUT.add("allow")
+    yield
+    # 不在这里 discard：守卫的收尾要**先读**这个标志、读完再清（见 `_block_real_network`）。
+
+
 @pytest.fixture(autouse=True)
-def _block_real_network(monkeypatch):
-    """autouse：整仓每个用例默认出不了网。需要真回环的用例无需做任何事（已放行）。"""
+def _block_real_network(request, monkeypatch):
+    """autouse：整仓每个用例默认出不了网。需要真回环的用例无需做任何事（已放行）。
+
+    **收尾会断言「本用例一次都没被拦过」** —— 这条断言才是 R69 的要点：光拦不报的话，
+    历史上那两次失守会以「日志里多一行 + 用例全绿」的形态原样复现。
+    """
+    BLOCKED.clear()
+    _OPT_OUT.clear()      # autouse 一定先于 `allow_network_block` 建立，此时它还没登记
     real_getaddrinfo = socket.getaddrinfo
     real_create_connection = socket.create_connection
     real_connect = socket.socket.connect
@@ -132,3 +189,9 @@ def _block_real_network(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", guard_connect)
     monkeypatch.setattr(socket.socket, "connect_ex", guard_connect_ex)
     yield
+    allowed = "allow" in _OPT_OUT
+    _OPT_OUT.clear()      # 清掉本用例的退出标志，绝不泄漏到下一条用例
+    if BLOCKED and not allowed:
+        # `pytrace=False`：失败点在收尾、不在用例体内，栈回溯只会指错地方；
+        # 消息本身已经把入口 / 目标 / 用例 id 全写清楚了。
+        pytest.fail(_blocked_failure_message(request.node.nodeid), pytrace=False)
