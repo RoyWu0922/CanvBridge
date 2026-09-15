@@ -175,7 +175,13 @@ def _get(path: str, params: dict, session) -> dict:
     try:
         resp = s.get(PRIMO_BASE + path, params=params, headers=_HEADERS, timeout=30)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        # 实测上游会返 HTTP 200 + 非对象 JSON（`null` / `[]` / 裸字符串）。
+        # 放它过去，`data.get(...)` 就抛 AttributeError —— 那**不是** LibraryError，
+        # 会越过 list_domains 的降级分支，把「不做领域收窄」变成整次检索失败。
+        if not isinstance(data, dict):
+            raise LibraryError("图书馆返回了非对象 JSON")
+        return data
     except requests.RequestException as exc:
         raise LibraryError(f"图书馆检索失败：{exc}") from exc
     finally:
