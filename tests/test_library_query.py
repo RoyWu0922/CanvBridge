@@ -287,13 +287,17 @@ def test_compile_filters_future_year_from_survives():
     """第二个可达入口：`_as_year` 明确放行 now+1（未来年份）。
 
     **当前机制**（与上面那条不同，别照抄旧注释）：`end = year_to or datetime.now().year`
-    —— 上界缺省时取**今年**。`year_to` 是 None ⇒ `end = 2027`（未来那一年本身），
-    于是 `start = max(2027, 2027-30+1) = 2027`、`range(2027, 2028)` 非空 ⇒ 2027 保留。
+    —— 上界缺省时取**今年**。只要今年比 2027 小，取今年得到的 `end` 就比 `year_from`
+    小，于是紧跟着的夹取 `if end < year_from: end = year_from`（`library_query.py:260-261`）
+    把它抬到 2027（未来那一年本身）；随后 `start = max(2027, 1998) = 2027`、
+    `range(2027, 2028)` 非空 ⇒ 2027 保留。**抬它的是夹取那一行，不是取今年那一行。**
 
-    历史（`3be358a` 之前）：那时上界写的是 `min(now, year_from + _YEAR_SPAN_CAP)`，
-    这个 `min` 把 end 卡在 2026，于是 start=2027、range(2027,2027) 为空，
-    年份约束同样无声蒸发 —— 那条 `min` 已经删掉，本用例现在守的是**删掉之后**
-    仍然成立的性质（未来年份不被静默吞掉）。测试名里的 `_now_cap` 已随之去掉。
+    历史（`3be358a` 之前）：那时上界写的是 `min(now, year_from + _YEAR_SPAN_CAP)`。
+    但它**并没有吞掉未来年份** —— 同一版里夹取已经在（`3be358a^:239-240`），
+    `year_from=2027` 照样被抬回 2027，`range` 非空。那道 `min` 真正伤到的是
+    **下界很远**的情形：`year_from=1990` 时 end 被卡在 2020，2021–2026 静默消失
+    —— 这才是 `compile_filters` 里那段注释讲的缺陷。`min` 已删，本用例守的是
+    删掉之后仍然成立的性质（未来年份不被静默吞掉）。测试名里的 `_now_cap` 已随之去掉。
     """
     inc, _ = library_query.compile_filters({"year_from": 2027, "year_to": None},
                                            "MyInstitution")
