@@ -1,7 +1,24 @@
 """Primo 客户端测试。全部用合成 JSON，不打真实网络。"""
+import json
+import threading
+import time
+
+import pytest
 import requests
 
 from backend import library_client
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_real_home(tmp_path, monkeypatch):
+    """安全网：默认把 domain 词表缓存指向 tmp_path（照 tests/test_library_areas.py 的范式）。
+
+    模块常量指向 `~/.canvbridge/library_domains.json`，那是**用户真实文件**，
+    测试绝不允许读它、更不许写它（读了会串味：本机缓存里有词表的话，
+    「缓存命中不打网络」这类用例会变成假绿）。涉及缓存的用例各自再显式 monkeypatch，
+    这个 autouse fixture 是防止日后新增用例漏写时动到用户的缓存。
+    """
+    monkeypatch.setattr(library_client, "CACHE_FILE", tmp_path / "guard" / "domains.json")
 
 
 # ---------- build_params：三个实测坑 + 过滤表达式 ----------
@@ -341,6 +358,103 @@ def test_list_domains_returns_empty_on_non_object_json(monkeypatch):
         assert library_client.list_domains(session=_Session(payload)) == []
 
 
+# ---------- list_domains 的缓存（spec §4.2「与 area 同策略」） ----------
+
+def _facet_payload(domains):
+    return {"info": {"total": 1}, "docs": [],
+            "facets": [{"name": "domain",
+                        "values": [{"value": d, "count": "1"} for d in domains]}]}
+
+
+def test_list_domains_caches_and_second_call_hits_no_network(tmp_path, monkeypatch):
+    """词表 7 天不变 —— 缓存命中就绝不再打上游（旧实现每翻一页都多打一次）。"""
+    monkeypatch.setattr(library_client, "CACHE_FILE", tmp_path / "domains.json")
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    s = _Session(_facet_payload(["ScienceDirect", "MEDLINE"]))
+    assert library_client.list_domains(session=s) == ["ScienceDirect", "MEDLINE"]
+    assert len(s.calls) == 1
+
+    s2 = _Session(_facet_payload(["ScienceDirect", "MEDLINE"]))
+    assert library_client.list_domains(session=s2) == ["ScienceDirect", "MEDLINE"]
+    assert s2.calls == []           # 命中缓存 → 一次网络都没打
+
+
+def test_list_domains_refetches_when_cache_expired(tmp_path, monkeypatch):
+    cache = tmp_path / "domains.json"
+    monkeypatch.setattr(library_client, "CACHE_FILE", cache)
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    library_client.list_domains(session=_Session(_facet_payload(["OLD"])))
+
+    raw = json.loads(cache.read_text(encoding="utf-8"))
+    raw["fetched_at"] = time.time() - library_client.CACHE_TTL - 10    # 弄成过期
+    cache.write_text(json.dumps(raw), encoding="utf-8")
+
+    s = _Session(_facet_payload(["NEW"]))
+    assert library_client.list_domains(session=s) == ["NEW"]
+    # 过期 ⇒ 必须真的重抓过（否则测的是「缓存没过期」，重抓路径根本没走到）
+    assert len(s.calls) == 1
+
+
+def test_list_domains_falls_back_to_stale_cache_on_failure(tmp_path, monkeypatch):
+    """过期了、重抓又失败 → 旧词表也比没有强（与 area 的降级逐条对齐）。"""
+    cache = tmp_path / "domains.json"
+    monkeypatch.setattr(library_client, "CACHE_FILE", cache)
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    library_client.list_domains(session=_Session(_facet_payload(["MEDLINE"])))
+
+    raw = json.loads(cache.read_text(encoding="utf-8"))
+    raw["fetched_at"] = time.time() - library_client.CACHE_TTL - 10
+    cache.write_text(json.dumps(raw), encoding="utf-8")
+
+    class _Boom:
+        def get(self, *a, **k):
+            raise requests.ConnectionError("no route")
+
+        def close(self):
+            pass
+
+    assert library_client.list_domains(session=_Boom()) == ["MEDLINE"]
+
+
+def test_list_domains_treats_corrupt_cache_as_absent(tmp_path, monkeypatch):
+    """缓存被写坏（截断 / 手工改）→ 当没有，重新抓，不抛错。"""
+    cache = tmp_path / "domains.json"
+    cache.write_text("{{{ not json", encoding="utf-8")
+    monkeypatch.setattr(library_client, "CACHE_FILE", cache)
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    s = _Session(_facet_payload(["MEDLINE"]))
+    assert library_client.list_domains(session=s) == ["MEDLINE"]
+    assert len(s.calls) == 1
+
+
+def test_list_domains_rejects_malformed_cache_entries(tmp_path, monkeypatch):
+    """形状校验（照 R13-a 对 area 缓存做的同一标准）：`{"domains":[1,2,3]}` 是合法
+    JSON、也是非空 list，但不是契约里的「字符串列表」—— 当没有，重抓；
+    重抓也失败时返回 `[]`，绝不能把 [1,2,3] 喂进 LLM 提示词。
+    """
+    cache = tmp_path / "domains.json"
+    monkeypatch.setattr(library_client, "CACHE_FILE", cache)
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    cache.write_text(json.dumps({"fetched_at": time.time(), "domains": [1, 2, 3]}),
+                     encoding="utf-8")
+
+    s = _Session(_facet_payload(["MEDLINE"]))
+    assert library_client.list_domains(session=s) == ["MEDLINE"]
+    assert len(s.calls) == 1        # 畸形缓存没有被当成命中
+
+    cache.write_text(json.dumps({"fetched_at": time.time(), "domains": [1, 2, 3]}),
+                     encoding="utf-8")
+
+    class _Boom:
+        def get(self, *a, **k):
+            raise requests.ConnectionError("no route")
+
+        def close(self):
+            pass
+
+    assert library_client.list_domains(session=_Boom()) == []
+
+
 # ---------- 限流 ----------
 
 def test_throttle_sleeps_between_two_calls(monkeypatch):
@@ -363,6 +477,115 @@ def test_get_actually_goes_through_throttle(monkeypatch):
     library_client.search("MyInstitution", "q", session=s)
     library_client.list_domains(session=s)
     assert calls == [1, 1]
+
+
+# ---------- 节流与并发的作用域（F-3） ----------
+
+def test_query_scope_sleeps_between_two_queries(monkeypatch):
+    """相邻两次**查询**之间 ≥ _MIN_INTERVAL —— spec §9 的原文是「相邻翻页请求之间」
+    （一次翻页 = 一次查询），不是「一次查询内部的各次调用之间」。"""
+    slept = []
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0.05)
+    monkeypatch.setattr(library_client, "_last_query_at", 0.0)
+    monkeypatch.setattr(library_client.time, "sleep", lambda s: slept.append(s))
+    with library_client.query_scope():      # _last_query_at 是 0（很久以前）→ 不该睡
+        pass
+    with library_client.query_scope():      # 第二次必须睡
+        pass
+    assert len(slept) == 1 and slept[0] > 0
+
+
+def test_throttle_stands_down_inside_a_query(monkeypatch):
+    """**同一次查询内部**的上游调用不互相节流（F-3 的 2.0 秒纯睡眠就是在这里白等的）。
+
+    查询之外仍然照旧按 _last_call 兜底 —— 两条语义同时钉住。
+    """
+    slept = []
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 1.0)
+    monkeypatch.setattr(library_client, "_last_query_at", 0.0)   # 门：很久以前，不睡
+    monkeypatch.setattr(library_client, "_last_call", time.monotonic())      # 刚调过一次
+    monkeypatch.setattr(library_client.time, "sleep", lambda s: slept.append(s))
+
+    library_client._throttle()               # 查询之外：仍要等满间隔
+    assert len(slept) == 1
+
+    with library_client.query_scope():
+        library_client._throttle()           # 查询内部的两栏：都不等
+        library_client._throttle()
+    assert len(slept) == 1
+
+
+def test_query_scope_serializes_queries(monkeypatch):
+    """不同查询之间**串行**：后一个查询在前一个退出前进不了门（spec §9
+    「这是唯一的一处并发；不同查询之间串行」）。
+
+    有界 join 只是给第二个查询一个（错误地）闯进来的机会：并发实现必然在那个窗口内
+    留下 `inside` 记录 → 断言失败；串行实现则**任何时序下**都通过。
+    """
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    monkeypatch.setattr(library_client, "_last_query_at", 0.0)
+    inside = []
+    first_in = threading.Event()
+    release_first = threading.Event()
+
+    def first_query():
+        with library_client.query_scope():
+            first_in.set()
+            release_first.wait(5)
+
+    def second_query():
+        with library_client.query_scope():
+            inside.append("second")
+
+    t1 = threading.Thread(target=first_query)
+    t1.start()
+    assert first_in.wait(5)
+    t2 = threading.Thread(target=second_query)
+    t2.start()
+    t2.join(0.3)
+    assert inside == []                  # 门被第一个查询占着 → 第二个进不来
+
+    release_first.set()
+    t1.join(5)
+    t2.join(5)
+    assert inside == ["second"]          # 第一个退出后它才进 —— 顺序没丢
+
+
+def test_concurrent_searches_each_use_their_own_session(monkeypatch):
+    """`requests.Session` **不是线程安全的**：并发发出的两个 scope 绝不能共用一个
+    （spec §3.2 的并发前提）。search(session=None) 每次调用自建、自关。"""
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    ids = []
+    barrier = threading.Barrier(2, timeout=5)
+
+    class _ProbeSession:
+        def __init__(self):
+            ids.append(id(self))
+
+        def get(self, *a, **k):
+            barrier.wait()       # 两次调用必须同时在飞，否则并发根本没发生
+            return _Resp({"info": {"total": 0}, "docs": []})
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(library_client.requests, "Session", _ProbeSession)
+    errors = []
+
+    def run(scope):
+        try:
+            library_client.search(scope, "q")
+        except Exception as exc:      # noqa: BLE001 —— 收集起来在断言里看
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run, args=(s,))
+               for s in (library_client.SCOPE_LOCAL, library_client.SCOPE_EXTERNAL)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert errors == []
+    assert len(set(ids)) == 2            # 两次调用拿到的是两个不同的 Session
 
 
 def test_get_closes_only_the_session_it_created(monkeypatch):

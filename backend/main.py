@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import itertools
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -857,13 +858,29 @@ def library_search(req: LibrarySearchRequest):
     q = library_query.build_q(parsed)
     blocks = {}
     try:
-        for scope, key in ((library_client.SCOPE_LOCAL, "local"),
-                           (library_client.SCOPE_EXTERNAL, "external")):
-            include, exclude = library_query.compile_filters(parsed, scope)
-            blocks[key] = library_client.search(
-                scope, q, q_include=include, q_exclude=exclude, page=req.page)
+        # 一次「查询」= 一次 /api/library/search 请求 = 一个节流单位（spec §9：
+        # 「相邻翻页请求之间 ≥1s」「不同查询之间串行」）。整段查询期间持门，
+        # 别的查询被挡在门外并等到间隔满足。
+        with library_client.query_scope():
+            # **两个 scope 并发**（spec §3.2「并发两次请求」、§5.2 ⑤、§9「只允许
+            # 两个 scope 并发」）—— 全项目唯一的一处并发，也只限同一次查询的两栏。
+            # 每个 scope 各用各的 requests.Session：search(session=None) 每次自建，
+            # Session 不是线程安全的，共享会把连接池搞坏。
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = {}
+                for scope, key in ((library_client.SCOPE_LOCAL, "local"),
+                                   (library_client.SCOPE_EXTERNAL, "external")):
+                    include, exclude = library_query.compile_filters(parsed, scope)
+                    futures[key] = pool.submit(
+                        library_client.search, scope, q,
+                        q_include=include, q_exclude=exclude, page=req.page)
+                # 按 scope 顺序取回（submit 顺序），失败的那个把异常原样抛出来。
+                for key, fut in futures.items():
+                    blocks[key] = fut.result()
     except Exception as exc:
-        # 上游失败也把 parsed 带回去 —— 否则前端第 2 页起就回传不了了。
-        return {"ok": False, "error": str(exc), "parsed": parsed, "warnings": warnings}
+        # 错误一律 200 + JSON（本仓既有约定）。**不回带 parsed**：前端在 !ok 分支里
+        # 会把 libraryState.parsed 清空（app.js 的 runLibrarySearch），带回去没有任何
+        # 消费者 —— 旧注释说的「否则前端第 2 页起就回传不了了」不成立。
+        return {"ok": False, "error": str(exc), "warnings": warnings}
 
     return {"ok": True, "parsed": parsed, "warnings": warnings, **blocks}

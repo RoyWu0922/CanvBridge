@@ -988,8 +988,14 @@ def test_download_files_skips_when_legacy_path_exists(tmp_path, monkeypatch):
 # ---------- 图书馆端点 ----------
 
 def _patch_library(monkeypatch, calls=None):
-    """把三个新模块全部换成替身。calls 用来断言 LLM 有没有被调到。"""
+    """把三个新模块全部换成替身。calls 用来断言 LLM 有没有被调到。
+
+    `_MIN_INTERVAL` 一并归零：端点现在每次查询都会进 `library_client.query_scope()`
+    （跨查询节流 ≥1s），不归零的话每个图书馆端点用例都要真睡 1 秒。
+    节流本身由 test_library_client 的专项用例在旁边钉住。
+    """
     from backend import library_areas, library_client, library_query
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
     monkeypatch.setattr(library_areas, "load_areas",
                         lambda **k: {"available": True,
                                      "areas": [{"code": "comp", "name": "Computer Science"}]})
@@ -1182,3 +1188,54 @@ def test_library_search_compiles_two_different_param_sets(monkeypatch):
         "text": "x", "parsed": {"keywords": ["x"], "peer_reviewed_only": True}})
     assert "tlevel,exact,peer_reviewed" in (seen["CentralIndex"].get("q_include") or [])
     assert "tlevel,exact,peer_reviewed" not in (seen["MyInstitution"].get("q_include") or [])
+
+
+# ---------- F-3：两个 scope 并发 + 查询级节流 ----------
+
+def test_library_search_runs_both_scopes_concurrently(monkeypatch):
+    """spec §3.2「并发两次请求」/§5.2 ⑤/§9「只允许两个 scope 并发」。
+
+    判据用**屏障**而不是计时：两个替身必须**同时在飞**才过得去；串行的实现会在
+    屏障上等到超时（BrokenBarrierError）→ 异常冒到端点 → `ok is False`，确定性失败，
+    与机器快慢无关（sleep 赌时序的写法会既脆又慢）。
+    """
+    import threading
+    _patch_library(monkeypatch)
+    from backend import library_client
+
+    barrier = threading.Barrier(2, timeout=5)
+
+    def both_at_once(scope, q, **k):
+        barrier.wait()          # 只有两个 scope 并发才可能通过
+        return {"scope": scope, "items": [{"title": scope, "url": "u", "record_id": "r"}],
+                "count": 5, "page": k.get("page", 1), "has_more": False}
+
+    monkeypatch.setattr(library_client, "search", both_at_once)
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "text": "x"}).json()
+    assert body["ok"] is True
+    assert body["local"]["items"][0]["title"] == "MyInstitution"
+    assert body["external"]["items"][0]["title"] == "CentralIndex"
+
+
+def test_library_search_enters_the_query_gate(monkeypatch):
+    """端点必须真的走 `query_scope`：库里备了门而没人用的话，
+    spec §9 的「相邻请求 ≥1s」与「不同查询之间串行」在端点层等于不存在。"""
+    import contextlib
+    _patch_library(monkeypatch)
+    from backend import library_client
+
+    entered = []
+    real_scope = library_client.query_scope
+
+    @contextlib.contextmanager
+    def spy_scope():
+        entered.append(1)
+        with real_scope():
+            yield
+
+    monkeypatch.setattr(library_client, "query_scope", spy_scope)
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "text": "x"}).json()
+    assert body["ok"] is True
+    assert entered == [1]           # 一次查询恰好进一次门（并发的是门**内**的两栏）

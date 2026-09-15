@@ -7,7 +7,12 @@
 """
 from __future__ import annotations
 
+import contextlib
+import json
 import re
+import threading
+import time
+from pathlib import Path
 from urllib.parse import quote
 
 import requests
@@ -148,17 +153,58 @@ def build_params(scope: str, q: str, *, q_include: list[str] | None = None,
     return params
 
 
-import threading
-import time
-
-# 相邻两次请求之间的最小间隔（spec §9）。用户手动翻页天然慢于此，
+# ---------- 节流：作用域是「一次查询」，不是「一次 HTTP 调用」 ----------
+#
+# spec §9 的限速原文是「**相邻翻页请求之间** ≥ 1s」，并发一条是「**只允许两个 scope
+# 并发**（同一次查询的两栏）……这是唯一的一处并发；**不同查询之间串行**」。
+# 所以节流该管的是**不同查询之间**，同一次查询自己的两栏不该互相等。
+#
+# 旧实现把 _throttle() 放在 _get() 里按**单次调用**节流，两个后果：
+#   ①两个 scope 串行时，同一次查询的第二次调用被当成「太频繁」自罚一秒
+#     —— 每次检索白等约 2.0 秒（F-3 实测）；
+#   ②两个 scope 一旦并发，两个线程读写同一个模块级 _last_call 还会打架。
+# 现在：查询 = 一个节流单位（query_scope），查询内部的调用直接放行。
+#
+# 相邻两次**查询**之间的最小间隔（spec §9）。用户手动翻页天然慢于此，
 # 这条只是兜住连点。测试里 monkeypatch 成 0，免得拖慢用例。
 _MIN_INTERVAL = 1.0
-_last_call = 0.0
+_last_call = 0.0                    # 仅用于「查询之外」的单次调用兜底
+_last_query_at = 0.0                # 上一次查询的进入时刻 —— 跨查询节流的记账点
 _throttle_lock = threading.Lock()
+_query_lock = threading.Lock()      # 一次只允许一个查询：spec §9「不同查询之间串行」
+
+
+@contextlib.contextmanager
+def query_scope():
+    """一次查询 = 一个节流单位。端点在每次 `/api/library/search` 外面套一层。
+
+    - **不同查询之间串行**（spec §9）：整段查询期间持有 `_query_lock`，后来的查询
+      必须等前一个退出 —— 这是「唯一的一处并发只限同一次查询的两栏」的机械保证。
+    - **相邻两次查询之间 ≥ `_MIN_INTERVAL`**（spec §9）：进入时距上次进入不足就等。
+    - 查询**内部**的上游调用不互相节流（见 `_throttle`）：同一次查询的两个 scope
+      本来就是并发发出的，在这里互相等等于把并发退回串行。
+    """
+    global _last_query_at
+    with _query_lock:
+        wait = _MIN_INTERVAL - (time.monotonic() - _last_query_at)
+        if wait > 0:
+            time.sleep(wait)
+        _last_query_at = time.monotonic()
+        yield
 
 
 def _throttle() -> None:
+    """单次上游调用的兜底节流。
+
+    **查询内部直接放行**：`_query_lock` 被占着就说明正处在一次查询里，而同一次查询的
+    两个 scope 是并发发出的 —— 若在这里互相等，并发就白做了（F-3 那 2.0 秒纯睡眠
+    正是这么来的）。
+
+    查询之外（直接调用本模块、或将来新增的独立调用点）仍按 `_last_call` 兜底，
+    语义与改动前一致：距上次调用不足 `_MIN_INTERVAL` 就睡。
+    """
+    if _query_lock.locked():
+        return
     global _last_call
     with _throttle_lock:
         wait = _MIN_INTERVAL - (time.monotonic() - _last_call)
@@ -196,6 +242,9 @@ def search(scope: str, q: str, *, q_include: list[str] | None = None,
 
     **页码越界在这里就拒** —— 上限必须由后端挡（spec §9）。
     `has_more` = 「本页取满 且 page < MAX_PAGES」，由后端算好给前端。
+
+    `session=None`（端点走的就是这条）时**每次调用自建一个 `requests.Session`** ——
+    `requests.Session` 不是线程安全的，两个 scope 是并发发出的，绝不能共用一个。
     """
     if page < 1 or page > MAX_PAGES:
         raise LibraryError(f"页码越界：{page}（允许 1..{MAX_PAGES}）")
@@ -214,6 +263,61 @@ def search(scope: str, q: str, *, q_include: list[str] | None = None,
 # 拉 domain 词表用的宽查询。要的是 facets，不是 hits，所以 limit 用默认的一页就够。
 _DOMAIN_PROBE_Q = "any,contains,the"
 
+# domain 词表的缓存。spec §4.2 要求「缓存（**与 area 同策略**）」，所以照
+# backend/library_areas.py 那套原样搬：7 天 TTL 的文件缓存 + 过期重抓 + 重抓失败
+# 回退旧缓存 + 任何问题一律当没有、绝不抛错。缓存放**同一个应用数据目录**
+# （与 area 缓存同址，同属这台机器的 CanvBridge 数据），只是换个文件名。
+CACHE_TTL = 7 * 24 * 3600
+CACHE_FILE = Path.home() / ".canvbridge" / "library_domains.json"
+
+
+def _valid_domains(values) -> list[str]:
+    """缓存条目形状校验（照 R13-a 对 area 缓存做的那条同一标准）。
+
+    合法形状是**非空字符串列表**；只要有一条不是就整份当没有。缓存被人手改过、
+    或跨版本 schema 漂移时（`{"domains": [1,2,3]}`），坏值绝不能流进 LLM 提示词。
+    """
+    if not isinstance(values, list) or not values:
+        return []
+    if not all(isinstance(v, str) and v.strip() for v in values):
+        return []
+    return values
+
+
+def _read_cache() -> list[str]:
+    """读缓存；不存在 / 坏 JSON / 形状不对 / 过期 —— 一律当没有。"""
+    try:
+        raw = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        domains = _valid_domains(raw.get("domains"))
+        fetched_at = float(raw.get("fetched_at") or 0)
+    except Exception:
+        return []
+    if not domains:
+        return []
+    if time.time() - fetched_at > CACHE_TTL:
+        return []          # 过期。调用方会重抓；重抓失败时再单独回退到它
+    return domains
+
+
+def _read_stale_cache() -> list[str]:
+    """不管过期与否都读出来 —— 只在重抓失败时当救兵。"""
+    try:
+        raw = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        return _valid_domains(raw.get("domains"))
+    except Exception:
+        return []
+
+
+def _write_cache(domains: list[str]) -> None:
+    """写缓存失败不是错误（只读文件系统 / 没权限），下次再抓就是。"""
+    try:
+        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CACHE_FILE.write_text(
+            json.dumps({"fetched_at": time.time(), "domains": domains}, ensure_ascii=False),
+            encoding="utf-8")
+    except Exception:
+        pass
+
 
 def list_domains(*, session=None) -> list[str]:
     """拉 Primo `domain` facet 的全部取值，供 LLM 挑「自动选库」（spec §4.2）。
@@ -221,15 +325,27 @@ def list_domains(*, session=None) -> list[str]:
     **值必须来自这里** —— ereslist 的库名（'ScienceDirect'）和 Primo 的
     domain 值（'Elsevier ScienceDirect Journals'）是两套词表，直接喂会 0 命中。
 
-    拿不到（网络失败 / facet 没了）→ 返回 `[]`，调用方据此不做库级收窄。
-    **不抛错** —— 选库是增强，不是主干。
+    **缓存（与 area 同策略）**：命中缓存就不打网络（词表极少变；每翻一页都去问一次
+    上游既慢又没必要）。过期就重抓；重抓失败 / facet 没了则回退旧缓存。
+
+    拿不到（网络失败 + 无旧缓存 / facet 没了且无旧缓存）→ 返回 `[]`，调用方据此
+    不做库级收窄。**不抛错** —— 选库是增强，不是主干。
     """
+    cached = _read_cache()
+    if cached:
+        return cached
+
     params = build_params(SCOPE_EXTERNAL, _DOMAIN_PROBE_Q)
     try:
         data = _get(SEARCH_PATH, params, session)
     except LibraryError:
-        return []
+        return _read_stale_cache()
     for facet in data.get("facets") or []:
         if facet.get("name") == "domain":
-            return [v.get("value", "") for v in facet.get("values") or [] if v.get("value")]
-    return []
+            domains = [v.get("value", "") for v in facet.get("values") or [] if v.get("value")]
+            if not domains:
+                break
+            _write_cache(domains)
+            return domains
+    # 抓到了却没有词表（上游改版）→ 旧缓存也比没有强，与 area 的降级一致。
+    return _read_stale_cache()
