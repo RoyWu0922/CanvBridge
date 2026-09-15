@@ -394,3 +394,52 @@ def test_known_rtype_values_are_plural_and_singulars_dropped():
     assert "articles" in library_query.KNOWN_RTYPE
     assert library_query.validate_parsed(
         {"rtype": ["article", "database", "journal"]})["rtype"] == []
+
+
+# ---------- 别名不变量：构造函数绝不能返回与 EMPTY_PARSED 共享的 list ----------
+
+def test_fallback_parsed_returns_independent_lists():
+    """`parsed["areas"] is EMPTY_PARSED["areas"]` 曾经为 True（dict() 是浅拷贝）。
+
+    端点会就地 `insert` 回填用户选的 area，于是共享的那个 list 被永久改写，
+    模块常量跨请求泄漏。这里直接钉住「不是同一个对象」。
+    """
+    p = library_query.fallback_parsed("anything")
+    assert p["areas"] is not library_query.EMPTY_PARSED["areas"]
+    assert p["domains"] is not library_query.EMPTY_PARSED["domains"]
+
+
+def test_validate_parsed_none_returns_independent_lists():
+    """同一条路径：`validate_parsed(None)` 也是浅拷贝的受害点。"""
+    p = library_query.validate_parsed(None)
+    assert p["areas"] is not library_query.EMPTY_PARSED["areas"]
+    assert p["domains"] is not library_query.EMPTY_PARSED["domains"]
+
+
+def test_blank_parsed_returns_independent_lists():
+    """两个降级入口之外，直接钉住构造函数本身：日后新增 list 字段也自动覆盖。"""
+    for key, value in library_query.EMPTY_PARSED.items():
+        if isinstance(value, list):
+            assert library_query._blank_parsed()[key] is not value, key
+
+
+def test_mutating_returned_parsed_does_not_pollute_empty_parsed():
+    """污染回归：改返回值（append/insert）后，常量长度必须纹丝不动。
+
+    端点上那条 `parsed["areas"].insert(0, req.area)` 就是靠这条兜住的。
+    """
+    before = {k: len(v) for k, v in library_query.EMPTY_PARSED.items()
+              if isinstance(v, list)}
+    p = library_query.fallback_parsed("x")
+    p["areas"].insert(0, "comp")
+    p["domains"].append("MEDLINE")
+    p["keywords"].append("more")
+    p2 = library_query.validate_parsed(None)
+    p2["areas"].append("math")
+    p2["domains"].insert(0, "MEDLINE")
+    after = {k: len(v) for k, v in library_query.EMPTY_PARSED.items()
+             if isinstance(v, list)}
+    assert before == after
+    assert library_query.EMPTY_PARSED["areas"] == []
+    assert library_query.EMPTY_PARSED["domains"] == []
+    assert library_query.validate_parsed(None)["areas"] == []

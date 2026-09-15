@@ -1123,14 +1123,21 @@ def test_library_search_keeps_area_when_llm_degrades(monkeypatch):
     """
     from backend import library_query
     _patch_library(monkeypatch)
+    # 降级路径的真实产物就是 fallback_parsed —— 直接用它，别再手搓
+    # dict(EMPTY_PARSED, ...)：那是浅拷贝，list 字段与模块常量共用同一个对象，
+    # 端点的 insert 回填会**就地污染 EMPTY_PARSED**，用例自己把依赖的全局改坏。
     monkeypatch.setattr(library_query, "parse_natural",
-                        lambda *a, **k: (dict(library_query.EMPTY_PARSED,
-                                              keywords=["x"]), ["llm_degraded"]))
+                        lambda *a, **k: (library_query.fallback_parsed("x"),
+                                         ["llm_degraded"]))
     body = client.post("/api/library/search", json={
         "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
         "text": "x", "area": "comp"}).json()
     assert body["ok"] is True
     assert body["parsed"]["areas"] == ["comp"]
+    # 行为断言之外的钉子：端点回填 area 是**就地 insert**，若返回的 parsed 与
+    # EMPTY_PARSED 共用 list，这里就被永久污染、跨请求回显上一次的 area。
+    assert library_query.EMPTY_PARSED["areas"] == []
+    assert library_query.EMPTY_PARSED["domains"] == []
 
 
 def test_library_search_normalizes_client_supplied_parsed(monkeypatch):

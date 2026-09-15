@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import copy
 from datetime import datetime
 
 from . import llm_client
@@ -25,6 +26,17 @@ EMPTY_PARSED = {
     "peer_reviewed_only": False, "exclude_retracted": False,
     "areas": [], "domains": [], "explanation": "",
 }
+
+
+def _blank_parsed() -> dict:
+    """EMPTY_PARSED 的**独立副本**——list 字段必须是新对象。
+
+    dict(EMPTY_PARSED) 是浅拷贝，`parsed["areas"]` 会与模块常量**共用同一个
+    list**；而端点会就地 insert 回填 area（spec §6 要求领域提示不被丢弃），
+    于是常量被永久污染、跨请求泄漏。deepcopy 而非手写空 list：日后给
+    EMPTY_PARSED 加 list 字段时手写版会静默失效。
+    """
+    return copy.deepcopy(EMPTY_PARSED)
 
 
 def _as_list(value) -> list[str]:
@@ -64,7 +76,7 @@ def validate_parsed(raw: dict | None, known_domains: list[str] | None = None) ->
     东西），是健壮性问题 —— 畸形 `parsed` 不能变成畸形上游请求。
     """
     if not isinstance(raw, dict):
-        return dict(EMPTY_PARSED)
+        return _blank_parsed()
 
     rtype = [r for r in _as_list(raw.get("rtype")) if r in KNOWN_RTYPE]
     domains = _as_list(raw.get("domains"))
@@ -91,7 +103,7 @@ def validate_parsed(raw: dict | None, known_domains: list[str] | None = None) ->
 
 def fallback_parsed(text: str) -> dict:
     """LLM 不可用时的退化：把用户原文整句当关键词。**不抛错。**"""
-    parsed = dict(EMPTY_PARSED)
+    parsed = _blank_parsed()
     parsed["keywords"] = _as_list(text.strip())
     return parsed
 
