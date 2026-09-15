@@ -511,7 +511,11 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 .lib-item .lib-meta { font-size: 12px; opacity: .7; }
 .lib-pager { display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 16px; }
 /* 作者级的 `display` 会盖掉 UA 的 `[hidden]{display:none}`，所以需要一条**优先级更高**的
-   选择器把 `display` 夺回来：`.lib-pager` 是 flex，类选择器的优先级高于 UA 的 `[hidden]` 规则。
+   选择器把 `display` 夺回来：`.lib-pager` 是 flex。
+   注意这一跳的胜出靠的是**来源（origin）**，**不是优先级**：作者样式表整体压过 UA 样式表，
+   与 `[hidden]` 这条 UA 规则和 `.lib-pager` 各自身上的 specificity 无关。
+   优先级管的是**第二跳** —— 作者级 `.lib-pager`（有 display:flex）与作者级 `.lib-pager[hidden]`
+   之间，靠 `.lib-pager[hidden]` 更高把它夺回来，那一跳下面这句是对的。
    Task 7 用 $("libraryPager").hidden 控制显隐，缺这条则分页条永远可见（空结果时也显示「上一页/下一页」）。
    **同机制的正确先例只有 `.modal[hidden]`（.modal 有作者级 display:flex）与 `.write-bar[hidden]`（同）**。
    ⚠️ 不要照 `.page[hidden]` / `.fchildren[hidden]` 推断 —— 那两个元素**没有**作者级 `display`，

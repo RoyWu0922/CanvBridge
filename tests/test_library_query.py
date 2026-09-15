@@ -283,12 +283,39 @@ def test_compile_filters_inverted_year_range_still_filters():
     assert "creationdate,exact,2024" in inc
 
 
-def test_compile_filters_future_year_from_survives_now_cap():
-    """第二个可达入口：`_as_year` 明确放行 now+1，但 end 被 min(now, ...) 卡在 2026
-    → start=max(2027,...)=2027、range(2027,2027) 为空，同样蒸发。"""
+def test_compile_filters_future_year_from_survives():
+    """第二个可达入口：`_as_year` 明确放行 now+1（未来年份）。
+
+    **当前机制**（与上面那条不同，别照抄旧注释）：`end = year_to or datetime.now().year`
+    —— 上界缺省时取**今年**。`year_to` 是 None ⇒ `end = 2027`（未来那一年本身），
+    于是 `start = max(2027, 2027-30+1) = 2027`、`range(2027, 2028)` 非空 ⇒ 2027 保留。
+
+    历史（`3be358a` 之前）：那时上界写的是 `min(now, year_from + _YEAR_SPAN_CAP)`，
+    这个 `min` 把 end 卡在 2026，于是 start=2027、range(2027,2027) 为空，
+    年份约束同样无声蒸发 —— 那条 `min` 已经删掉，本用例现在守的是**删掉之后**
+    仍然成立的性质（未来年份不被静默吞掉）。测试名里的 `_now_cap` 已随之去掉。
+    """
     inc, _ = library_query.compile_filters({"year_from": 2027, "year_to": None},
                                            "MyInstitution")
     assert "creationdate,exact,2027" in inc
+
+
+def test_compile_filters_inverted_range_clamps_end_exactly():
+    """颠倒区间夹回来的**上端**必须正好是 `year_from`，不能多算一年。
+
+    上面那条只断言 `2024` **在**集合里 —— 而 `end = year_from` 改成
+    `end = year_from + 1` 时，`range(2024, 2026)` 仍然含 2024，所以那条**杀不掉**
+    这个 off-by-one（实测：变异存活，`393 passed`）。这里改成直接断言**编译出的
+    整个 creationdate 集合**，把上端也钉死。
+
+    为什么值得钉：夹回的上端若多一年，`2024–2020` 这种输入会**静默**多放行一整年
+    （2025）的结果 —— 回显仍写着 2024–2020，用户看不出多出来的那一年是哪儿来的。
+    """
+    inc, _ = library_query.compile_filters({"year_from": 2024, "year_to": 2020},
+                                           "MyInstitution")
+    years = sorted(int(e.rsplit(",", 1)[1]) for e in inc
+                   if e.startswith("creationdate,exact,"))
+    assert years == [2024]
 
 
 # ---------- F2：rtype 是两侧通用维度，不能被 is_pc 门控 ----------

@@ -2,6 +2,7 @@
 import json
 import threading
 import time
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 import requests
@@ -61,6 +62,36 @@ def test_build_params_lists_filters_as_repeated_params():
         q_exclude=["attribute,exact,retracted_publication"])
     assert p["qInclude"] == ["rtype,exact,articles", "tlevel,exact,peer_reviewed"]
     assert p["qExclude"] == ["attribute,exact,retracted_publication"]
+
+
+def test_build_params_encodes_two_values_of_one_category_as_repeated_params():
+    """**同一类别（这里是 `rtype`）的两个值**编码后长什么样 —— 断言**编码后的 URL**。
+
+    上面那条用例用的是 `rtype` + `tlevel` **两个不同类别**，结构上盖不到「同类别多值」
+    这个问题（而 §11.3 那个未决问题问的正是后者）；本用例补的就是它。
+    这里刻意不读 `build_params` 的返回值，而是走 `requests` 的
+    `Request.prepare()` 再 `parse_qs` —— 要钉的是**真实发出去的字节**，不是中间字典。
+
+    ⚠️ **本用例钉住的是「当前实现」的编码形态，不是「正确」的形态。**
+    `qInclude` 传同类别多个值时的语义（OR 还是 AND）**未经验证**（规格 §11.3），
+    且官方文档描述的是 `|,|` 连接与 `multiFacets`，**与本仓的重复参数写法不同**
+    （final review 的文档调研结论：官方 WADL 说 `qInclude` 在**facet 之间**是 AND，
+    想要「同类别内 OR」要用 `multiFacets`）。
+    所以：**本用例通过 ≠ 过滤生效**，一次绿色**不是**「多值过滤是对的」的证据。
+    它唯一的用途是「谁动了这个编码，这里会红」，逼改动者去看 §11.3 那个未决问题。
+    """
+    p = library_client.build_params(
+        "CentralIndex", "q",
+        q_include=["rtype,exact,articles", "rtype,exact,databases"])
+    req = requests.Request(
+        "GET", library_client.PRIMO_BASE + library_client.SEARCH_PATH,
+        params=p).prepare()
+    qs = parse_qs(urlparse(req.url).query, keep_blank_values=True)
+
+    # 当前实现：requests 对 list 值编码成**重复的同名参数**（不是 `|,|` 连接）。
+    assert qs["qInclude"] == ["rtype,exact,articles", "rtype,exact,databases"]
+    assert len(qs["qInclude"]) == 2          # 两个值都真的发出去了，没被吞成一个
+    assert all("|" not in v for v in qs["qInclude"])
 
 
 # ---------- normalize_doc：实测字段形状全是怪胎 ----------
