@@ -1392,7 +1392,9 @@ def compile_filters(parsed: dict, scope: str) -> tuple[list[str], list[str]]:
     year_from, year_to = parsed.get("year_from"), parsed.get("year_to")
     if year_from:
         end = year_to or min(datetime.now().year, year_from + _YEAR_SPAN_CAP)
-        start = max(year_from, end - _YEAR_SPAN_CAP)
+        # +1 是为了让**闭区间**长度不超过 _YEAR_SPAN_CAP（end - start + 1 ≤ CAP）。
+        # 写成 end - CAP 会得到 CAP+1 条，正好越过上限一条。
+        start = max(year_from, end - _YEAR_SPAN_CAP + 1)
         for year in range(start, end + 1):
             include.append(f"creationdate,exact,{year}")
 
@@ -1687,7 +1689,7 @@ Expected: 全部 PASS
 pytest -q
 ```
 
-Expected: 全绿（当前 249 + 本计划新增）
+Expected: 全绿（本分支基线 **242** + 本计划新增）
 
 ```bash
 git add backend/main.py tests/test_main.py
@@ -1706,7 +1708,7 @@ git commit -m "feat(library): /api/library/areas 与 /api/library/search（翻�
 - Produces:
   - `id="page-library"` 页面容器（含 `libraryQuery`、`libraryArea`、`librarySearchBtn`、`libraryParsed`、`libraryWarnings`、`libraryLocal`、`libraryExternal`、`libraryPager`、`libraryPrev`、`libraryPageInfo`、`libraryNext`）
   - `PAGES` 含 `"library"`；`PAGE_INIT.library` 指向 `initLibraryTab()`
-  - i18n 键：`nav.library` + 15 个 `library.*`（zh / en 各 16 个）
+  - i18n 键：`nav.library` + 16 个 `library.*`（zh / en 各 17 个）
 
 - [ ] **Step 1: 加导航项**
 
@@ -1772,6 +1774,7 @@ git commit -m "feat(library): /api/library/areas 与 /api/library/search（翻�
     "library.external_title": "外部数据库",
     "library.count": "共 {n} 条",
     "library.empty": "没有找到结果",
+    "library.need_input": "请先输入要检索的内容",
     "library.loading": "检索中…",
     "library.parsed": "理解为：{s}",
     "library.prev": "上一页",
@@ -1798,6 +1801,7 @@ git commit -m "feat(library): /api/library/areas 与 /api/library/search（翻�
     "library.external_title": "External Databases",
     "library.count": "{n} results",
     "library.empty": "No results",
+    "library.need_input": "Please enter something to search for",
     "library.loading": "Searching…",
     "library.parsed": "Understood as: {s}",
     "library.prev": "Previous",
@@ -1861,7 +1865,7 @@ node tools/check_dom_ids.mjs
 cat frontend/i18n.js frontend/util.js frontend/app.js frontend/shell.js > /tmp/four.js && node --check /tmp/four.js
 ```
 
-Expected: 三个都通过。i18n 键数 359 → 375（各加 16）；死键 ≤ 21。HTML id 124 → 135（新增 11 个）。
+Expected: 三个都通过。i18n 键数 359 → 376（各加 17）；死键 ≤ 21。HTML id 124 → 135（新增 11 个）。
 
 - [ ] **Step 8: 手工确认页面能开**
 
@@ -1980,7 +1984,7 @@ async function runLibrarySearch(page){
     body.text = $("libraryQuery").value.trim();
     const area = $("libraryArea").hidden ? "" : $("libraryArea").value;
     if (area) body.area = area;
-    if (!body.text){ setStatus(t("library.empty"), "err"); return; }
+    if (!body.text){ setStatus(t("library.need_input"), "err"); return; }
   }
 
   $("libraryLocal").textContent = t("library.loading");
