@@ -22,8 +22,14 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FRONTEND = join(ROOT, "frontend");
 
 /* 死键基线：只允许持平或下降。新增死键（加完忘了用）会让计数超过它 → 失败。
-   数字来自实测，不是估计值；某轮把死键用起来之后，应把它下调到新的实测值。 */
-const DEAD_BASELINE = 21;
+   数字来自实测，不是估计值；某轮把死键用起来之后，应把它下调到新的实测值。
+
+   2026-09-15 Task 6（图书馆前端骨架）21 → 31：本任务只建静态结构，按简报逐字加入的
+   17 个 `library.*`/`nav.library` 键里有 10 个是**给 Task 7 预留**的动态文案
+   （`area_any` `count` `empty` `loading` `need_input` `no_link` `page` `parsed`
+   `warn.llm_degraded` `warn.domains_dropped`），Task 6 没有消费者。这 10 个键
+   由 Task 7 的渲染代码消费后，死键应回落 21 —— **Task 7 收口时请把本行降回 21**。 */
+const DEAD_BASELINE = 31;
 
 /* 动态家族前缀：源码里存在 "wd." 这样的引号字面量，键由它拼出来
    （app.js 的 t("wd."+d)）。这类键无法被字面量扫描判活，只能按前缀整体放行。 */

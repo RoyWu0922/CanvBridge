@@ -2,7 +2,7 @@
    依赖 util.js（$ / api / setStatus …）与 app.js（各板块的 init* 函数）。
    必须最后加载。 */
 
-const PAGES = ["home","announce","discuss","schedule","todo","files","grades","courses","settings"];
+const PAGES = ["home","announce","discuss","schedule","todo","files","grades","courses","library","settings"];
 
 /* 各板块的首次进入初始化（app.js 提供，均为函数声明，运行时可见）。
    注意 settings 也在这里 —— 见 Step 4 第 2 条：openSettings() 不能自己调
@@ -16,6 +16,7 @@ const PAGE_INIT = {
   home:     () => initHome(),
   settings: () => openSettings(),
   courses:  () => initCourseHubTab(),
+  library:  () => initLibraryTab(),
 };
 
 let currentPage = "";

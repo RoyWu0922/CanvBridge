@@ -2726,3 +2726,6 @@ async function hubRefreshDiscuss(cid){
   if (hubCid === cid && hubTab === "discuss") renderHubDiscuss(cid);
   refreshBadges();                                            // 讨论未读数影响侧栏徽章
 }
+
+/* ---------- 图书馆检索（第一阶段，零登录） ---------- */
+function initLibraryTab(){}

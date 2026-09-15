@@ -36,6 +36,7 @@
       <button class="nav-item" data-page="files"><span data-i18n="nav.files"></span></button>
       <button class="nav-item" data-page="grades"><span data-i18n="nav.grades"></span></button>
       <button class="nav-item" data-page="courses"><span data-i18n="nav.courses"></span></button>
+      <button class="nav-item" data-page="library"><span data-i18n="nav.library"></span></button>
       <div class="nav-gap"></div>
       <button class="nav-item" data-page="settings"><span data-i18n="nav.settings"></span></button>
     </nav>
@@ -213,6 +214,33 @@
           <button class="tab-item" role="tab" id="hubTab-discuss" aria-controls="hubPanel" aria-selected="false" tabindex="-1" data-tab="discuss" data-i18n="tab.discuss"></button>
         </div>
         <div id="hubPanel" role="tabpanel" aria-labelledby="hubTab-files"></div>
+      </div>
+    </div>
+
+    <div id="page-library" class="page" hidden>
+      <div class="card">
+        <div class="lib-searchbar">
+          <input id="libraryQuery" type="text" data-i18n-ph="library.placeholder" />
+          <select id="libraryArea" hidden></select>
+          <button class="btn btn-primary" id="librarySearchBtn" data-i18n="library.search"></button>
+        </div>
+        <div class="lib-parsed" id="libraryParsed" hidden></div>
+        <div class="lib-warnings" id="libraryWarnings" hidden></div>
+      </div>
+      <div class="lib-columns">
+        <div class="card lib-col">
+          <h3 data-i18n="library.local_title"></h3>
+          <div id="libraryLocal"></div>
+        </div>
+        <div class="card lib-col">
+          <h3 data-i18n="library.external_title"></h3>
+          <div id="libraryExternal"></div>
+        </div>
+      </div>
+      <div class="lib-pager" id="libraryPager" hidden>
+        <button class="btn" id="libraryPrev" data-i18n="library.prev"></button>
+        <span id="libraryPageInfo"></span>
+        <button class="btn" id="libraryNext" data-i18n="library.next"></button>
       </div>
     </div>
 

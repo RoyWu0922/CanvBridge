@@ -499,3 +499,18 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 .hub-dl-name { font-size:13.5px; font-weight:500; }
 .hub-dl-path { color:var(--muted); font-size:12px; margin-left:auto; }
 .hub-dl-go-wrap { margin-top:10px; }
+
+/* 图书馆检索：双栏结果 */
+.lib-searchbar { display: flex; gap: 8px; align-items: center; }
+.lib-searchbar input { flex: 1; }
+.lib-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+@media (max-width: 900px) { .lib-columns { grid-template-columns: 1fr; } }
+.lib-col h3 { margin: 0 0 8px; }
+.lib-item { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.lib-item a { text-decoration: none; }
+.lib-item .lib-meta { font-size: 12px; opacity: .7; }
+.lib-pager { display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 16px; }
+/* 作者级 display 会盖掉 UA 的 [hidden]，必须补这条 —— 与 .page/.modal/.write-bar/.fchildren 同例。
+   Task 7 用 $("libraryPager").hidden 控制显隐，缺这条则分页条永远可见（空结果时也显示「上一页/下一页」）。 */
+.lib-pager[hidden] { display:none; }
+.lib-parsed, .lib-warnings { font-size: 12px; opacity: .8; margin-top: 8px; }
