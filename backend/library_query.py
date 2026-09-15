@@ -103,7 +103,8 @@ def build_prompt(text: str, area: str | None, area_names: dict[str, str],
     if area:
         chosen = area_names.get(area, area) if area_names else area
         area_note = (f"用户已限定学科领域为 **{chosen}**（code: {area}）。"
-                     f"你必须在 areas 里包含 \"{area}\"，可以补充其它相关领域，但**不得删掉它**。")
+                     f"你必须在 areas 里包含 \"{area}\"，可以补充其它相关领域，但**不得删掉它**。"
+                     f"你选的 terms / rtype / domains 必须与该领域一致。")
     else:
         area_note = "用户没有指定学科领域，由你判断。"
 
@@ -197,6 +198,11 @@ def compile_filters(parsed: dict, scope: str) -> tuple[list[str], list[str]]:
     year_from, year_to = parsed.get("year_from"), parsed.get("year_to")
     if year_from:
         end = year_to or min(datetime.now().year, year_from + _YEAR_SPAN_CAP)
+        # 颠倒区间（year_to < year_from）必须夹回来：否则 range 为空、**年份约束
+        # 无声蒸发** —— 不报错也不 0 命中，而回显里还写着 2024–2020，看不出没生效。
+        # 同一路径也覆盖 year_from = now+1（_as_year 明确放行）而 end 被 now 卡住的情形。
+        if end < year_from:
+            end = year_from
         # +1 是为了让**闭区间**长度不超过 _YEAR_SPAN_CAP（end - start + 1 ≤ CAP）。
         # 写成 end - CAP 会得到 CAP+1 条，正好越过上限一条。
         start = max(year_from, end - _YEAR_SPAN_CAP + 1)
