@@ -226,7 +226,7 @@ LLM 的产物是**结构化 JSON，不是 Primo 查询串**。理由：可校验
 - `open_access_only` → `qInclude=tlevel,exact,open_access`
 - `exclude_retracted` → `qExclude=attribute,exact,retracted_publication`
 
-**即：这两个 scope 的请求参数不是同一套。** `MyInstitution` 只吃 `q` / `rtype` / `creationdate` / `domain`；`CentralIndex` 全吃。编译函数必须按 scope 分流出两份参数，不能编一份发两处。
+**即：这两个 scope 的请求参数不是同一套。** `MyInstitution` 只吃 `q` / `rtype` / `creationdate`；`CentralIndex` 全吃。编译函数必须按 scope 分流出两份参数，不能编一份发两处。
 
 **降级**：LLM 调用失败或返回非法 JSON 时，退化为「把用户原文直接当 `q` 的关键词」并置 `warnings`，**不得整个搜索失败**。
 
