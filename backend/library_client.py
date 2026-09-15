@@ -146,3 +146,84 @@ def build_params(scope: str, q: str, *, q_include: list[str] | None = None,
     if q_exclude:
         params["qExclude"] = list(q_exclude)
     return params
+
+
+import threading
+import time
+
+# 相邻两次请求之间的最小间隔（spec §9）。用户手动翻页天然慢于此，
+# 这条只是兜住连点。测试里 monkeypatch 成 0，免得拖慢用例。
+_MIN_INTERVAL = 1.0
+_last_call = 0.0
+_throttle_lock = threading.Lock()
+
+
+def _throttle() -> None:
+    global _last_call
+    with _throttle_lock:
+        wait = _MIN_INTERVAL - (time.monotonic() - _last_call)
+        if wait > 0:
+            time.sleep(wait)
+        _last_call = time.monotonic()
+
+
+def _get(path: str, params: dict, session) -> dict:
+    """发一次请求并把传输层异常统一成 LibraryError。"""
+    _throttle()
+    own = session is None
+    s = session or requests.Session()
+    try:
+        resp = s.get(PRIMO_BASE + path, params=params, headers=_HEADERS, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as exc:
+        raise LibraryError(f"图书馆检索失败：{exc}") from exc
+    finally:
+        if own:
+            s.close()
+
+
+def search(scope: str, q: str, *, q_include: list[str] | None = None,
+           q_exclude: list[str] | None = None, page: int = 1,
+           session=None) -> dict:
+    """查一个 scope 的一页。
+
+    **页码越界在这里就拒** —— 上限必须由后端挡（spec §9）。
+    `has_more` = 「本页取满 且 page < MAX_PAGES」，由后端算好给前端。
+    """
+    if page < 1 or page > MAX_PAGES:
+        raise LibraryError(f"页码越界：{page}（允许 1..{MAX_PAGES}）")
+    params = build_params(scope, q, q_include=q_include, q_exclude=q_exclude, page=page)
+    data = _get(SEARCH_PATH, params, session)
+    docs = data.get("docs") or []
+    return {
+        "scope": scope,
+        "items": [normalize_doc(d) for d in docs],
+        "count": int((data.get("info") or {}).get("total") or 0),
+        "page": page,
+        "has_more": len(docs) >= PAGE_SIZE and page < MAX_PAGES,
+    }
+
+
+# 拉 domain 词表用的宽查询。要的是 facets，不是 hits，所以 limit 用默认的一页就够。
+_DOMAIN_PROBE_Q = "any,contains,the"
+
+
+def list_domains(*, session=None) -> list[str]:
+    """拉 Primo `domain` facet 的全部取值，供 LLM 挑「自动选库」（spec §4.2）。
+
+    **值必须来自这里** —— ereslist 的库名（'ScienceDirect'）和 Primo 的
+    domain 值（'Elsevier ScienceDirect Journals'）是两套词表，直接喂会 0 命中。
+
+    拿不到（网络失败 / facet 没了）→ 返回 `[]`，调用方据此不做库级收窄。
+    **不抛错** —— 选库是增强，不是主干。
+    """
+    params = build_params(SCOPE_EXTERNAL, _DOMAIN_PROBE_Q)
+    try:
+        data = _get(SEARCH_PATH, params, session)
+    except LibraryError:
+        return []
+    for facet in data.get("facets") or []:
+        if facet.get("name") == "domain":
+            return [v.get("value", "") for v in facet.get("values") or [] if v.get("value")]
+    return []

@@ -119,3 +119,126 @@ def test_normalize_doc_url_empty_when_no_record_id():
     """没 recordid 就不能拼链接 —— 拼出个半截 URL 比没链接更糟。"""
     d = _doc(display={"title": ["T"]}, control={})
     assert library_client.normalize_doc(d)["url"] == ""
+
+
+# ---------- search：分页、has_more、错误 ----------
+
+class _Resp:
+    def __init__(self, data, status=200):
+        self._data, self.status_code = data, status
+
+    def json(self):
+        return self._data
+
+    def raise_for_status(self):
+        pass
+
+
+class _Session:
+    """记录调用参数的假 session。"""
+
+    def __init__(self, data):
+        self._data, self.calls = data, []
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.calls.append({"url": url, "params": params})
+        return _Resp(self._data)
+
+    def close(self):
+        pass
+
+
+def _search_payload(n_docs, total=100):
+    return {"info": {"total": total},
+            "docs": [{"context": "L",
+                      "pnx": {"display": {"title": [f"T{i}"]},
+                              "control": {"recordid": [f"alma{i}"]}}}
+                     for i in range(n_docs)]}
+
+
+def test_search_returns_normalized_items(monkeypatch):
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    s = _Session(_search_payload(3))
+    r = library_client.search("MyInstitution", "any,contains,ml", session=s)
+    assert [i["title"] for i in r["items"]] == ["T0", "T1", "T2"]
+    assert r["count"] == 100 and r["page"] == 1
+
+
+def test_search_hits_the_public_pnxs_endpoint(monkeypatch):
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    s = _Session(_search_payload(1))
+    library_client.search("CentralIndex", "q", session=s)
+    assert s.calls[0]["url"] == library_client.PRIMO_BASE + library_client.SEARCH_PATH
+    assert s.calls[0]["params"]["scope"] == "CentralIndex"
+
+
+def test_search_has_more_true_only_when_full_page_and_under_cap(monkeypatch):
+    """has_more 由后端算，前端不自己推算 —— 否则上限一改前端就骗人。"""
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    full = library_client.search("MyInstitution", "q", session=_Session(_search_payload(20)))
+    assert full["has_more"] is True
+    short = library_client.search("MyInstitution", "q", session=_Session(_search_payload(7)))
+    assert short["has_more"] is False
+
+
+def test_search_has_more_false_on_last_allowed_page(monkeypatch):
+    """第 5 页（= MAX_PAGES）即使取满也不再有下一页。"""
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    r = library_client.search("MyInstitution", "q", page=5,
+                              session=_Session(_search_payload(20)))
+    assert r["has_more"] is False
+
+
+def test_search_rejects_page_above_max(monkeypatch):
+    """上限是**后端**挡的。光靠前端不显示按钮，改个请求就绕过去了。"""
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    import pytest
+    with pytest.raises(library_client.LibraryError):
+        library_client.search("MyInstitution", "q", page=6, session=_Session(_search_payload(1)))
+
+
+def test_search_rejects_page_below_one(monkeypatch):
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    import pytest
+    with pytest.raises(library_client.LibraryError):
+        library_client.search("MyInstitution", "q", page=0, session=_Session(_search_payload(1)))
+
+
+def test_search_wraps_transport_errors(monkeypatch):
+    """requests 的异常要包成 LibraryError，端点层只认这一种。"""
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    import pytest, requests
+
+    class _Boom:
+        def get(self, *a, **k):
+            raise requests.ConnectionError("no route")
+
+        def close(self):
+            pass
+
+    with pytest.raises(library_client.LibraryError):
+        library_client.search("MyInstitution", "q", session=_Boom())
+
+
+def test_search_survives_missing_info_block(monkeypatch):
+    """上游少给 info 不能让整次检索崩掉。"""
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    r = library_client.search("MyInstitution", "q", session=_Session({"docs": []}))
+    assert r["count"] == 0 and r["has_more"] is False
+
+
+# ---------- list_domains ----------
+
+def test_list_domains_reads_domain_facet(monkeypatch):
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    payload = {"info": {"total": 1}, "docs": [], "facets": [
+        {"name": "lang", "values": [{"value": "eng", "count": "5"}]},
+        {"name": "domain", "values": [{"value": "ScienceDirect", "count": "3"},
+                                      {"value": "MEDLINE", "count": "2"}]}]}
+    assert library_client.list_domains(session=_Session(payload)) == ["ScienceDirect", "MEDLINE"]
+
+
+def test_list_domains_returns_empty_when_facet_absent(monkeypatch):
+    """没有 domain facet（上游改版）→ 空列表，不是抛错。调用方据此不做收窄。"""
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    assert library_client.list_domains(session=_Session({"docs": [], "facets": []})) == []
