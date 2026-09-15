@@ -407,6 +407,48 @@ def test_year_span_cap_is_silent_and_does_not_rewrite_parsed():
     assert parsed["year_from"] == 1900      # 用户输入不被改写 —— 这正是「静默」之处
 
 
+# ---------- 修复轮：缺省 year_to 的上界必须是**今年**（真缺陷） ----------
+
+def _cd_years(inc: list[str]) -> list[int]:
+    """从 qInclude 列表里取出 creationdate 的年份，顺序原样保留。"""
+    return [int(e.rsplit(",", 1)[1]) for e in inc if e.startswith("creationdate")]
+
+
+def test_compile_filters_open_ended_year_from_keeps_the_recent_end():
+    """缺省 `year_to`（用户说「X **以后**的论文」，LLM 就该给 null）⇒ 上界 = **今年**。
+
+    真缺陷：改前是 `end = year_to or min(now, year_from + _YEAR_SPAN_CAP)`，
+    上界被卡在「起始年 + 30」，下面的 `start = max(year_from, end - CAP + 1)`
+    又把下界抬一年 —— 两端同时错。`year_from=1990, year_to=None` 只过滤 1991–2020，
+    用户要「1990 年以后的」，拿到的最新结果是 **2020**，最近几年静默消失。
+    期望值用 `datetime.now().year` 算，**不写死年份**（否则明年这条就红）。
+    """
+    now = datetime.now().year
+    inc, _ = library_query.compile_filters({"year_from": 1990, "year_to": None},
+                                           "MyInstitution")
+    cap = library_query._YEAR_SPAN_CAP
+    assert _cd_years(inc) == list(range(now - cap + 1, now + 1))    # 恰好收到今年为止
+
+
+def test_compile_filters_open_ended_year_from_within_cap_is_verbatim():
+    """起始年在 CAP 之内时，缺省上界同样是今年，且起始年一年都不丢。"""
+    now = datetime.now().year
+    inc, _ = library_query.compile_filters({"year_from": now - 2, "year_to": None},
+                                           "MyInstitution")
+    assert _cd_years(inc) == list(range(now - 2, now + 1))
+
+
+def test_compile_filters_explicit_year_to_is_unchanged_by_the_fix():
+    """显式给了 `year_to` 的路径一字不变：窗口仍是 `[end-CAP+1, end]`。
+
+    区间两头都显式 ⇒ 断言不依赖「今年是哪年」，永远稳定 —— 这条是防止
+    修缺省分支时把显式分支一起改掉的护栏。
+    """
+    inc, _ = library_query.compile_filters({"year_from": 1990, "year_to": 2020},
+                                           "MyInstitution")
+    assert _cd_years(inc) == list(range(1991, 2021))
+
+
 # ---------- F6：把 3 条弱断言补出判别力（新增用例，原用例不动） ----------
 
 def test_build_q_empty_is_exactly_the_bare_prefix():

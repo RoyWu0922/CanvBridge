@@ -26,7 +26,11 @@ _MIN_YEAR = 1800
 # `parsed.year_from` 照旧回显 1900，被悄悄收窄的是实际编译出的过滤集
 # （1900–2026 → 只过滤 1997–2026）。已知的静默收窄，故意保留在 30，
 # 不改数值也不加提示（要改就得先有依据）。详见
-# tests/test_library_query.py 里钉住这条行为的两个用例。
+# tests/test_library_query.py 里钉住这条行为的用例。
+#
+# 收窄**只允许发生在老的那一端**（下界）：上界缺省时取今年，近端永远保到今年
+# （见 compile_filters 里的说明）。曾经上界也被 `year_from + CAP` 卡住，
+# 于是「1990 年以后」只查得到 1991–2020 —— 那不是收窄，是把最相关的几年丢掉。
 _YEAR_SPAN_CAP = 30
 
 EMPTY_PARSED = {
@@ -232,7 +236,14 @@ def compile_filters(parsed: dict, scope: str) -> tuple[list[str], list[str]]:
 
     year_from, year_to = parsed.get("year_from"), parsed.get("year_to")
     if year_from:
-        end = year_to or min(datetime.now().year, year_from + _YEAR_SPAN_CAP)
+        # 上界缺省（用户说「X **以后**的论文」，LLM 就该给 year_to=null）= **今年**。
+        # 曾经写成 `min(now, year_from + _YEAR_SPAN_CAP)`，那样两处同时错：
+        #   year_from=1990, year_to=None → end 被卡在 2020，接着 start 又被抬到 1991，
+        #   实际只过滤 1991–2020 —— 用户要「1990 年以后的」，拿到的最新结果是 **2020**，
+        #   最近几年（最相关的那批）**静默消失**，而回显仍写着 1990，用户无从察觉。
+        # 上界取今年才与下面「区间比 CAP 宽时保留靠今年的一端」自洽：收窄只发生在
+        # 下界（老的那一端），近端永远保到今年。显式给了 year_to 的路径一字不变。
+        end = year_to or datetime.now().year
         # 颠倒区间（year_to < year_from）必须夹回来：否则 range 为空、**年份约束
         # 无声蒸发** —— 不报错也不 0 命中，而回显里还写着 2024–2020，看不出没生效。
         # 同一路径也覆盖 year_from = now+1（_as_year 明确放行）而 end 被 now 卡住的情形。
