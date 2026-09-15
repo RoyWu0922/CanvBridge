@@ -2285,6 +2285,15 @@ async function initScheduleTab(){
   }
 }
 
+/* 图书馆检索的会话状态。
+   **声明在这里、而不是末尾那段图书馆代码里**：下面第 2298 行的顶层 `applyLang()`
+   已经会调用 `renderLibraryPage()`（钩子见 i18n.js 的 applyLang），而**函数声明是提升的**
+   —— `typeof x === "function"` 守门拦不住它，于是它会去读状态；状态若还压在文件末尾的
+   `let` 里，这一读就是 TDZ ReferenceError（实机验证抓到的白屏级错误，`node --check` 查不出来）。
+   本文件里凡 applyLang() 会碰的状态都在 2298 行之前声明（`hubCid` 那类不被它碰的才放在后面）。
+   翻页要靠 parsed 原样回传 —— 后端第 2 页起不调 LLM，所以这份 parsed 必须与结果同源。 */
+let libraryState = { parsed: null, page: 1, loaded: false, areas: [], last: null };
+
 $("btnLang").onclick = () => {
   localStorage.setItem("sc_lang", LANG() === "zh" ? "en" : "zh");
   applyLang();
@@ -2728,4 +2737,150 @@ async function hubRefreshDiscuss(cid){
 }
 
 /* ---------- 图书馆检索（第一阶段，零登录） ---------- */
-function initLibraryTab(){}
+
+/* 会话状态 `libraryState` 声明在文件上部（applyLang() 那一段之前）—— 原因见那里的注释。
+   `areas` / `last` 留着是为了**切语言时能就地重渲**（见 renderLibraryPage）。 */
+
+const LIBRARY_MAX_PAGES = 5;   /* 与后端 library_client.MAX_PAGES 一致；后端才是权威 */
+
+function initLibraryTab(){
+  if (libraryState.loaded) return;      // 只绑一次
+  libraryState.loaded = true;
+
+  $("librarySearchBtn").onclick = () => runLibrarySearch(1);
+  $("libraryPrev").onclick = () => runLibrarySearch(libraryState.page - 1);
+  $("libraryNext").onclick = () => runLibrarySearch(libraryState.page + 1);
+  $("libraryQuery").addEventListener("keydown", e => {
+    if (e.key === "Enter") runLibrarySearch(1);
+  });
+  loadLibraryAreas();
+}
+
+/* 领域清单：拿不到就**整个不渲染选择器**（spec §4.3，用户裁定）。
+   不显示空下拉、不显示禁用态、不显示报错 —— 就当这个功能不存在。
+   判据只有 `available` 一个：空 areas 与抓取失败不是一回事，前端不去猜。 */
+async function loadLibraryAreas(){
+  const r = await api("library/areas", {});
+  libraryState.areas = (r.ok && r.available && r.areas) ? r.areas : [];
+  renderLibraryAreas();
+}
+
+function renderLibraryAreas(){
+  const sel = $("libraryArea");
+  const prev = sel.value;
+  if (!libraryState.areas.length){ sel.hidden = true; return; }
+  sel.innerHTML = `<option value="">${t("library.area_any")}</option>` +
+    libraryState.areas.map(a => `<option value="${a.code}">${a.name}</option>`).join("");
+  /* 切语言会重跑这里。用户选的领域不能因为一次语言切换就被重置。 */
+  if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+  sel.hidden = false;
+}
+
+/* 切语言时由 applyLang() 调用：只重画内存里已有的东西，**不发起网络请求**。
+   没有这一条，结果列表/页码/领域下拉会一直停在旧语言，直到重启应用
+   —— 与 selTodoAlert 那个旧bug 是同一类（见 i18n.js 里的注释）。 */
+function renderLibraryPage(){
+  renderLibraryAreas();
+  if (!libraryState.last) return;
+  renderLibraryBlock($("libraryLocal"), libraryState.last.local);
+  renderLibraryBlock($("libraryExternal"), libraryState.last.external);
+  renderLibraryParsed(libraryState.last.parsed);
+  renderLibraryWarnings(libraryState.last.warnings);
+  renderLibraryPager(libraryState.last);
+}
+
+async function runLibrarySearch(page){
+  if (page < 1) return;
+
+  /* 只带 LLM 三件套 + 本页参数。**绝不带 language**（本阶段硬约束 R18）：
+     规格 §6 的编译规则是穷举式的、没有 language 条，「用任意语言描述需求」
+     指的是 text 本身由 LLM 处理，不是让用户选语言。canvas_url / canvas_token
+     与检索无关，一并从略。 */
+  const s = settings();
+  const body = { llm_base_url: s.llm_base_url, llm_api_key: s.llm_api_key,
+                 llm_model: s.llm_model, page };
+
+  /* 第 1 页：发原文，后端调 LLM 解析。
+     第 2 页起：回传上一页拿到的 parsed，后端不调 LLM —— 否则每页的检索式
+     都可能不同，结果集在翻页中途漂移，而且不报任何错（spec §5.3）。 */
+  if (page > 1){
+    if (!libraryState.parsed) return;      // 没解析过就没有第 2 页
+    body.parsed = libraryState.parsed;
+  } else {
+    body.text = $("libraryQuery").value.trim();
+    const area = $("libraryArea").hidden ? "" : $("libraryArea").value;
+    if (area) body.area = area;
+    if (!body.text){ setStatus(t("library.need_input"), "err"); return; }
+  }
+
+  $("libraryLocal").textContent = t("library.loading");
+  $("libraryExternal").textContent = t("library.loading");
+
+  const r = await api("library/search", body);
+  /* r.ok 为 undefined 时也走这里（后端 pydantic 校验失败返 422、体是 {detail:[…]}，
+     没有 ok/error —— 全应用既有约定，本阶段不改后端），所以错误分支不许依赖
+     r.error 存在。 */
+  if (!r.ok){
+    setStatus(r.error || "error", "err");
+    $("libraryLocal").textContent = "";
+    $("libraryExternal").textContent = "";
+    $("libraryPager").hidden = true;
+    return;
+  }
+
+  if (page === 1) libraryState.parsed = r.parsed;
+  libraryState.page = page;
+  libraryState.last = r;
+  renderLibraryPage();
+}
+
+function renderLibraryParsed(parsed){
+  const el = $("libraryParsed");
+  const text = parsed && parsed.explanation;
+  if (!text){ el.hidden = true; return; }
+  el.textContent = t("library.parsed", { s: text });
+  el.hidden = false;
+}
+
+/* 警告是**码**不是句子，在这里翻译 —— 后端回句子的话英文界面会冒中文。 */
+function renderLibraryWarnings(warnings){
+  const el = $("libraryWarnings");
+  if (!warnings || !warnings.length){ el.hidden = true; return; }
+  el.textContent = warnings.map(w => t("library.warn." + w)).join(" · ");
+  el.hidden = false;
+}
+
+/* 标题/作者/期刊全部过 esc()：这些字符串来自上游书目数据，不是自家文案，
+   直接插进 innerHTML 等于让第三方数据决定 DOM。链接同理 —— it.url 由后端
+   record_url() 拼出，record_id 经 quote() 编码，引号/尖括号进不来。 */
+function renderLibraryBlock(el, block){
+  if (!block){ el.textContent = ""; return; }
+  const count = `<div class="lib-meta">${t("library.count", { n: block.count })}</div>`;
+  if (!block.items || !block.items.length){
+    el.innerHTML = count + `<div class="lib-meta">${t("library.empty")}</div>`;
+    return;
+  }
+  el.innerHTML = count + block.items.map(it => {
+    const meta = [it.creator, it.year, it.journal].filter(Boolean).join(" · ");
+    const title = it.url
+      ? `<a href="${it.url}" target="_blank" rel="noopener">${esc(it.title || it.record_id)}</a>`
+      : `${esc(it.title || "—")} <span class="lib-meta">${t("library.no_link")}</span>`;
+    return `<div class="lib-item"><div>${title}</div>
+            <div class="lib-meta">${esc(meta)}</div></div>`;
+  }).join("");
+}
+
+function renderLibraryPager(r){
+  const pager = $("libraryPager");
+  if (!r){ pager.hidden = true; return; }
+  const has = (r.local && r.local.items && r.local.items.length) ||
+              (r.external && r.external.items && r.external.items.length);
+  if (!has){ pager.hidden = true; return; }
+  $("libraryPageInfo").textContent = t("library.page", { p: libraryState.page, m: LIBRARY_MAX_PAGES });
+  $("libraryPrev").disabled = libraryState.page <= 1;
+  /* has_more 由**后端**算好（spec §5.3）—— 前端不自己推算，否则上限一改
+     前端就骗人。两栏任何一个还有下一页就允许继续翻。 */
+  const more = (r.local && r.local.has_more) || (r.external && r.external.has_more);
+  $("libraryNext").disabled = !more;
+  pager.hidden = false;
+}

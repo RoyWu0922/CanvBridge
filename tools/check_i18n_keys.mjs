@@ -28,12 +28,14 @@ const FRONTEND = join(ROOT, "frontend");
    17 个 `library.*`/`nav.library` 键里有 10 个是**给 Task 7 预留**的动态文案
    （`area_any` `count` `empty` `loading` `need_input` `no_link` `page` `parsed`
    `warn.llm_degraded` `warn.domains_dropped`），Task 6 没有消费者。这 10 个键
-   由 Task 7 的渲染代码消费后，死键应回落 21 —— **Task 7 收口时请把本行降回 21**。 */
-const DEAD_BASELINE = 31;
+   由 Task 7 的渲染代码消费后，死键应回落 21 —— Task 7 已把本行降回 21。 */
+const DEAD_BASELINE = 21;
 
 /* 动态家族前缀：源码里存在 "wd." 这样的引号字面量，键由它拼出来
-   （app.js 的 t("wd."+d)）。这类键无法被字面量扫描判活，只能按前缀整体放行。 */
-const DYNAMIC_PREFIXES = ["wd."];
+   （app.js 的 t("wd."+d)）。这类键无法被字面量扫描判活，只能按前缀整体放行。
+   `library.warn.` 是同一形态：app.js 的 t("library.warn."+w) 把后端回的**警告码**
+   翻成句子（警告必须是码而不是句子，否则英文界面会冒中文），所以整族按前缀放行。 */
+const DYNAMIC_PREFIXES = ["wd.", "library.warn."];
 
 /* 只取到 const LANG 为止：后半段是 t()/applyLang() 等运行时代码，
    在 Node 里跑会碰到 document / localStorage。前半段是一次纯对象字面量赋值。 */

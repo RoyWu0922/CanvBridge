@@ -783,4 +783,7 @@ function applyLang() {
   if (typeof renderHomeAnnounceList === "function") renderHomeAnnounceList();
   if (typeof renderHomeDdlList === "function") renderHomeDdlList();
   if (typeof renderHomeGradeCard === "function") renderHomeGradeCard();
+  /* 图书馆页：结果列表/页码/领域下拉都是 JS 生成的，切语言得就地重画
+     （只在内存数据上工作，不触发网络）。 */
+  if (typeof renderLibraryPage === "function") renderLibraryPage();
 }
