@@ -2291,8 +2291,11 @@ async function initScheduleTab(){
    —— `typeof x === "function"` 守门拦不住它，于是它会去读状态；状态若还压在文件末尾的
    `let` 里，这一读就是 TDZ ReferenceError（实机验证抓到的白屏级错误，`node --check` 查不出来）。
    本文件里凡 applyLang() 会碰的状态都在 2298 行之前声明（`hubCid` 那类不被它碰的才放在后面）。
-   翻页要靠 parsed 原样回传 —— 后端第 2 页起不调 LLM，所以这份 parsed 必须与结果同源。 */
-let libraryState = { parsed: null, page: 1, loaded: false, areas: [], last: null };
+   翻页要靠 parsed 原样回传 —— 后端第 2 页起不调 LLM，所以这份 parsed 必须与结果同源。
+   `busy` 是检索在途标记（防连点重复消费 LLM，见 runLibrarySearch）。 */
+let libraryState = { parsed: null, page: 1, loaded: false, areas: [], last: null, busy: false };
+
+const LIBRARY_MAX_PAGES = 5;   /* 与后端 library_client.MAX_PAGES 一致；后端才是权威 */
 
 $("btnLang").onclick = () => {
   localStorage.setItem("sc_lang", LANG() === "zh" ? "en" : "zh");
@@ -2738,10 +2741,9 @@ async function hubRefreshDiscuss(cid){
 
 /* ---------- 图书馆检索（第一阶段，零登录） ---------- */
 
-/* 会话状态 `libraryState` 声明在文件上部（applyLang() 那一段之前）—— 原因见那里的注释。
-   `areas` / `last` 留着是为了**切语言时能就地重渲**（见 renderLibraryPage）。 */
-
-const LIBRARY_MAX_PAGES = 5;   /* 与后端 library_client.MAX_PAGES 一致；后端才是权威 */
+/* 会话状态 `libraryState` 与 `LIBRARY_MAX_PAGES` 都声明在文件上部（applyLang() 那一段
+   之前）—— 原因见那里的注释。两者都在 renderLibraryPage 的传递调用图上，放在这里会被
+   顶层 applyLang() 提前读到。 */
 
 function initLibraryTab(){
   if (libraryState.loaded) return;      // 只绑一次
@@ -2770,7 +2772,7 @@ function renderLibraryAreas(){
   const prev = sel.value;
   if (!libraryState.areas.length){ sel.hidden = true; return; }
   sel.innerHTML = `<option value="">${t("library.area_any")}</option>` +
-    libraryState.areas.map(a => `<option value="${a.code}">${a.name}</option>`).join("");
+    libraryState.areas.map(a => `<option value="${escAttr(a.code)}">${esc(a.name)}</option>`).join("");
   /* 切语言会重跑这里。用户选的领域不能因为一次语言切换就被重置。 */
   if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
   sel.hidden = false;
@@ -2791,6 +2793,10 @@ function renderLibraryPage(){
 
 async function runLibrarySearch(page){
   if (page < 1) return;
+  /* 请求在途就忽略这一次触发：**第 1 页请求会调用真实 LLM**，连点两下就是两次真实花费。
+     回车与按钮走的是同一个函数，所以守卫必须在这里，光把按钮置灰挡不住回车。
+     本仓同类写法见 loadTerms() 的 termsLoading 守卫。 */
+  if (libraryState.busy) return;
 
   /* 只带 LLM 三件套 + 本页参数。**绝不带 language**（本阶段硬约束 R18）：
      规格 §6 的编译规则是穷举式的、没有 language 条，「用任意语言描述需求」
@@ -2816,14 +2822,32 @@ async function runLibrarySearch(page){
   $("libraryLocal").textContent = t("library.loading");
   $("libraryExternal").textContent = t("library.loading");
 
-  const r = await api("library/search", body);
+  /* 在途标记只圈住请求本身（上面几处早退还没置位，不会漏成永久锁）。 */
+  libraryState.busy = true;
+  $("librarySearchBtn").disabled = true;
+  let r;
+  try {
+    r = await api("library/search", body);
+  } finally {
+    libraryState.busy = false;
+    $("librarySearchBtn").disabled = false;
+  }
+
   /* r.ok 为 undefined 时也走这里（后端 pydantic 校验失败返 422、体是 {detail:[…]}，
      没有 ok/error —— 全应用既有约定，本阶段不改后端），所以错误分支不许依赖
      r.error 存在。 */
   if (!r.ok){
     setStatus(r.error || "error", "err");
+    /* 失败要**连内存状态一起复位**，光清 DOM 不够：只清 DOM 的话，用户一点切换语言，
+       applyLang → renderLibraryPage 就会把**上一次检索的旧结果**重新画出来 ——
+       当前明明是一次失败，屏幕上却"复活"了陈旧结果。
+       parsed 一并清掉：留着它，下一次翻页就会拿这次**失败查询**的解析结果去检索。 */
+    libraryState.last = null;
+    libraryState.parsed = null;
     $("libraryLocal").textContent = "";
     $("libraryExternal").textContent = "";
+    $("libraryParsed").hidden = true;
+    $("libraryWarnings").hidden = true;
     $("libraryPager").hidden = true;
     return;
   }
@@ -2850,9 +2874,10 @@ function renderLibraryWarnings(warnings){
   el.hidden = false;
 }
 
-/* 标题/作者/期刊全部过 esc()：这些字符串来自上游书目数据，不是自家文案，
-   直接插进 innerHTML 等于让第三方数据决定 DOM。链接同理 —— it.url 由后端
-   record_url() 拼出，record_id 经 quote() 编码，引号/尖括号进不来。 */
+/* 上游字符串入 DOM 的纪律：**文本位一律 esc()，属性位一律 escAttr()**。
+   这些书名/作者/期刊来自图书馆 API，直接拼进 innerHTML 等于让第三方数据决定 DOM。
+   it.url 虽由后端 record_url() 用固定模板拼出、两处插值都过 quote()（理论上引号
+   进不来），这里仍按本文件统一写法过 escAttr() —— 属性位不留任何例外。 */
 function renderLibraryBlock(el, block){
   if (!block){ el.textContent = ""; return; }
   const count = `<div class="lib-meta">${t("library.count", { n: block.count })}</div>`;
@@ -2863,7 +2888,7 @@ function renderLibraryBlock(el, block){
   el.innerHTML = count + block.items.map(it => {
     const meta = [it.creator, it.year, it.journal].filter(Boolean).join(" · ");
     const title = it.url
-      ? `<a href="${it.url}" target="_blank" rel="noopener">${esc(it.title || it.record_id)}</a>`
+      ? `<a href="${escAttr(it.url)}" target="_blank" rel="noopener">${esc(it.title || it.record_id)}</a>`
       : `${esc(it.title || "—")} <span class="lib-meta">${t("library.no_link")}</span>`;
     return `<div class="lib-item"><div>${title}</div>
             <div class="lib-meta">${esc(meta)}</div></div>`;
