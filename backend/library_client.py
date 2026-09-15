@@ -163,14 +163,28 @@ def build_params(scope: str, q: str, *, q_include: list[str] | None = None,
 #   ①两个 scope 串行时，同一次查询的第二次调用被当成「太频繁」自罚一秒
 #     —— 每次检索白等约 2.0 秒（F-3 实测）；
 #   ②两个 scope 一旦并发，两个线程读写同一个模块级 _last_call 还会打架。
-# 现在：查询 = 一个节流单位（query_scope），查询内部的调用直接放行。
+# 现在：查询 = 一个节流单位（query_scope），查询内部的调用由调用方**显式**标出
+# （`search(..., inside_query=True)`），门外调用走逐调用兜底节流。
+#
+# **「是否查询内部」是显式传入的事实，不是从锁状态推断的。** 曾经 `_throttle()`
+# 用 `_query_lock.locked()` 判「我在不在查询里」，那是拿一把**进程级**全局锁的状态
+# 去猜「当前调用来自哪个调用点」——两件事根本不同。别的请求正持锁做双 scope 检索时，
+# 门外的一次调用（`list_domains()` 的探针）会看到 `locked()==True` 而跳过等待，
+# 实测上游在飞峰值 = 3（spec §9 说这是唯一的一处并发、只允许 2）。
 #
 # 相邻两次**查询**之间的最小间隔（spec §9）。用户手动翻页天然慢于此，
 # 这条只是兜住连点。测试里 monkeypatch 成 0，免得拖慢用例。
+#
+# **粒度如实说明**：这条间隔度量的是「相邻两次**查询进入**（= 相邻两次
+# `/api/library/search` 请求）之间 ≥ `_MIN_INTERVAL`」，**不是**「相邻两次**上游
+# HTTP 调用**之间」。spec §9 该行的原文是「相邻**翻页请求**之间 ≥ 1s」，一次翻页
+# 就是一次查询，且同一次查询的两栏按 §9 本就允许并发 —— 若按上游调用逐个间隔，
+# 反而会同时违反并发那条。翻页场景下（查询耗时 < 1s）两种读法结果一致；
+# 差别只在「上一次查询耗时 > 1s 时，下一次查询进门不必再等」。
 _MIN_INTERVAL = 1.0
 _last_call = 0.0                    # 仅用于「查询之外」的单次调用兜底
 _last_query_at = 0.0                # 上一次查询的进入时刻 —— 跨查询节流的记账点
-_throttle_lock = threading.Lock()
+_throttle_lock = threading.Lock()   # 保护 _last_call（供直接调 _throttle 的路径）
 _query_lock = threading.Lock()      # 一次只允许一个查询：spec §9「不同查询之间串行」
 
 
@@ -181,8 +195,13 @@ def query_scope():
     - **不同查询之间串行**（spec §9）：整段查询期间持有 `_query_lock`，后来的查询
       必须等前一个退出 —— 这是「唯一的一处并发只限同一次查询的两栏」的机械保证。
     - **相邻两次查询之间 ≥ `_MIN_INTERVAL`**（spec §9）：进入时距上次进入不足就等。
-    - 查询**内部**的上游调用不互相节流（见 `_throttle`）：同一次查询的两个 scope
-      本来就是并发发出的，在这里互相等等于把并发退回串行。
+      度量点是**查询进入**（= 一次 `/api/library/search` 请求），不是「相邻上游调用」，
+      理由见 `_MIN_INTERVAL` 上面的注释。
+    - 查询**内部**的上游调用不互相节流：同一次查询的两个 scope 本来就是并发发出的，
+      在这里互相等等于把并发退回串行。放行靠**显式标志** —— 门内的提交点必须传
+      `search(..., inside_query=True)`；**忘记传的后果是多睡一秒，不是死锁**。
+    - **不可重入**：`_query_lock` 是非重入锁，同一线程嵌套 `query_scope()` 会挂死。
+      当前唯一调用点是 `main.library_search` 的端点，无嵌套路径。
     """
     global _last_query_at
     with _query_lock:
@@ -194,17 +213,15 @@ def query_scope():
 
 
 def _throttle() -> None:
-    """单次上游调用的兜底节流。
+    """**查询之外**的单次上游调用兜底节流：距上次门外调用不足 `_MIN_INTERVAL` 就睡。
 
-    **查询内部直接放行**：`_query_lock` 被占着就说明正处在一次查询里，而同一次查询的
-    两个 scope 是并发发出的 —— 若在这里互相等，并发就白做了（F-3 那 2.0 秒纯睡眠
-    正是这么来的）。
+    查询**内部**的两栏根本不走这里 —— 它们由调用方用显式事实标出来
+    （`search(..., inside_query=True)`），`_get` 见到就直接放行。
 
-    查询之外（直接调用本模块、或将来新增的独立调用点）仍按 `_last_call` 兜底，
-    语义与改动前一致：距上次调用不足 `_MIN_INTERVAL` 就睡。
+    **不再读 `_query_lock.locked()`**：那是拿全局锁的状态去推断「我来自哪个调用点」，
+    而锁是**进程级**的 —— 另一个请求正持锁做双 scope 检索时，门外的调用会被误判成
+    「查询内部」而跳过等待（实测峰值 3）。判据现在只有一个：调用方说了什么。
     """
-    if _query_lock.locked():
-        return
     global _last_call
     with _throttle_lock:
         wait = _MIN_INTERVAL - (time.monotonic() - _last_call)
@@ -213,9 +230,30 @@ def _throttle() -> None:
         _last_call = time.monotonic()
 
 
-def _get(path: str, params: dict, session) -> dict:
-    """发一次请求并把传输层异常统一成 LibraryError。"""
-    _throttle()
+def _get(path: str, params: dict, session, *, inside_query: bool = False) -> dict:
+    """发一次请求并把传输层异常统一成 LibraryError。
+
+    `inside_query` 是**调用方显式声明的事实**，不是从锁状态猜的：
+
+    - `True`：本次调用是某次查询的两栏之一（`main.library_search` 的
+      `ThreadPoolExecutor` 提交点传的）。直接放行 —— 两栏本就该并发。
+    - `False`（默认）：**查询之外**的调用（`list_domains()` 的探针、直接调用本模块）。
+      既走逐调用兜底节流，又**在整段调用期间持有 `_query_lock`** ——
+      门外的一次调用与门内的两栏**永不重叠**，于是上游在飞峰值恒 ≤ 2
+      （spec §9「只允许两个 scope 并发……这是唯一的一处并发」）。
+      代价：查询外的调用会排在正在进行的查询之后（单用户本地工具，可接受；
+      而且它本来也要在 `query_scope()` 门口再排一次）。
+      **不可在 `query_scope()` 内部用默认值调用**（同一线程会自锁）。
+    """
+    if inside_query:
+        return _http_get(path, params, session)
+    with _query_lock:
+        _throttle()
+        return _http_get(path, params, session)
+
+
+def _http_get(path: str, params: dict, session) -> dict:
+    """真正的那一次 HTTP 调用。节流 / 并发策略全在 `_get` 里，这里只管传输。"""
     own = session is None
     s = session or requests.Session()
     try:
@@ -237,7 +275,7 @@ def _get(path: str, params: dict, session) -> dict:
 
 def search(scope: str, q: str, *, q_include: list[str] | None = None,
            q_exclude: list[str] | None = None, page: int = 1,
-           session=None) -> dict:
+           session=None, inside_query: bool = False) -> dict:
     """查一个 scope 的一页。
 
     **页码越界在这里就拒** —— 上限必须由后端挡（spec §9）。
@@ -245,11 +283,15 @@ def search(scope: str, q: str, *, q_include: list[str] | None = None,
 
     `session=None`（端点走的就是这条）时**每次调用自建一个 `requests.Session`** ——
     `requests.Session` 不是线程安全的，两个 scope 是并发发出的，绝不能共用一个。
+
+    `inside_query=True` 声明「本次调用是 `query_scope()` 内的两栏之一」——
+    由调用方显式给出，**不由本函数从锁状态推断**（见 `_get`）。默认 `False`
+    即「查询之外的调用」：受逐调用节流，且不与门内的两栏并发。
     """
     if page < 1 or page > MAX_PAGES:
         raise LibraryError(f"页码越界：{page}（允许 1..{MAX_PAGES}）")
     params = build_params(scope, q, q_include=q_include, q_exclude=q_exclude, page=page)
-    data = _get(SEARCH_PATH, params, session)
+    data = _get(SEARCH_PATH, params, session, inside_query=inside_query)
     docs = data.get("docs") or []
     return {
         "scope": scope,
@@ -330,6 +372,10 @@ def list_domains(*, session=None) -> list[str]:
 
     拿不到（网络失败 + 无旧缓存 / facet 没了且无旧缓存）→ 返回 `[]`，调用方据此
     不做库级收窄。**不抛错** —— 选库是增强，不是主干。
+
+    **探针是「查询之外」的调用**：走 `_get` 的默认路径（逐调用节流 + 整段持有
+    `_query_lock`），所以别的请求正在门内做双 scope 检索时，本探针会排队等它，
+    不会把上游在飞并发顶到 3。**不可在 `query_scope()` 内部调用**（会自锁）。
     """
     cached = _read_cache()
     if cached:

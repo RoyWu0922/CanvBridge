@@ -851,9 +851,10 @@ def library_search(req: LibrarySearchRequest):
         parsed, warnings = library_query.parse_natural(
             req.llm_base_url, req.llm_api_key, req.llm_model, req.text,
             area=req.area, area_names=area_names, domains=domains)
-        # 领域提示是「不被丢弃的提示」（spec §6）：LLM 降级丢掉了也要补回来。
-        if req.area and req.area not in parsed["areas"]:
-            parsed["areas"].insert(0, req.area)
+        # **不回填 `req.area` 进 `parsed["areas"]`**（spec §6）。area 只是提示词，
+        # 代码拦不住 LLM 无视它；规格给的补偿正是「`parsed.areas` 随 `parsed` 回显，
+        # 用户能立刻看见 LLM 有没有照做」——回填会让回显恒等于「照做了」，
+        # 把补偿机制归零。详见 `library_query.parse_natural` 的同类说明。
 
     q = library_query.build_q(parsed)
     blocks = {}
@@ -866,6 +867,9 @@ def library_search(req: LibrarySearchRequest):
             # 两个 scope 并发」）—— 全项目唯一的一处并发，也只限同一次查询的两栏。
             # 每个 scope 各用各的 requests.Session：search(session=None) 每次自建，
             # Session 不是线程安全的，共享会把连接池搞坏。
+            # `inside_query=True` 是**显式声明的事实**（不是让库去猜锁状态）：
+            # 这两次调用在门内、本就该并发，不走逐调用节流；门外的调用
+            # （list_domains 的探针）则相反 —— 它们会排队等这次查询做完。
             with ThreadPoolExecutor(max_workers=2) as pool:
                 futures = {}
                 for scope, key in ((library_client.SCOPE_LOCAL, "local"),
@@ -873,7 +877,8 @@ def library_search(req: LibrarySearchRequest):
                     include, exclude = library_query.compile_filters(parsed, scope)
                     futures[key] = pool.submit(
                         library_client.search, scope, q,
-                        q_include=include, q_exclude=exclude, page=req.page)
+                        q_include=include, q_exclude=exclude, page=req.page,
+                        inside_query=True)
                 # 按 scope 顺序取回（submit 顺序），失败的那个把异常原样抛出来。
                 for key, fut in futures.items():
                     blocks[key] = fut.result()

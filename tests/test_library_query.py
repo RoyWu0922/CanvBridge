@@ -203,13 +203,33 @@ def test_parse_natural_warns_when_domains_dropped(monkeypatch):
     assert "domains_dropped" in warnings
 
 
-def test_parse_natural_forces_user_area_into_parsed(monkeypatch):
-    """spec §6：用户选的 area 是「不被丢弃的提示」——
-    LLM 可以补充别的领域，但不得删掉用户选的那个。"""
+def test_parse_natural_does_not_backfill_the_user_area(monkeypatch):
+    """**LLM 的真实输出就是 `parsed.areas` 的全部**（spec §6 的观察面）。
+
+    LLM 无视了「你必须在 areas 里包含 comp」这条提示词（提示词拦不住它，规格 :237
+    自己承认），返回 `["edu"]` —— 于是回显必须是 `["edu"]`，**用户选的 `comp`
+    一个字都不能被代码补回去**。补回去的话，「LLM 照做了」与「LLM 完全无视」在界面上
+    显示得一模一样，规格 :237 用回显补偿「机制弱」的整个设计就归零了。
+
+    变异：把 `parse_natural` 里那次 `kept["areas"].insert(0, area)` 加回来 ⇒ 本用例红。
+    """
     monkeypatch.setattr(llm_client, "_call_chat",
                         lambda *a, **k: '{"keywords":["x"],"areas":["edu"]}')
     parsed, _ = library_query.parse_natural("u", "k", "m", "x", area="comp")
-    assert "comp" in parsed["areas"] and "edu" in parsed["areas"]
+    assert parsed["areas"] == ["edu"]
+    assert "comp" not in parsed["areas"]
+
+
+def test_parse_natural_keeps_the_area_llm_did_obey(monkeypatch):
+    """反向对照：LLM 自己把用户选的 area 放进了 areas ⇒ 原样保留、不重复、不置顶。
+
+    删回填**不是**连正常路径一起改坏：LLM 照做时 `areas` 该长什么样还是什么样
+    （这里是 `["edu","comp"]` —— 顺序即 LLM 给的顺序，代码不许重排）。
+    """
+    monkeypatch.setattr(llm_client, "_call_chat",
+                        lambda *a, **k: '{"keywords":["x"],"areas":["edu","comp"]}')
+    parsed, _ = library_query.parse_natural("u", "k", "m", "x", area="comp")
+    assert parsed["areas"] == ["edu", "comp"]
 
 
 def test_parse_natural_blank_area_does_not_inject(monkeypatch):
@@ -477,8 +497,9 @@ def test_known_rtype_values_are_plural_and_singulars_dropped():
 def test_fallback_parsed_returns_independent_lists():
     """`parsed["areas"] is EMPTY_PARSED["areas"]` 曾经为 True（dict() 是浅拷贝）。
 
-    端点会就地 `insert` 回填用户选的 area，于是共享的那个 list 被永久改写，
-    模块常量跨请求泄漏。这里直接钉住「不是同一个对象」。
+    当年端点会就地 `insert` 回填用户选的 area，于是共享的那个 list 被永久改写、
+    模块常量跨请求泄漏（那两处回填本轮已删）。构造函数的这条不变量仍然要钉住 ——
+    它是「返回值可改」的地基，删掉回填只是拿掉了**当时**的触发者，不是拿掉了风险。
     """
     p = library_query.fallback_parsed("anything")
     assert p["areas"] is not library_query.EMPTY_PARSED["areas"]
@@ -502,7 +523,8 @@ def test_blank_parsed_returns_independent_lists():
 def test_mutating_returned_parsed_does_not_pollute_empty_parsed():
     """污染回归：改返回值（append/insert）后，常量长度必须纹丝不动。
 
-    端点上那条 `parsed["areas"].insert(0, req.area)` 就是靠这条兜住的。
+    端点上那条 `parsed["areas"].insert(0, req.area)`（本轮已删）当年就是靠这条兜住的；
+    这里继续用等价的就地改写当探针，守住「构造函数返回独立 list」本身。
     """
     before = {k: len(v) for k, v in library_query.EMPTY_PARSED.items()
               if isinstance(v, list)}

@@ -2880,14 +2880,16 @@ async function runLibrarySearch(page, mode){
    area 在 §4.1 修正后**只是提示词**（代码不强制、LLM 可以无视），所以唯一能让人
    看见「LLM 到底有没有照做」的窗口就是这里。没有这一行，用户选了领域、界面看着
    生效，实际被无视也无人能知 —— 那正是 §6 要求回显的原因。
-   areas 的值来自 LLM ⇒ **入 DOM 必须转义**（本文件统一纪律：文本位 esc()、
-   属性位 escAttr()；本分支曾因 area 下拉漏转义出过真 XSS）。 */
+   **这份 areas 必须是 LLM 的原样输出**：后端两处代码回填（prompt 侧与端点侧）已删，
+   否则用户选的 area 会永远出现在这里，「照做」与「被无视」显示得一模一样，
+   这个观察面等于不存在。areas 的值来自 LLM ⇒ **入 DOM 必须转义**（本文件统一纪律：
+   文本位 esc()、属性位 escAttr()；本分支曾因 area 下拉漏转义出过真 XSS）。 */
 function renderLibraryParsed(parsed){
   const el = $("libraryParsed");
   const text = parsed && parsed.explanation;
   const areas = (parsed && parsed.areas) || [];
-  /* 两个都空才整个不显示：LLM 降级时 explanation 是空的，但 areas 可能非空
-     （端点会把用户选的 area 补进去）—— 那一条恰恰最需要被看见。 */
+  /* 两个都空才整个不显示：LLM 降级时 explanation 与 areas 都是空的（没有 LLM 答案，
+     不该凭空显示什么），降级本身由 `llm_degraded` 警告那行负责可见。 */
   if (!text && !areas.length){ el.hidden = true; return; }
   let html = "";
   if (text) html += esc(t("library.parsed", { s: text }));

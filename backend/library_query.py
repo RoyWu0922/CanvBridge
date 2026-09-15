@@ -187,9 +187,19 @@ def parse_natural(base_url: str, api_key: str, model: str, text: str, *,
     if domains and raw.get("domains") and not kept["domains"]:
         warnings.append("domains_dropped")     # LLM 编了词表里没有的库名
 
-    # 用户选的 area 是「不被丢弃的提示」（spec §6）：LLM 可以补充，不能删。
-    if area and area not in kept["areas"]:
-        kept["areas"].insert(0, area)
+    # **这里故意不把用户选的 `area` 回填进 `kept["areas"]`**（spec §6）。
+    #
+    # area 在 §4.1 修正后不编译成任何参数，约束**只落在提示词上**（见 build_prompt
+    # 的「你必须在 areas 里包含 …」）。规格自己写明「提示词是可以不被遵守的，代码
+    # 拦不住」，并把补偿定在「`parsed.areas` 随 `parsed` 一起回显，用户能立刻看见
+    # LLM 有没有照做」。回填恰好会毁掉这个补偿：它保证用户选的 area **永远**出现在
+    # 回显里，于是「LLM 照做了」与「LLM 完全无视」在界面上显示得一模一样。
+    # `parsed["areas"]` 在检索链路上没有任何消费者（`build_q` / `compile_filters`
+    # 都不读它），所以回填对结果零影响 —— 它改的正是那个用来「看见真相」的显示。
+    #
+    # 因此：**保持 LLM 的真实输出**。要不要补充别的领域由 LLM 决定，不由代码代劳；
+    # LLM 降级时 areas 为空也是正确的（那本来就没有 LLM 答案），降级本身另有
+    # `llm_degraded` 警告码可见。
     if not kept["keywords"] and kept["synonyms"]:
         kept["keywords"] = kept["synonyms"][:_MAX_ITEMS]
     if not kept["keywords"]:

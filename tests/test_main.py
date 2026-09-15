@@ -1121,17 +1121,67 @@ def test_library_search_passes_area_hint_to_llm(monkeypatch):
     assert seen.get("domains") == ["MEDLINE"]
 
 
-def test_library_search_keeps_area_when_llm_degrades(monkeypatch):
-    """LLM 降级掉了，用户选的 area 也必须留在 parsed 里（spec §6「不被丢弃的提示」）。
+def test_library_search_does_not_backfill_the_user_area(monkeypatch):
+    """端点这侧也不许把用户选的 area 补进 `parsed.areas`（spec §6 的观察面）。
 
-    降级路径正是这条兜底的唯一用武之地：parse_natural 返回的是 fallback_parsed，
-    areas 天然为空，端点是最后一道把用户选择补回去的地方。
+    LLM 返回的 areas 是 `["x"]`、用户选的是 `"y"` ⇒ 响应里必须**恰好**是 `["x"]`，
+    `"y"` 不得出现。这就是杀死原缺陷的用例：旧实现会补成 `["y","x"]`，于是
+    「LLM 照做了」与「LLM 完全无视」在界面上显示得一模一样，规格 :237 的补偿归零。
+
+    注意 spec §6 里 `area`（单数，用户选的）与 `parsed.areas`（复数，LLM 理解的）
+    是两个不同层的东西：`area` 只是**提示词**（另有用例钉住它确实被喂给了 LLM），
+    这里管的是回显的那份数据必须来自 LLM。
+
+    变异：把端点里那次 `parsed["areas"].insert(0, req.area)` 加回来 ⇒ 本用例红。
+    """
+    from backend import library_query
+    _patch_library(monkeypatch)
+    monkeypatch.setattr(library_query, "parse_natural",
+                        lambda *a, **k: ({"keywords": ["x"], "synonyms": [],
+                                          "year_from": None, "year_to": None, "rtype": [],
+                                          "language": None, "open_access_only": False,
+                                          "peer_reviewed_only": False,
+                                          "exclude_retracted": False, "areas": ["x"],
+                                          "domains": [], "explanation": ""}, []))
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
+        "text": "x", "area": "y"}).json()
+    assert body["ok"] is True
+    assert body["parsed"]["areas"] == ["x"]
+    assert "y" not in body["parsed"]["areas"]
+
+
+def test_library_search_keeps_the_area_llm_did_obey(monkeypatch):
+    """反向对照（端点侧）：LLM 自己把用户选的 area 放进 areas ⇒ 原样保留、不重复。
+
+    删回填没有把正常路径一起改坏：LLM 照做时回显的就是它给的那份（顺序也不许动）。
+    """
+    from backend import library_query
+    _patch_library(monkeypatch)
+    monkeypatch.setattr(library_query, "parse_natural",
+                        lambda *a, **k: ({"keywords": ["x"], "synonyms": [],
+                                          "year_from": None, "year_to": None, "rtype": [],
+                                          "language": None, "open_access_only": False,
+                                          "peer_reviewed_only": False,
+                                          "exclude_retracted": False,
+                                          "areas": ["y", "z"], "domains": [],
+                                          "explanation": ""}, []))
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
+        "text": "x", "area": "y"}).json()
+    assert body["parsed"]["areas"] == ["y", "z"]
+
+
+def test_library_search_degrades_without_inventing_an_area(monkeypatch):
+    """LLM 降级时 `areas` 就是空的 —— **不要**为了界面好看把它补回去。
+
+    没有 LLM 答案就是没有；降级本身由 `llm_degraded` 警告码经既有 warning 通道可见，
+    不需要也不允许用「补一个 area」来假装解析成功。
     """
     from backend import library_query
     _patch_library(monkeypatch)
     # 降级路径的真实产物就是 fallback_parsed —— 直接用它，别再手搓
-    # dict(EMPTY_PARSED, ...)：那是浅拷贝，list 字段与模块常量共用同一个对象，
-    # 端点的 insert 回填会**就地污染 EMPTY_PARSED**，用例自己把依赖的全局改坏。
+    # dict(EMPTY_PARSED, ...)：那是浅拷贝，list 字段与模块常量共用同一个对象。
     monkeypatch.setattr(library_query, "parse_natural",
                         lambda *a, **k: (library_query.fallback_parsed("x"),
                                          ["llm_degraded"]))
@@ -1139,9 +1189,14 @@ def test_library_search_keeps_area_when_llm_degrades(monkeypatch):
         "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
         "text": "x", "area": "comp"}).json()
     assert body["ok"] is True
-    assert body["parsed"]["areas"] == ["comp"]
-    # 行为断言之外的钉子：端点回填 area 是**就地 insert**，若返回的 parsed 与
-    # EMPTY_PARSED 共用 list，这里就被永久污染、跨请求回显上一次的 area。
+    assert body["parsed"]["areas"] == []
+    assert body["warnings"] == ["llm_degraded"]
+    # 金丝雀（本轮重新评估过，结论见 task-8-report「修复轮 2」）：它原先守的是
+    # 「端点就地 insert 回填 area 打穿共享常量」。两处回填删除后，端点链路上**已经没有
+    # 任何就地改写 parsed 的代码**（parse_natural 只做字段重绑定，build_q /
+    # compile_filters 只读），所以这两行在当前代码里**空转**。
+    # 保留而不静默删除：它仍是一条真不变量、成本为零，处置（留 / 删 / 移回库层）
+    # 由控制者裁定 —— 它牵动另一个待办批次。
     assert library_query.EMPTY_PARSED["areas"] == []
     assert library_query.EMPTY_PARSED["domains"] == []
 
@@ -1239,3 +1294,27 @@ def test_library_search_enters_the_query_gate(monkeypatch):
         "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "text": "x"}).json()
     assert body["ok"] is True
     assert entered == [1]           # 一次查询恰好进一次门（并发的是门**内**的两栏）
+
+
+def test_library_search_marks_its_scope_calls_as_inside_the_query(monkeypatch):
+    """门内的两个提交点必须**显式**声明「本调用在查询内部」（`inside_query=True`）。
+
+    这是库侧唯一的放行判据（`library_client._get` 不再读 `_query_lock.locked()`）。
+    忘了传的后果不是死锁，而是**每次检索白等 `_MIN_INTERVAL`**（旧实现那 2.0 秒纯
+    睡眠就是这么来的）—— 换回「读锁状态」的话这条路也照样能过，所以在这里钉死。
+    """
+    seen = []
+    _patch_library(monkeypatch)
+    from backend import library_client
+
+    def spy(scope, q, **k):
+        seen.append(k)
+        return {"scope": scope, "items": [], "count": 0, "page": k.get("page", 1),
+                "has_more": False}
+
+    monkeypatch.setattr(library_client, "search", spy)
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "text": "x"}).json()
+    assert body["ok"] is True
+    assert len(seen) == 2                       # 两个 scope 各一次
+    assert all(k.get("inside_query") is True for k in seen)

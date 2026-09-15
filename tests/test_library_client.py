@@ -495,24 +495,122 @@ def test_query_scope_sleeps_between_two_queries(monkeypatch):
     assert len(slept) == 1 and slept[0] > 0
 
 
-def test_throttle_stands_down_inside_a_query(monkeypatch):
+def test_the_inside_query_flag_is_what_stands_the_throttle_down(monkeypatch):
     """**同一次查询内部**的上游调用不互相节流（F-3 的 2.0 秒纯睡眠就是在这里白等的）。
 
-    查询之外仍然照旧按 _last_call 兜底 —— 两条语义同时钉住。
+    「放行」的判据本轮换成了**调用方显式声明的 `inside_query=True`**，不再是
+    `_throttle` 自己读 `_query_lock.locked()` 猜（见 D1：那把锁是进程级的，别的请求
+    持锁时门外的调用会被误判成门内）。两条语义同时钉住：
+    标了的放行，**没标的一律按「查询之外」等满间隔**。
     """
     slept = []
     monkeypatch.setattr(library_client, "_MIN_INTERVAL", 1.0)
-    monkeypatch.setattr(library_client, "_last_query_at", 0.0)   # 门：很久以前，不睡
-    monkeypatch.setattr(library_client, "_last_call", time.monotonic())      # 刚调过一次
+    monkeypatch.setattr(library_client, "_last_call", time.monotonic())   # 刚调过一次
     monkeypatch.setattr(library_client.time, "sleep", lambda s: slept.append(s))
+    s = _Session(_search_payload(1))
 
-    library_client._throttle()               # 查询之外：仍要等满间隔
+    library_client.search("MyInstitution", "q", session=s, inside_query=True)
+    assert slept == []                       # 门内的两栏：不等（传了标志）
+
+    library_client.search("MyInstitution", "q", session=s)
+    assert len(slept) == 1                   # 门外：照等（没传标志）
+
+
+def test_list_domains_probe_is_throttled(monkeypatch):
+    """`list_domains()` 的探针是**查询之外**的调用 ⇒ 逐调用兜底节流照旧生效。
+
+    复审 D1 的实测反例：旧实现里这次探针读到「别的查询正持锁」就跳过等待
+    （等待 0.0s）。现在它只有一个判据 —— 自己没传 `inside_query`。
+    """
+    slept = []
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 1.0)
+    monkeypatch.setattr(library_client, "_last_call", time.monotonic())   # 刚调过一次
+    monkeypatch.setattr(library_client.time, "sleep", lambda s: slept.append(s))
+    library_client.list_domains(session=_Session(_facet_payload(["MEDLINE"])))
     assert len(slept) == 1
 
-    with library_client.query_scope():
-        library_client._throttle()           # 查询内部的两栏：都不等
-        library_client._throttle()
-    assert len(slept) == 1
+
+def test_an_out_of_query_call_never_overlaps_a_query(monkeypatch):
+    """**上游在飞峰值恒 ≤ 2**（spec §9 只允许同一次查询的两个 scope 并发）。
+
+    复现 D1 的原始场景：查询 A 已在门内、两栏在飞；查询 B 走到 `list_domains()`
+    的探针（冷缓存）。旧实现里探针读 `_query_lock.locked()`，看到 A 持锁 ⇒ 误判
+    「我也在查询里」⇒ 放行，三条上游请求同时在飞（复审实测峰值 3）。
+    现在探针是门外的调用，整段持有 `_query_lock` ⇒ 只能排在 A 之后。
+
+    确定性：门内两栏卡在 `release_query` 上直到测试放行，所以「两栏在飞」是被
+    观察到的状态而不是睡眠赌出来的；探针若真被放行（变异实现），它必然在这两栏
+    还卡着的时候完成 —— `probe_done.wait` 那一行会先红，`peak == 2` 再红一次。
+    """
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    monkeypatch.setattr(library_client, "_last_call", 0.0)
+    monkeypatch.setattr(library_client, "_read_cache", lambda: [])   # 冷缓存 ⇒ 要走探针
+
+    in_flight = 0
+    peak = 0
+    counter_lock = threading.Lock()
+    two_in_flight = threading.Event()
+    release_query = threading.Event()
+
+    class _CountingSession:
+        """进 `get` 就记账（这就是「上游在飞」的度量点），门内那两个还额外卡住。"""
+
+        def __init__(self, hold=False):
+            self._hold = hold
+
+        def get(self, *a, **k):
+            nonlocal in_flight, peak
+            with counter_lock:
+                in_flight += 1
+                peak = max(peak, in_flight)
+                if in_flight >= 2:
+                    two_in_flight.set()
+            try:
+                if self._hold:
+                    release_query.wait(5)
+            finally:
+                with counter_lock:
+                    in_flight -= 1
+            return _Resp(_search_payload(1))
+
+        def close(self):
+            pass
+
+    def run_query():
+        with library_client.query_scope():
+            # 端点的两个提交点等价物：都显式传 inside_query=True
+            threads = [threading.Thread(target=library_client.search,
+                                        args=("MyInstitution", "q"),
+                                        kwargs={"session": _CountingSession(hold=True),
+                                                "inside_query": True})
+                       for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(5)
+
+    probe_done = threading.Event()
+
+    def run_probe():
+        library_client.list_domains(session=_CountingSession())
+        probe_done.set()
+
+    query_thread = threading.Thread(target=run_query)
+    query_thread.start()
+    assert two_in_flight.wait(5)          # 门内两栏确实同时在飞
+
+    probe_thread = threading.Thread(target=run_probe)
+    probe_thread.start()
+
+    # 正确实现：探针被门挡住，进不了网络（这 0.5s 是给线程被调度起来的余量）；
+    # 变异实现（把标志改回读锁状态）：探针立刻打进网络 → 这一行就是红的。
+    assert probe_done.wait(0.5) is False
+
+    release_query.set()
+    query_thread.join(5)
+    probe_thread.join(5)
+    assert probe_done.is_set()            # 门一放开，探针照常完成（不是被永久挡住）
+    assert peak == 2                      # 全程峰值 2，不是 3
 
 
 def test_query_scope_serializes_queries(monkeypatch):
@@ -574,7 +672,10 @@ def test_concurrent_searches_each_use_their_own_session(monkeypatch):
 
     def run(scope):
         try:
-            library_client.search(scope, "q")
+            # `inside_query=True` = 端点两个提交点的等价物。**并发的只有这两栏**
+            # （spec §9）：查询之外的调用现在串行（见 _get），所以只有门内的调用
+            # 才可能同时在飞 —— Session 线程安全这条不变量也只在这里受考验。
+            library_client.search(scope, "q", inside_query=True)
         except Exception as exc:      # noqa: BLE001 —— 收集起来在断言里看
             errors.append(exc)
 
