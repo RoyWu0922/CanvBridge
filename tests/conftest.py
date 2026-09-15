@@ -131,17 +131,21 @@ def _blocked_failure_message(nodeid: str) -> str:
 
 
 @pytest.fixture
-def allow_network_block(_block_real_network):
+def allow_network_block():
     """**显式的、按用例的**「拦截即失败」退出开关。
 
     只有「验证守卫本身、故意制造一次被拦尝试」的用例才该请求它 —— 默认（不请求）
     一律是拦截即失败。刻意做成 **fixture 参数**而不是全局开关：它必须出现在
     **用到它的那个用例的签名里**，读代码的人一眼就能看见「这个用例知道自己在碰网络」。
 
-    形参 `_block_real_network` 是**故意的**：它把顺序钉死 —— 守卫先建立、后收尾，
-    于是守卫的收尾一定发生在**本 fixture 之后**，也就读得到下面那个标志。
-    （曾经在本地 `yield` 之后 `discard`，结果本 fixture 先收尾、标志先被清掉，
-    守卫收尾读不到 ⇒ 自检用例被自己判红。这条依赖就是那个 bug 的修复。）
+    **顺序由 `_block_real_network` 的 `autouse=True` 保证，不是由依赖保证**：
+    pytest 对同一作用域**先建立 autouse fixture**（建立 = 其 `yield` 之前的代码），
+    于是守卫先建立 ⇒ **后收尾**，其收尾一定晚于本 fixture 的收尾，读得到下面那个标志。
+    （这里曾经挂着一个形参 `_block_real_network`，注释声称「它把顺序钉死」——
+    **那句话是错的**：删掉该形参，`2 passed` 不变，因为顺序本来就是 autouse 定的。
+    当初真正的 bug 不在缺依赖，而在本 fixture 收尾时**过早 `discard`** 了标志 ⇒
+    守卫收尾读不到 ⇒ 自检被自己判红；修复动作是**删掉那次 discard**，与依赖无关。
+    形参已随之删除，免得将来有人「简化」掉一个其实多余的参数时以为自己弄坏了什么。）
     """
     _OPT_OUT.add("allow")
     yield
