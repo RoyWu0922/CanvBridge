@@ -216,7 +216,8 @@ def _search_payload(n_docs, total=100):
 def test_search_returns_normalized_items(monkeypatch):
     monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
     s = _Session(_search_payload(3))
-    r = library_client.search("MyInstitution", "any,contains,ml", session=s)
+    r = library_client.search("MyInstitution", "any,contains,ml", session=s,
+                              inside_query=False)
     assert [i["title"] for i in r["items"]] == ["T0", "T1", "T2"]
     assert r["count"] == 100 and r["page"] == 1
 
@@ -224,7 +225,7 @@ def test_search_returns_normalized_items(monkeypatch):
 def test_search_hits_the_public_pnxs_endpoint(monkeypatch):
     monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
     s = _Session(_search_payload(1))
-    library_client.search("CentralIndex", "q", session=s)
+    library_client.search("CentralIndex", "q", session=s, inside_query=False)
     assert s.calls[0]["url"] == library_client.PRIMO_BASE + library_client.SEARCH_PATH
     assert s.calls[0]["params"]["scope"] == "CentralIndex"
 
@@ -232,16 +233,18 @@ def test_search_hits_the_public_pnxs_endpoint(monkeypatch):
 def test_search_has_more_true_only_when_full_page_and_under_cap(monkeypatch):
     """has_more 由后端算，前端不自己推算 —— 否则上限一改前端就骗人。"""
     monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
-    full = library_client.search("MyInstitution", "q", session=_Session(_search_payload(20)))
+    full = library_client.search("MyInstitution", "q", session=_Session(_search_payload(20)),
+                                 inside_query=False)
     assert full["has_more"] is True
-    short = library_client.search("MyInstitution", "q", session=_Session(_search_payload(7)))
+    short = library_client.search("MyInstitution", "q", session=_Session(_search_payload(7)),
+                                  inside_query=False)
     assert short["has_more"] is False
 
 
 def test_search_has_more_false_on_last_allowed_page(monkeypatch):
     """第 5 页（= MAX_PAGES）即使取满也不再有下一页。"""
     monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
-    r = library_client.search("MyInstitution", "q", page=5,
+    r = library_client.search("MyInstitution", "q", page=5, inside_query=False,
                               session=_Session(_search_payload(20)))
     assert r["has_more"] is False
     # 回显的页码必须是请求的那一页 —— 硬编码 1 的话前端分页会静默错位。
@@ -253,14 +256,16 @@ def test_search_rejects_page_above_max(monkeypatch):
     monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
     import pytest
     with pytest.raises(library_client.LibraryError):
-        library_client.search("MyInstitution", "q", page=6, session=_Session(_search_payload(1)))
+        library_client.search("MyInstitution", "q", page=6, inside_query=False,
+                              session=_Session(_search_payload(1)))
 
 
 def test_search_rejects_page_below_one(monkeypatch):
     monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
     import pytest
     with pytest.raises(library_client.LibraryError):
-        library_client.search("MyInstitution", "q", page=0, session=_Session(_search_payload(1)))
+        library_client.search("MyInstitution", "q", page=0, inside_query=False,
+                              session=_Session(_search_payload(1)))
 
 
 def test_search_wraps_transport_errors(monkeypatch):
@@ -276,7 +281,7 @@ def test_search_wraps_transport_errors(monkeypatch):
             pass
 
     with pytest.raises(library_client.LibraryError):
-        library_client.search("MyInstitution", "q", session=_Boom())
+        library_client.search("MyInstitution", "q", session=_Boom(), inside_query=False)
 
 
 def test_search_raises_on_http_error_status(monkeypatch):
@@ -288,7 +293,7 @@ def test_search_raises_on_http_error_status(monkeypatch):
     monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
     import pytest
     with pytest.raises(library_client.LibraryError):
-        library_client.search("MyInstitution", "q",
+        library_client.search("MyInstitution", "q", inside_query=False,
                               session=_Session({"info": {"total": 0}, "docs": []}, status=503))
 
 
@@ -301,13 +306,15 @@ def test_get_rejects_non_object_json(monkeypatch):
     import pytest
     for payload in (None, [], "oops"):
         with pytest.raises(library_client.LibraryError):
-            library_client.search("MyInstitution", "q", session=_Session(payload))
+            library_client.search("MyInstitution", "q", session=_Session(payload),
+                                  inside_query=False)
 
 
 def test_search_survives_missing_info_block(monkeypatch):
     """上游少给 info 不能让整次检索崩掉。"""
     monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
-    r = library_client.search("MyInstitution", "q", session=_Session({"docs": []}))
+    r = library_client.search("MyInstitution", "q", session=_Session({"docs": []}),
+                              inside_query=False)
     assert r["count"] == 0 and r["has_more"] is False
 
 
@@ -474,7 +481,7 @@ def test_get_actually_goes_through_throttle(monkeypatch):
     calls = []
     monkeypatch.setattr(library_client, "_throttle", lambda: calls.append(1))
     s = _Session(_search_payload(1))
-    library_client.search("MyInstitution", "q", session=s)
+    library_client.search("MyInstitution", "q", session=s, inside_query=False)
     library_client.list_domains(session=s)
     assert calls == [1, 1]
 
@@ -495,6 +502,36 @@ def test_query_scope_sleeps_between_two_queries(monkeypatch):
     assert len(slept) == 1 and slept[0] > 0
 
 
+def test_inside_query_is_a_required_keyword_argument(monkeypatch):
+    """`inside_query` **必须传**：漏传立刻 `TypeError`，绝不落到一个「默默当 False」的默认值。
+
+    为什么默认值在这里是危险品：漏传的后果**不是**「多睡一秒」，而是**永久死锁** ——
+    `query_scope()` 在端点线程上持有非重入的 `_query_lock`，端点在 `fut.result()` 上等
+    worker，而漏传的 worker 会走 `_get` 的默认路径去取同一把锁 ⇒ 互等。
+    （复审用两组独立进程实测过：漏传 6 秒不返回；传了立刻 ok。）
+
+    **这条用例刻意不碰网络、也不经过任何替身**：判据就是签名本身，`TypeError` 在函数体
+    执行之前就抛出来了 —— 这正是「不可能静默发生」的含义。反面教训是 `search` 的替身
+    （`lambda scope, q, **k`）会把漏传照单全收：`tests/test_main.py` 的 `_patch_library`
+    把 `search` 整个换掉，所以那条路径**结构上看不见**这个问题，不能拿它来验这一条。
+    """
+    import pytest
+    # 兜底：万一有人把默认值加回来，本用例也必须**在到达网络之前**就失败。
+    # （不加这条的话，变异实现会让下面第二行真的打一次真实 Primo —— 实测踩过：
+    # 这正是「测试不打真实网络」这条硬约束的反面教材。）
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    monkeypatch.setattr(library_client, "_last_call", 0.0)
+    monkeypatch.setattr(library_client, "_last_query_at", 0.0)
+    monkeypatch.setattr(library_client, "_http_get",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("漏传必须在这里之前就抛 TypeError，绝不能走到网络")))
+
+    with pytest.raises(TypeError):
+        library_client.search("MyInstitution", "q")           # 漏 inside_query
+    with pytest.raises(TypeError):
+        library_client._get("/primaws/rest/pub/pnxs", {}, None)   # 漏 inside_query
+
+
 def test_the_inside_query_flag_is_what_stands_the_throttle_down(monkeypatch):
     """**同一次查询内部**的上游调用不互相节流（F-3 的 2.0 秒纯睡眠就是在这里白等的）。
 
@@ -512,7 +549,7 @@ def test_the_inside_query_flag_is_what_stands_the_throttle_down(monkeypatch):
     library_client.search("MyInstitution", "q", session=s, inside_query=True)
     assert slept == []                       # 门内的两栏：不等（传了标志）
 
-    library_client.search("MyInstitution", "q", session=s)
+    library_client.search("MyInstitution", "q", session=s, inside_query=False)
     assert len(slept) == 1                   # 门外：照等（没传标志）
 
 
@@ -702,7 +739,7 @@ def test_get_closes_only_the_session_it_created(monkeypatch):
             closed.append(True)
 
     monkeypatch.setattr(library_client.requests, "Session", _FakeSession)
-    library_client.search("MyInstitution", "q")          # session=None → _get 自建
+    library_client.search("MyInstitution", "q", inside_query=False)   # session=None → _get 自建
     assert closed == [True]
 
     class _SessionTracked(_Session):
@@ -710,5 +747,6 @@ def test_get_closes_only_the_session_it_created(monkeypatch):
             closed.append(True)
 
     closed.clear()
-    library_client.search("MyInstitution", "q", session=_SessionTracked(_search_payload(1)))
+    library_client.search("MyInstitution", "q", inside_query=False,
+                          session=_SessionTracked(_search_payload(1)))
     assert closed == []

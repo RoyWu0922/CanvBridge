@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -1191,12 +1193,24 @@ def test_library_search_degrades_without_inventing_an_area(monkeypatch):
     assert body["ok"] is True
     assert body["parsed"]["areas"] == []
     assert body["warnings"] == ["llm_degraded"]
-    # 金丝雀（本轮重新评估过，结论见 task-8-report「修复轮 2」）：它原先守的是
-    # 「端点就地 insert 回填 area 打穿共享常量」。两处回填删除后，端点链路上**已经没有
-    # 任何就地改写 parsed 的代码**（parse_natural 只做字段重绑定，build_q /
-    # compile_filters 只读），所以这两行在当前代码里**空转**。
-    # 保留而不静默删除：它仍是一条真不变量、成本为零，处置（留 / 删 / 移回库层）
-    # 由控制者裁定 —— 它牵动另一个待办批次。
+    # 金丝雀：**整包级的「全局常量未被改脏」哨兵，且顺序相关** —— 如实描述它是什么，
+    # 不再声称它守的是「有人把就地改写 reintroduce 回来」（那是假的，见下）。
+    #
+    # 复审实测的守护范围（task-8-review「R2-6」）：
+    #   ① 对「reintroduce 就地改写」**没有判别力**：变异「端点加回
+    #      `parsed["areas"].insert(0, area)`」时本用例确实红，但红的是**上一行**
+    #      `assert body["parsed"]["areas"] == []`（`E assert ['comp'] == []`），
+    #      这两行金丝雀在同场景下**是通过的**（`_blank_parsed()` 现在是 deepcopy，
+    #      端点改写碰不到 `EMPTY_PARSED`）。
+    #   ② 它唯一的活触发是「`_blank_parsed` 退化为浅拷贝」，而且**单跑不红**：
+    #      要靠前面 `test_mutating_returned_parsed_does_not_pollute_empty_parsed`
+    #      先就地把常量改脏，整包顺序跑时才看见 ⇒ 它是一条**顺序相关的整包级哨兵**，
+    #      不是本用例自身行为的守卫。
+    #   ③ 它是**冗余**的：浅拷贝退化时库层三条不变量用例
+    #      （`test_blank_parsed_returns_independent_lists` /
+    #      `..._validate_parsed_none_...` / `test_mutating_returned_parsed_...`）
+    #      会同时变红并指向同一根因。
+    # 保留断言本身（成本几行，作为整包级哨兵仍有价值）；处置由控制者裁定，本轮不动。
     assert library_query.EMPTY_PARSED["areas"] == []
     assert library_query.EMPTY_PARSED["domains"] == []
 
@@ -1300,8 +1314,12 @@ def test_library_search_marks_its_scope_calls_as_inside_the_query(monkeypatch):
     """门内的两个提交点必须**显式**声明「本调用在查询内部」（`inside_query=True`）。
 
     这是库侧唯一的放行判据（`library_client._get` 不再读 `_query_lock.locked()`）。
-    忘了传的后果不是死锁，而是**每次检索白等 `_MIN_INTERVAL`**（旧实现那 2.0 秒纯
-    睡眠就是这么来的）—— 换回「读锁状态」的话这条路也照样能过，所以在这里钉死。
+    漏传的后果是**永久死锁**（worker 卡在门内的 `_query_lock` 上、端点在 `fut.result()`
+    上等它），所以库层已把 `inside_query` 定义成**必传参数**，漏传会在 worker 里立刻
+    抛 `TypeError`。本用例仍在这里钉「两个提交点都显式传了 True」这个事实 ——
+    换回「读锁状态」的话这条路照样能过，只有这条断言看得见差别。
+    （更正：本行原先写「忘了传的后果是每次检索白等 `_MIN_INTERVAL`，不是死锁」，
+    与实测不符，见 `task-8-report`「八、修复轮 3」。）
     """
     seen = []
     _patch_library(monkeypatch)
@@ -1318,3 +1336,211 @@ def test_library_search_marks_its_scope_calls_as_inside_the_query(monkeypatch):
     assert body["ok"] is True
     assert len(seen) == 2                       # 两个 scope 各一次
     assert all(k.get("inside_query") is True for k in seen)
+
+
+# ---------- 修复轮 3：两道防线 + area 抓取进门（R2-2 / R2-3） ----------
+
+# `parse_natural` 的替身返回值（只需要形状对：build_q / compile_filters 能跑）。
+_LIB_PARSED_STUB = {"keywords": ["ml"], "synonyms": [], "year_from": None, "year_to": None,
+                    "rtype": [], "language": None, "open_access_only": False,
+                    "peer_reviewed_only": False, "exclude_retracted": False,
+                    "areas": [], "domains": [], "explanation": ""}
+
+_LIB_SEARCH_BODY = {"llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "text": "x"}
+
+
+def _patch_library_boundaries(monkeypatch):
+    """只打「外围边界」的桩，**不碰 `library_client.search` / `_get`**。
+
+    R2-2 / R2-3 的根因都是**桩的覆盖面**：`_patch_library` 把 `library_client.search`
+    整个换成 `lambda scope, q, **k`，于是「worker 走真实加锁路径」这件事在套件里
+    结构上不存在 —— 漏传标志只会红断言、不会挂；`load_areas` 被换掉则让那次门外抓取
+    在实机验证里消失。需要看见那条路径的用例（漏传标志、`fut.result` 兜底超时、
+    area 抓取与门内两栏不重叠）用本函数，只把最底层 HTTP 出口与 LLM 换掉。
+    """
+    from backend import library_client, library_query
+    monkeypatch.setattr(library_client, "_MIN_INTERVAL", 0)
+    monkeypatch.setattr(library_query, "parse_natural",
+                        lambda *a, **k: (dict(_LIB_PARSED_STUB), []))
+    monkeypatch.setattr(library_client, "list_domains", lambda **k: [])
+
+
+def test_library_search_reports_an_error_when_a_submit_point_forgets_the_flag(monkeypatch):
+    """提交点漏传 `inside_query=True` ⇒ 端点**快速返回 200 + JSON 错误**，不是永久挂死。
+
+    这是 R2-2 的回归用例，也是**结构上唯一看得见这条路径的形态**：走**真实的**
+    `library_client.search` / `_get`（只把最底层的 `_http_get` 换掉），
+    不像 `_patch_library` 那样把 `search` 整个换掉 —— 替身 `lambda scope, q, **k`
+    会把漏传照单全收，那条路径上永远看不见这个问题。
+
+    改动前：漏传 ⇒ worker 卡在 `_query_lock` 上、端点卡在**无 timeout** 的
+    `fut.result()` 上 ⇒ 本用例的 `join(5)` 先红（复审用两组独立进程实测：6 秒不返回）。
+    改动后：`inside_query` 是必传参数 ⇒ worker 里立刻 `TypeError` ⇒ 由 `fut.result()`
+    带出来 ⇒ 端点的 `except Exception` 转成 200 + JSON。
+    """
+    from backend import library_areas, library_client
+    _patch_library_boundaries(monkeypatch)
+    monkeypatch.setattr(library_areas, "load_areas", lambda **k: {"available": True, "areas": []})
+    monkeypatch.setattr(library_client, "_http_get",
+                        lambda path, params, session: {"docs": [], "info": {"total": 0},
+                                                       "facets": []})
+
+    real_search = library_client.search
+
+    def forgetful_search(*a, **k):
+        k.pop("inside_query", None)                 # ← 模拟「提交点漏传了标志」
+        return real_search(*a, **k)
+
+    monkeypatch.setattr(library_client, "search", forgetful_search)
+
+    out = []
+    t = threading.Thread(target=lambda: out.append(
+        client.post("/api/library/search", json=_LIB_SEARCH_BODY).json()))
+    t.start()
+    t.join(5)
+    assert t.is_alive() is False                    # 关键：5 秒内必须返回
+    assert out[0]["ok"] is False
+    assert "inside_query" in out[0]["error"]        # 就是漏传那个参数的 TypeError
+
+
+def test_library_search_returns_an_error_instead_of_hanging_when_a_worker_blocks(monkeypatch):
+    """`fut.result(timeout=)` 是**兜底**：worker 被意料外地卡住 ⇒ 200 + JSON，不是挂死。
+
+    本条考的是端点的兜底本身（库层的加锁路径由上面那条与
+    `test_inside_query_is_a_required_keyword_argument` 管），所以这里用一个**会卡住
+    的 `search` 替身**把「意料外的永久阻塞」做出来。
+    `_RESULT_TIMEOUT` 拨到 0.2s 只是为了让用例别等 45 秒，机制不变。
+    """
+    from backend import library_client, main as backend_main
+    _patch_library(monkeypatch)                     # 含 load_areas / list_domains / parse_natural
+
+    release = threading.Event()
+
+    def blocked_search(scope, q, **k):
+        release.wait(10)                            # 「永久」阻塞
+        return {"scope": scope, "items": [], "count": 0, "page": 1, "has_more": False}
+
+    monkeypatch.setattr(library_client, "search", blocked_search)
+    monkeypatch.setattr(backend_main, "_RESULT_TIMEOUT", 0.2)
+
+    out = []
+    t = threading.Thread(target=lambda: out.append(
+        client.post("/api/library/search", json=_LIB_SEARCH_BODY).json()))
+    t.start()
+    try:
+        t.join(5)
+        assert t.is_alive() is False                # 没有挂死
+        assert out[0]["ok"] is False
+        assert "超时" in out[0]["error"]
+    finally:
+        release.set()                               # 放游离的 worker 收工，别拖住进程退出
+        t.join(5)
+
+
+def test_an_area_fetch_never_overlaps_a_query(monkeypatch, tmp_path):
+    """**冷 area 缓存**的抓取也必须进门：不能与门内两栏并发（spec §9 只允许两栏并发）。
+
+    复审 R2-3 的实测反例：`library_areas.load_areas()` 走的是它自己那条 `requests`
+    路径，**不经 `_get`、不受节流、不持锁** ⇒ 冷缓存 + 两请求并发时上游在飞峰值 **3**
+    （复审三臂隔离因果：2 / 3 / 2）。
+
+    这条用例**不把 `load_areas` 换成替身** —— 那正是上一轮看不见它半边的原因。
+    用的是真 `load_areas`（真解析路径）+ 真 `library_client.search` / `_get`，
+    只把两条最底层的 HTTP 出口换成计数替身。
+
+    确定性（照 M3 的事件驱动写法，不赌时序）：查询 A 的两栏卡在 `release_query` 上，
+    「两栏在飞」是被**观察到**的状态；B 若真把 area 抓取打进了网络，`areas_entered`
+    会在 0.5s 内亮 —— 那一行先红，`peak == 2` 再红一次。
+    """
+    from backend import library_areas, library_client
+    _patch_library_boundaries(monkeypatch)
+    monkeypatch.setattr(library_client, "_last_query_at", 0.0)
+    monkeypatch.setattr(library_client, "_last_call", 0.0)
+    # 冷缓存：指向不存在的文件。抓取走的仍是 library_areas 的真实解析路径。
+    monkeypatch.setattr(library_areas, "CACHE_FILE", tmp_path / "areas.json")
+
+    state = {"in_flight": 0, "peak": 0, "areas_calls": 0}
+    lock = threading.Lock()
+    two_in_flight = threading.Event()
+    release_query = threading.Event()
+    areas_entered = threading.Event()
+
+    def _enter():
+        with lock:
+            state["in_flight"] += 1
+            state["peak"] = max(state["peak"], state["in_flight"])
+
+    def _leave():
+        with lock:
+            state["in_flight"] -= 1
+
+    def fake_http_get(path, params, session):
+        """门内两栏的上游出口：计数 + 卡住（「在飞」的度量点）。"""
+        _enter()
+        if state["in_flight"] >= 2:
+            two_in_flight.set()
+        try:
+            release_query.wait(5)
+        finally:
+            _leave()
+        return {"docs": [], "info": {"total": 0}, "facets": []}
+
+    class _AreasResp:
+        text, status_code = "<html></html>", 200
+
+        def raise_for_status(self):
+            pass
+
+    class _AreasSession:
+        """area 抓取的上游出口 —— 进了 `get` 就记账（进不来才是对的）。"""
+
+        def get(self, *a, **k):
+            _enter()
+            with lock:
+                state["areas_calls"] += 1
+            areas_entered.set()
+            try:
+                return _AreasResp()
+            finally:
+                _leave()
+
+        def close(self):
+            pass
+
+    class _AreasRequests:                    # 只换 library_areas 眼里的 requests
+        Session = _AreasSession
+
+    monkeypatch.setattr(library_client, "_http_get", fake_http_get)
+    monkeypatch.setattr(library_areas, "requests", _AreasRequests)
+
+    results = []
+
+    def run():
+        results.append(client.post("/api/library/search", json=_LIB_SEARCH_BODY).json())
+
+    t_a = threading.Thread(target=run)
+    t_a.start()
+    assert two_in_flight.wait(5)             # A 的两栏确实同时在飞（观察到的事实）
+
+    # A 自己那次冷缓存抓取（在它的门之前）已经发生过 —— 拿它当基线，
+    # 之后多出来的任何一次都只能来自 B。事件也要清掉：它已经被 A 点过一次了。
+    with lock:
+        baseline = state["areas_calls"]
+    areas_entered.clear()
+
+    t_b = threading.Thread(target=run)
+    t_b.start()
+    # 正确实现：B 的 area 抓取被门外纪律挡住，进不了网络（这 0.5s 是给线程被调度
+    # 起来的余量）；变异实现（去掉 main.py 里那圈 out_of_query）：抓取立刻打进网络。
+    assert areas_entered.wait(0.5) is False
+    with lock:
+        assert state["areas_calls"] == baseline
+
+    release_query.set()
+    t_a.join(10)
+    t_b.join(10)
+    assert areas_entered.is_set()            # 门一放开照常完成（不是被永久挡住）
+    with lock:
+        assert state["areas_calls"] == baseline + 1
+    assert [r["ok"] for r in results] == [True, True]
+    assert state["peak"] == 2                # 全程峰值 2，不是 3

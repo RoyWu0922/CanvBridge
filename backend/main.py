@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import itertools
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime
 from pathlib import Path
 
@@ -820,11 +820,25 @@ def banweb_write(req: BanwebWriteRequest):
 
 # ---------- 图书馆检索（Ex Libris Primo，全程零登录） ----------
 
+# `fut.result()` 的**兜底**超时（不是正常路径的一部分）。
+#
+# 取值依据：门内两栏既不取 `_query_lock` 也不过节流，所以一次**合法**的 `search()`
+# 唯一能阻塞的地方就是那一次 HTTP 调用，而它自己的超时是
+# `library_client.HTTP_TIMEOUT`（30s）。这里取 1.5 倍 —— 严格大于客户端自身的请求
+# 超时，因此正常路径永远不会被它打断；而任何**意料外**的阻塞（例如将来有人在门内
+# 用 `inside_query=False` 调用，worker 卡在 `_query_lock` 上）都会在 45 秒内变成
+# 一次 200 + JSON 的错误返回，而不是把请求永久挂住。
+_RESULT_TIMEOUT = library_client.HTTP_TIMEOUT * 1.5
+
+
 @app.post("/api/library/areas")
 def library_areas_endpoint():
     """学科领域清单。**拿不到不是错误**：available=False，前端整个不渲染选择器。"""
     try:
-        return {"ok": True, **library_areas.load_areas()}
+        # 抓取是「查询之外的上游调用」：套同一个门外纪律，免得冷缓存时与正在进行的
+        # 检索的两栏并发（spec §9 只允许同一次查询的两栏并发）。
+        with library_client.out_of_query():
+            return {"ok": True, **library_areas.load_areas()}
     except Exception as exc:          # 本模块内部已尽力兜底，这里是最后一道
         return {"ok": True, "available": False, "areas": [], "error": str(exc)}
 
@@ -837,7 +851,12 @@ def library_search(req: LibrarySearchRequest):
 
     warnings: list[str] = []
     domains = library_client.list_domains()
-    area_catalog = library_areas.load_areas()
+    # area 词表走的是 `library_areas` 自己那条 `requests` 路径（不经过 `_get`），
+    # 所以必须**显式**套上同一个门外纪律：冷缓存（官网抓不到时不会写缓存 ⇒ 每次
+    # 检索都重抓）时它是一次真实的上游调用，不套就会与下面门内的两栏并发
+    # —— 复审实测上游在飞峰值 3，spec §9 只允许同一次查询的两栏并发。
+    with library_client.out_of_query():
+        area_catalog = library_areas.load_areas()
     area_names = {a["code"]: a["name"] for a in area_catalog["areas"]}
 
     if req.parsed is not None:
@@ -858,6 +877,11 @@ def library_search(req: LibrarySearchRequest):
 
     q = library_query.build_q(parsed)
     blocks = {}
+    # **不用 `with ThreadPoolExecutor(...)`**：那个上下文管理器的 `__exit__` 等价于
+    # `shutdown(wait=True)`，会把「worker 被意料外卡住」这件事重新变成挂死 ——
+    # 连 `fut.result(timeout=)` 刚转出来的 200 + JSON 也会卡在 `__exit__` 里发不出去。
+    pool = ThreadPoolExecutor(max_workers=2)
+    stuck = False                 # True ⇔ 有 worker 没在 `_RESULT_TIMEOUT` 内返回
     try:
         # 一次「查询」= 一次 /api/library/search 请求 = 一个节流单位（spec §9：
         # 「相邻翻页请求之间 ≥1s」「不同查询之间串行」）。整段查询期间持门，
@@ -869,23 +893,38 @@ def library_search(req: LibrarySearchRequest):
             # Session 不是线程安全的，共享会把连接池搞坏。
             # `inside_query=True` 是**显式声明的事实**（不是让库去猜锁状态）：
             # 这两次调用在门内、本就该并发，不走逐调用节流；门外的调用
-            # （list_domains 的探针）则相反 —— 它们会排队等这次查询做完。
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                futures = {}
-                for scope, key in ((library_client.SCOPE_LOCAL, "local"),
-                                   (library_client.SCOPE_EXTERNAL, "external")):
-                    include, exclude = library_query.compile_filters(parsed, scope)
-                    futures[key] = pool.submit(
-                        library_client.search, scope, q,
-                        q_include=include, q_exclude=exclude, page=req.page,
-                        inside_query=True)
-                # 按 scope 顺序取回（submit 顺序），失败的那个把异常原样抛出来。
-                for key, fut in futures.items():
-                    blocks[key] = fut.result()
+            # （list_domains 的探针、load_areas 的抓取）则相反 —— 它们会排队等这次
+            # 查询做完。库层把 `inside_query` 定义成**必传**参数：漏传会在 worker 里
+            # 立刻抛 TypeError（不是永久死锁），由下面的 `fut.result()` 带出来。
+            futures = {}
+            for scope, key in ((library_client.SCOPE_LOCAL, "local"),
+                               (library_client.SCOPE_EXTERNAL, "external")):
+                include, exclude = library_query.compile_filters(parsed, scope)
+                futures[key] = pool.submit(
+                    library_client.search, scope, q,
+                    q_include=include, q_exclude=exclude, page=req.page,
+                    inside_query=True)
+            # 按 scope 顺序取回（submit 顺序），失败的那个把异常原样抛出来。
+            for key, fut in futures.items():
+                # 显式超时 = **纵深防御**，不是正常路径的一部分（正常路径下 worker
+                # 最久也就跑一次 `HTTP_TIMEOUT`，见 `_RESULT_TIMEOUT`）。
+                try:
+                    blocks[key] = fut.result(timeout=_RESULT_TIMEOUT)
+                except FuturesTimeoutError:
+                    stuck = True
+                    raise library_client.LibraryError(
+                        f"图书馆检索超时：{key} 栏超过 {_RESULT_TIMEOUT:.0f} 秒未返回")
     except Exception as exc:
         # 错误一律 200 + JSON（本仓既有约定）。**不回带 parsed**：前端在 !ok 分支里
         # 会把 libraryState.parsed 清空（app.js 的 runLibrarySearch），带回去没有任何
         # 消费者 —— 旧注释说的「否则前端第 2 页起就回传不了了」不成立。
         return {"ok": False, "error": str(exc), "warnings": warnings}
+    finally:
+        # 正常路径（含「worker 自己抛错」的路径）：两个 worker 都已有结论，
+        # `wait=True` 立即返回，与用 `with` 时行为一致 —— 门要等到两栏都结束才放开。
+        # 只有超时那条路 `wait=False`：卡住的那个 worker 不能拦着响应发出去。
+        # （如实登记代价：那个 worker 线程会游离到它自己醒来为止，期间它仍可能占着
+        # 上游连接；这是「挂死」与「一次可恢复的错误返回」之间刻意选的后者。）
+        pool.shutdown(wait=not stuck)
 
     return {"ok": True, "parsed": parsed, "warnings": warnings, **blocks}

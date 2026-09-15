@@ -33,6 +33,11 @@ MAX_PAGES = 5
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; CanvBridge/1.0)",
             "Accept": "application/json"}
 
+# 单次上游 HTTP 调用的超时（连接 + 读）。**这是「一次合法的 `search()` 最久能跑多久」
+# 的唯一来源** —— 门内的两栏既不取 `_query_lock` 也不过节流，所以一次合法调用的墙钟
+# 上界就是这个值。端点层给 `fut.result()` 的兜底超时以它为基准（见 `main._RESULT_TIMEOUT`）。
+HTTP_TIMEOUT = 30
+
 
 class LibraryError(RuntimeError):
     """图书馆检索相关的失败。端点层捕获它转成 {ok:false,error}。"""
@@ -164,13 +169,19 @@ def build_params(scope: str, q: str, *, q_include: list[str] | None = None,
 #     —— 每次检索白等约 2.0 秒（F-3 实测）；
 #   ②两个 scope 一旦并发，两个线程读写同一个模块级 _last_call 还会打架。
 # 现在：查询 = 一个节流单位（query_scope），查询内部的调用由调用方**显式**标出
-# （`search(..., inside_query=True)`），门外调用走逐调用兜底节流。
+# （`search(..., inside_query=True)`），门外调用一律走 `out_of_query()`。
 #
 # **「是否查询内部」是显式传入的事实，不是从锁状态推断的。** 曾经 `_throttle()`
 # 用 `_query_lock.locked()` 判「我在不在查询里」，那是拿一把**进程级**全局锁的状态
 # 去猜「当前调用来自哪个调用点」——两件事根本不同。别的请求正持锁做双 scope 检索时，
 # 门外的一次调用（`list_domains()` 的探针）会看到 `locked()==True` 而跳过等待，
 # 实测上游在飞峰值 = 3（spec §9 说这是唯一的一处并发、只允许 2）。
+#
+# **「门外调用不与门内两栏重叠」这条不变量要求所有门外上游调用都进门。** 两个
+# 取网络的入口在这里：`_get()`（= Primo）与众调用方。Primo 那条由 `_get` 自己套
+# `out_of_query()`；**另一条在 `library_areas.load_areas` 里**（CityU 的
+# `db_subject.php`，不走 `requests` 之外的任何共享路径），必须由调用方显式套 ——
+# 见 `main.library_search` / `main.library_areas_endpoint`，也见 `out_of_query()`。
 #
 # 相邻两次**查询**之间的最小间隔（spec §9）。用户手动翻页天然慢于此，
 # 这条只是兜住连点。测试里 monkeypatch 成 0，免得拖慢用例。
@@ -199,7 +210,13 @@ def query_scope():
       理由见 `_MIN_INTERVAL` 上面的注释。
     - 查询**内部**的上游调用不互相节流：同一次查询的两个 scope 本来就是并发发出的，
       在这里互相等等于把并发退回串行。放行靠**显式标志** —— 门内的提交点必须传
-      `search(..., inside_query=True)`；**忘记传的后果是多睡一秒，不是死锁**。
+      `search(..., inside_query=True)`。
+    - ⚠️ **忘记传的后果是永久死锁，不是「多睡一秒」。** 本函数在**端点线程**上持有
+      非重入的 `_query_lock`；漏传标志的 pool worker 会走 `_get` 的默认路径
+      （`out_of_query()`）去取同一把锁 ⇒ worker 永久阻塞，而端点在
+      `fut.result()` 上等它 ⇒ 端点挂死、连接不释放。**默认值在这里是危险品**，
+      所以 `inside_query` 是**必传参数**：漏传立刻 `TypeError`。
+      （更正：本行原先写「忘记传的后果是多睡一秒」——复审用两组独立进程实测证伪。）
     - **不可重入**：`_query_lock` 是非重入锁，同一线程嵌套 `query_scope()` 会挂死。
       当前唯一调用点是 `main.library_search` 的端点，无嵌套路径。
     """
@@ -230,25 +247,57 @@ def _throttle() -> None:
         _last_call = time.monotonic()
 
 
-def _get(path: str, params: dict, session, *, inside_query: bool = False) -> dict:
+@contextlib.contextmanager
+def out_of_query():
+    """「查询之外的上游调用」的纪律：**串行化 + 逐调用兜底节流**。
+
+    作用域覆盖整次调用（含真正的 HTTP），所以任何两个门外调用之间、以及门外调用与
+    门内的一次查询之间都不会重叠 ⇒ 上游在飞峰值恒 ≤ 2（spec §9「只允许两个 scope
+    并发……这是唯一的一处并发」）。
+
+    目前两处使用者，缺一不可：
+      - `_get()` 的默认路径（= `list_domains()` 的探针）；
+      - `main.library_search` / `main.library_areas_endpoint` 里
+        `library_areas.load_areas()` 的抓取 —— 它走的是 `library_areas` 自己那条
+        `requests` 路径，**不经过 `_get`**，不显式套这个门就完全不受约束
+        （复审实测：冷 area 缓存 + 两请求并发时上游在飞峰值 = 3）。
+
+    **不可重入、不可在 `query_scope()` 内部调用**：`_query_lock` 是非重入锁，
+    同一线程再进来会自锁。
+    """
+    with _query_lock:
+        _throttle()
+        yield
+
+
+def _get(path: str, params: dict, session, *, inside_query: bool) -> dict:
     """发一次请求并把传输层异常统一成 LibraryError。
 
-    `inside_query` 是**调用方显式声明的事实**，不是从锁状态猜的：
+    `inside_query` 是**调用方显式声明的事实**，不是从锁状态猜的，而且**必传**
+    （没有默认值）：
 
     - `True`：本次调用是某次查询的两栏之一（`main.library_search` 的
-      `ThreadPoolExecutor` 提交点传的）。直接放行 —— 两栏本就该并发。
-    - `False`（默认）：**查询之外**的调用（`list_domains()` 的探针、直接调用本模块）。
-      既走逐调用兜底节流，又**在整段调用期间持有 `_query_lock`** ——
-      门外的一次调用与门内的两栏**永不重叠**，于是上游在飞峰值恒 ≤ 2
-      （spec §9「只允许两个 scope 并发……这是唯一的一处并发」）。
+      `ThreadPoolExecutor` 两个提交点传的）。直接放行 —— 两栏本就该并发。
+    - `False`：**查询之外**的调用（`list_domains()` 的探针、直接调用本模块）。
+      走 `out_of_query()`：逐调用兜底节流 + **整段调用期间持有 `_query_lock`**。
       代价：查询外的调用会排在正在进行的查询之后（单用户本地工具，可接受；
       而且它本来也要在 `query_scope()` 门口再排一次）。
-      **不可在 `query_scope()` 内部用默认值调用**（同一线程会自锁）。
+
+    **为什么必传而不是默认 `False`**：默认值在这里是危险品。`query_scope()` 在
+    **端点线程**上持有非重入的 `_query_lock`，端点在 `fut.result()` 上等 worker；
+    此时漏传标志的 worker 走这条默认路径 ⇒ 取同一把锁 ⇒ **worker 与端点互等，
+    请求永久挂死**（复审：两组独立进程实测，漏传 6 秒不返回，传了立刻 ok）。
+    必传之后漏传立刻 `TypeError`（`main.library_search` 的提交点在 `pool.submit`
+    时就把参数交出去了，worker 里抛出的 TypeError 由 `fut.result()` 原样带出来，
+    端点的 `except Exception` 转成 200 + JSON）。端点还另有一道 `fut.result(timeout=)`
+    兜底，两道防线见 `main._RESULT_TIMEOUT`。
+
+    **不可在 `query_scope()` 内部用 `inside_query=False` 调用**（同一线程会自锁；
+    换个线程则会与端点线程互等）。
     """
     if inside_query:
         return _http_get(path, params, session)
-    with _query_lock:
-        _throttle()
+    with out_of_query():
         return _http_get(path, params, session)
 
 
@@ -257,7 +306,8 @@ def _http_get(path: str, params: dict, session) -> dict:
     own = session is None
     s = session or requests.Session()
     try:
-        resp = s.get(PRIMO_BASE + path, params=params, headers=_HEADERS, timeout=30)
+        resp = s.get(PRIMO_BASE + path, params=params, headers=_HEADERS,
+                     timeout=HTTP_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         # 实测上游会返 HTTP 200 + 非对象 JSON（`null` / `[]` / 裸字符串）。
@@ -275,7 +325,7 @@ def _http_get(path: str, params: dict, session) -> dict:
 
 def search(scope: str, q: str, *, q_include: list[str] | None = None,
            q_exclude: list[str] | None = None, page: int = 1,
-           session=None, inside_query: bool = False) -> dict:
+           session=None, inside_query: bool) -> dict:
     """查一个 scope 的一页。
 
     **页码越界在这里就拒** —— 上限必须由后端挡（spec §9）。
@@ -284,9 +334,11 @@ def search(scope: str, q: str, *, q_include: list[str] | None = None,
     `session=None`（端点走的就是这条）时**每次调用自建一个 `requests.Session`** ——
     `requests.Session` 不是线程安全的，两个 scope 是并发发出的，绝不能共用一个。
 
-    `inside_query=True` 声明「本次调用是 `query_scope()` 内的两栏之一」——
-    由调用方显式给出，**不由本函数从锁状态推断**（见 `_get`）。默认 `False`
-    即「查询之外的调用」：受逐调用节流，且不与门内的两栏并发。
+    `inside_query`（**必传**）声明「本次调用是不是 `query_scope()` 内的两栏之一」——
+    由调用方显式给出，**不由本函数从锁状态推断、也不给默认值**（见 `_get`：
+    漏传的后果是永久死锁，所以这里要的是 `TypeError` 而不是一个「猜错就挂死」的默认值）。
+    `True` = 本次是门内两栏之一；`False` = 查询之外的调用（受逐调用节流，
+    且不与门内的两栏并发）。
     """
     if page < 1 or page > MAX_PAGES:
         raise LibraryError(f"页码越界：{page}（允许 1..{MAX_PAGES}）")
@@ -373,8 +425,8 @@ def list_domains(*, session=None) -> list[str]:
     拿不到（网络失败 + 无旧缓存 / facet 没了且无旧缓存）→ 返回 `[]`，调用方据此
     不做库级收窄。**不抛错** —— 选库是增强，不是主干。
 
-    **探针是「查询之外」的调用**：走 `_get` 的默认路径（逐调用节流 + 整段持有
-    `_query_lock`），所以别的请求正在门内做双 scope 检索时，本探针会排队等它，
+    **探针是「查询之外」的调用**：走 `_get(... , inside_query=False)`（逐调用节流 +
+    整段持有 `_query_lock`），所以别的请求正在门内做双 scope 检索时，本探针会排队等它，
     不会把上游在飞并发顶到 3。**不可在 `query_scope()` 内部调用**（会自锁）。
     """
     cached = _read_cache()
@@ -383,7 +435,7 @@ def list_domains(*, session=None) -> list[str]:
 
     params = build_params(SCOPE_EXTERNAL, _DOMAIN_PROBE_Q)
     try:
-        data = _get(SEARCH_PATH, params, session)
+        data = _get(SEARCH_PATH, params, session, inside_query=False)
     except LibraryError:
         return _read_stale_cache()
     for facet in data.get("facets") or []:
