@@ -11,7 +11,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import apple_script, banweb, canvas_client, credentials, files_downloader, llm_client
+from . import (apple_script, banweb, canvas_client, credentials, files_downloader,
+               library_areas, library_client, library_query, llm_client)
 
 app = FastAPI(title="CanvBridge")
 
@@ -174,6 +175,15 @@ class SummarizeSyllabusRequest(BaseModel):
     llm_model: str
     course_id: int
     language: str = "zh"
+
+
+class LibrarySearchRequest(LLMConfig):
+    text: str = ""
+    area: str | None = None
+    page: int = 1
+    # 第 1 页不带 parsed（后端调 LLM 解析）；第 2 页起由前端原样回传，
+    # 后端**不再调 LLM** —— 否则每页的检索式都可能不同，结果集中途漂移。
+    parsed: dict | None = None
 
 
 @app.get("/")
@@ -805,3 +815,55 @@ def banweb_write(req: BanwebWriteRequest):
                 "updated": updated, "removed": removed, "errors": errors}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+# ---------- 图书馆检索（Ex Libris Primo，全程零登录） ----------
+
+@app.post("/api/library/areas")
+def library_areas_endpoint():
+    """学科领域清单。**拿不到不是错误**：available=False，前端整个不渲染选择器。"""
+    try:
+        return {"ok": True, **library_areas.load_areas()}
+    except Exception as exc:          # 本模块内部已尽力兜底，这里是最后一道
+        return {"ok": True, "available": False, "areas": [], "error": str(exc)}
+
+
+@app.post("/api/library/search")
+def library_search(req: LibrarySearchRequest):
+    """馆藏 + 外部数据库两块检索。全程零登录。"""
+    if req.page < 1 or req.page > library_client.MAX_PAGES:
+        return {"ok": False, "error": f"页码越界：{req.page}"}
+
+    warnings: list[str] = []
+    domains = library_client.list_domains()
+    area_catalog = library_areas.load_areas()
+    area_names = {a["code"]: a["name"] for a in area_catalog["areas"]}
+
+    if req.parsed is not None:
+        # 翻页路径：不碰 LLM（spec §5.3）。parsed 是客户端可传的输入，必须归一化。
+        parsed = library_query.validate_parsed(req.parsed, known_domains=domains)
+        if not parsed["keywords"] and not parsed["synonyms"]:
+            return {"ok": False, "error": "parsed 缺少 keywords"}
+    else:
+        if not (req.text or "").strip():
+            return {"ok": False, "error": "缺少 text 或 parsed"}
+        parsed, warnings = library_query.parse_natural(
+            req.llm_base_url, req.llm_api_key, req.llm_model, req.text,
+            area=req.area, area_names=area_names, domains=domains)
+        # 领域提示是「不被丢弃的提示」（spec §6）：LLM 降级丢掉了也要补回来。
+        if req.area and req.area not in parsed["areas"]:
+            parsed["areas"].insert(0, req.area)
+
+    q = library_query.build_q(parsed)
+    blocks = {}
+    try:
+        for scope, key in ((library_client.SCOPE_LOCAL, "local"),
+                           (library_client.SCOPE_EXTERNAL, "external")):
+            include, exclude = library_query.compile_filters(parsed, scope)
+            blocks[key] = library_client.search(
+                scope, q, q_include=include, q_exclude=exclude, page=req.page)
+    except Exception as exc:
+        # 上游失败也把 parsed 带回去 —— 否则前端第 2 页起就回传不了了。
+        return {"ok": False, "error": str(exc), "parsed": parsed, "warnings": warnings}
+
+    return {"ok": True, "parsed": parsed, "warnings": warnings, **blocks}

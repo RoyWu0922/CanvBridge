@@ -983,3 +983,195 @@ def test_download_files_skips_when_legacy_path_exists(tmp_path, monkeypatch):
     assert body["skipped"] == [str(legacy)]
     assert called == []          # 旧布局命中 → 一个字节都不下载
     assert not dest.exists()     # 也不搬到新路径
+
+
+# ---------- 图书馆端点 ----------
+
+def _patch_library(monkeypatch, calls=None):
+    """把三个新模块全部换成替身。calls 用来断言 LLM 有没有被调到。"""
+    from backend import library_areas, library_client, library_query
+    monkeypatch.setattr(library_areas, "load_areas",
+                        lambda **k: {"available": True,
+                                     "areas": [{"code": "comp", "name": "Computer Science"}]})
+    monkeypatch.setattr(library_client, "list_domains", lambda **k: ["MEDLINE"])
+    if calls is None:
+        calls = []
+    monkeypatch.setattr(library_query, "parse_natural",
+                        lambda *a, **k: (calls.append("llm") or
+                                         ({"keywords": ["ml"], "synonyms": [], "year_from": None,
+                                           "year_to": None, "rtype": [], "language": None,
+                                           "open_access_only": False, "peer_reviewed_only": False,
+                                           "exclude_retracted": False, "areas": [], "domains": [],
+                                           "explanation": ""}, [])))
+    monkeypatch.setattr(library_client, "search",
+                        lambda scope, q, **k: {"scope": scope,
+                                               "items": [{"title": scope, "url": "u",
+                                                          "record_id": "r"}],
+                                               "count": 5, "page": k.get("page", 1),
+                                               "has_more": False})
+    return calls
+
+
+def test_library_areas_endpoint(monkeypatch):
+    _patch_library(monkeypatch)
+    r = client.post("/api/library/areas", json={})
+    assert r.json() == {"ok": True, "available": True,
+                        "areas": [{"code": "comp", "name": "Computer Science"}]}
+
+
+def test_library_areas_unavailable_is_not_an_error(monkeypatch):
+    """拿不到不是错误 —— 前端据此不渲染选择器，不该看到红字。"""
+    from backend import library_areas
+    monkeypatch.setattr(library_areas, "load_areas", lambda **k: {"available": False, "areas": []})
+    body = client.post("/api/library/areas", json={}).json()
+    assert body["ok"] is True and body["available"] is False
+
+
+def test_library_search_returns_two_blocks(monkeypatch):
+    calls = _patch_library(monkeypatch)
+    r = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "text": "ml papers"})
+    body = r.json()
+    assert body["ok"] is True
+    assert body["local"]["items"][0]["title"] == "MyInstitution"
+    assert body["external"]["items"][0]["title"] == "CentralIndex"
+    assert calls == ["llm"]
+
+
+def test_library_search_second_page_does_not_call_llm(monkeypatch):
+    """spec §5.3 核心：翻页绝不重新调用 LLM ——
+    否则 LLM 两次产出不同，第 2 页的检索式与第 1 页不同，结果集中途漂移。
+
+    **text 与 parsed 一起传**是刻意的：只传 parsed 的话，一旦有人把 `parsed`
+    分支删掉，端点会在「缺少 text 或 parsed」处提前返回，用例虽然也会红，
+    但红在 `ok is True` 上 —— 真正该管事的 `calls == []` 那行根本没被走到，
+    等于「不调 LLM」这条不变量没有任何一行断言替它把关。带上 text 之后，
+    被删掉分支的实现会**真的走到 LLM 调用点**，只有 `calls == []` 红了才算数。
+    """
+    calls = _patch_library(monkeypatch)
+    parsed = {"keywords": ["ml"], "synonyms": [], "year_from": None, "year_to": None,
+              "rtype": [], "language": None, "open_access_only": False,
+              "peer_reviewed_only": False, "exclude_retracted": False,
+              "areas": [], "domains": [], "explanation": ""}
+    r = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
+        "text": "ml papers", "page": 2, "parsed": parsed})
+    assert r.json()["ok"] is True
+    # 页码必须**传到上游 search**：替身把收到的 page 原样回显，写成 page=1
+    # 的实现会在这里露馅（否则「翻页」= 永远看第 1 页，而无一用例会红）。
+    assert r.json()["local"]["page"] == 2 and r.json()["external"]["page"] == 2
+    assert calls == []          # LLM 一次都没被调 —— parsed 在就绝不重新解析
+
+
+def test_library_search_page_beyond_max_rejected(monkeypatch):
+    """上限由后端挡 —— 前端不显示按钮拦不住改请求的人。"""
+    _patch_library(monkeypatch)
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
+        "text": "x", "page": 6}).json()
+    assert body["ok"] is False and "页码" in body["error"]
+
+
+def test_library_search_requires_text_or_parsed(monkeypatch):
+    _patch_library(monkeypatch)
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m"}).json()
+    assert body["ok"] is False
+
+
+def test_library_search_wraps_upstream_failure(monkeypatch):
+    _patch_library(monkeypatch)
+    from backend import library_client
+
+    def boom(scope, q, **k):
+        raise library_client.LibraryError("上游炸了")
+
+    monkeypatch.setattr(library_client, "search", boom)
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "text": "x"}).json()
+    assert body["ok"] is False and "上游炸了" in body["error"]
+
+
+def test_library_search_passes_area_hint_to_llm(monkeypatch):
+    """area 传给 LLM 当提示，且**不**被当成过滤参数（spec §4.1）。"""
+    seen = {}
+    from backend import library_query
+    _patch_library(monkeypatch)
+
+    def spy(*a, **k):
+        seen.update(k)
+        return ({"keywords": ["x"], "synonyms": [], "year_from": None, "year_to": None,
+                 "rtype": [], "language": None, "open_access_only": False,
+                 "peer_reviewed_only": False, "exclude_retracted": False,
+                 "areas": ["comp"], "domains": [], "explanation": ""}, [])
+
+    monkeypatch.setattr(library_query, "parse_natural", spy)
+    client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
+        "text": "x", "area": "comp"})
+    assert seen.get("area") == "comp"
+    # 领域词表同样要喂给 LLM：它只能从这份名单里挑 domains，否则 LLM 编出来的
+    # 库名会在 parse_natural 里被整批丢掉（domains_dropped）。
+    assert seen.get("domains") == ["MEDLINE"]
+
+
+def test_library_search_keeps_area_when_llm_degrades(monkeypatch):
+    """LLM 降级掉了，用户选的 area 也必须留在 parsed 里（spec §6「不被丢弃的提示」）。
+
+    降级路径正是这条兜底的唯一用武之地：parse_natural 返回的是 fallback_parsed，
+    areas 天然为空，端点是最后一道把用户选择补回去的地方。
+    """
+    from backend import library_query
+    _patch_library(monkeypatch)
+    monkeypatch.setattr(library_query, "parse_natural",
+                        lambda *a, **k: (dict(library_query.EMPTY_PARSED,
+                                              keywords=["x"]), ["llm_degraded"]))
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
+        "text": "x", "area": "comp"}).json()
+    assert body["ok"] is True
+    assert body["parsed"]["areas"] == ["comp"]
+
+
+def test_library_search_normalizes_client_supplied_parsed(monkeypatch):
+    """回传的 parsed 是**客户端输入**：未知 rtype / 词表外的 domain / 越界年份
+    都必须在端点上被归一化掉，不能原样编译进上游查询（会静默 0 命中）。
+
+    这些值都是第 2 页起前端原样回传的，中间可能被改过、也可能是旧版本存的。
+    """
+    _patch_library(monkeypatch)
+    seen = {}
+    from backend import library_client
+
+    def spy(scope, q, **k):
+        seen[scope] = k
+        return {"scope": scope, "items": [], "count": 0, "page": 1, "has_more": False}
+
+    monkeypatch.setattr(library_client, "search", spy)
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "page": 2,
+        "parsed": {"keywords": ["x"], "rtype": ["bogus_type"],
+                   "domains": ["NotInTheCatalog"], "year_from": 1500}}).json()
+    assert body["ok"] is True
+    include = seen["CentralIndex"].get("q_include") or []
+    assert not any("bogus_type" in f for f in include)          # 未知 rtype 被剔
+    assert not any("NotInTheCatalog" in f for f in include)     # 词表外的库名被剔
+    assert not any(f.startswith("creationdate") for f in include)   # 1800 年前的年份被剔
+
+
+def test_library_search_compiles_two_different_param_sets(monkeypatch):
+    """两个 scope 的过滤参数**不是同一套**（spec §6）。"""
+    _patch_library(monkeypatch)
+    seen = {}
+    from backend import library_client
+
+    def spy(scope, q, **k):
+        seen[scope] = k
+        return {"scope": scope, "items": [], "count": 0, "page": 1, "has_more": False}
+
+    monkeypatch.setattr(library_client, "search", spy)
+    client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
+        "text": "x", "parsed": {"keywords": ["x"], "peer_reviewed_only": True}})
+    assert "tlevel,exact,peer_reviewed" in (seen["CentralIndex"].get("q_include") or [])
+    assert "tlevel,exact,peer_reviewed" not in (seen["MyInstitution"].get("q_include") or [])
