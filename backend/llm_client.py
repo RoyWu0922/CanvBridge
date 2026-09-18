@@ -103,9 +103,23 @@ def _call_chat(base_url: str, api_key: str, model: str, prompt: str,
         raise requests.HTTPError(f"{resp.status_code} {resp.reason} from {url} — {body}")
     resp.raise_for_status()
     data = resp.json()
-    if not data.get("choices"):
-        raise ValueError("LLM 响应无 choices")
-    return data["choices"][0]["message"].get("content") or ""
+    # 形状守卫：模型完全可能回一段**合法 JSON 但顶层是 list**（或 message 不是对象）。
+    # 原写法 `data.get("choices")` 在这种情况下抛 AttributeError，而 AttributeError
+    # **不在**归一化层那个 `except (requests.RequestException, ValueError, KeyError,
+    # TypeError, RuntimeError)` 元组里 —— 它会穿出去，被端点的宽 except 兜住，
+    # 于是用户看到的是 `'list' object has no attribute 'get'` 这种解释器内部字符串。
+    # 抛 **TypeError** 而不是 ValueError：这里拿到的是合法 JSON，说「无法解析为 JSON」
+    # 不诚实；TypeError 落进归一化层「AI 返回内容不可用」那一支，对「形状不对」正好准确，
+    # 且不需要新增异常类或分支。
+    if not isinstance(data, dict):
+        raise TypeError("AI 响应顶层不是 JSON 对象")
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise TypeError("AI 响应缺少 choices")
+    msg_obj = choices[0].get("message") if isinstance(choices[0], dict) else None
+    if not isinstance(msg_obj, dict):
+        raise TypeError("AI 响应 message 形状不对")
+    return msg_obj.get("content") or ""
 
 
 def _parse_json(text: str) -> dict:
@@ -237,7 +251,12 @@ _MIN_BODY = 400           # 每封的下限：宁可超预算，也不把邮件�
 
 
 def trim_bodies(mails: list[dict], budget: int = _MAX_MAIL_TOTAL) -> list[dict]:
-    """单封截断 + 总量预算。**条数永远不变**（对齐靠 index，丢条会整体错位）。"""
+    """单封截断 + 总量预算。**条数永远不变**（对齐靠 index，丢条会整体错位）。
+
+    **下限优先于总额**：`len(mails) > 50` 时 `budget // n < _MIN_BODY`，`max()` 取到下限，
+    于是实际总额是 `n × _MIN_BODY` —— 可以超 `_MAX_MAIL_TOTAL` 达 10×（400 × 500 封 = 20 万）。
+    这是有意的：宁可超预算，也不把邮件压成 0 字。
+    """
     n = max(1, len(mails))
     cap = min(_MAX_BODY, max(_MIN_BODY, budget // n))
     return [{**m, "body": (m.get("body") or "")[:cap]} for m in mails]

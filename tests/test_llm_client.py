@@ -332,3 +332,61 @@ def test_summarize_mail_reports_generic_message_for_unknown_failure(monkeypatch)
     r = llm_client.summarize_mail("u", "k", "m", [_mail(0)])
     assert r["groups"] == []
     assert "返回内容不可用" in r["warnings"][0]
+
+
+def _post_returning(value):
+    """把 requests.post 换成一个 `.json()` 恒返回 `value` 的假响应。"""
+    class _Resp:
+        ok = True
+        text = ""
+        status_code = 200
+        reason = "OK"
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return value
+    return lambda *a, **k: _Resp()
+
+
+def test_summarize_mail_reports_unusable_for_non_dict_json(monkeypatch):
+    """合法 JSON 但**顶层是 list**：必须是「内容不可用」，绝不能让解释器内部字符串漏出去。
+
+    刻意替到 `requests.post` 这一层而不是 `_call_chat`：形状错误的现场在 `_call_chat`
+    里面，替掉 `_call_chat` 就整个绕开了被修的那段代码，用例会变成空转。
+    修之前这里漏出去的是 `AI 总结失败：'list' object has no attribute 'get'`。
+    """
+    monkeypatch.setattr(llm_client.requests, "post", _post_returning([1, 2]))
+    r = llm_client.summarize_mail("u", "k", "m", [_mail(0)])
+    assert r["groups"] == []
+    # 肯定式：钉住「就是这一句」
+    assert "返回内容不可用" in r["warnings"][0]
+    # 钉住「没有 repr 漏出去」—— 断言的是确切的坏串，不是「不等于别的文案」
+    assert "has no attribute" not in r["warnings"][0]
+
+
+def test_summarize_mail_reports_unusable_for_non_dict_message(monkeypatch):
+    """第二层形状：choices 是 list、元素不是对象（或 message 不是对象）同样只报「不可用」。"""
+    monkeypatch.setattr(llm_client.requests, "post",
+                        _post_returning({"choices": [{"message": "不是对象"}]}))
+    r = llm_client.summarize_mail("u", "k", "m", [_mail(0)])
+    assert r["groups"] == []
+    assert "返回内容不可用" in r["warnings"][0]
+
+
+def test_summarize_mail_requests_jsondecodeerror_takes_parse_branch(monkeypatch):
+    """两条分支的**先后**本身是语义，不是风格。
+
+    `requests.exceptions.JSONDecodeError` 的 MRO 同时含 `json.JSONDecodeError` 与
+    `requests.RequestException`（实测 MRO：[JSONDecodeError, InvalidJSONError,
+    RequestException, OSError, JSONDecodeError]），所以它**两条都够得着**，落在哪一支
+    由代码里的先后决定：先判 JSONDecodeError ⇒ 报「无法解析为 JSON」（响应体本身不是
+    JSON，用户该去查模型返回），先判 RequestException ⇒ 报「网络或鉴权」（用户该去查
+    API key）。两句让用户做的下一步不同。把两支对调 → 本用例变红。
+    """
+    def boom(*a, **k):
+        raise requests.exceptions.JSONDecodeError("x", "doc", 0)
+    monkeypatch.setattr(llm_client, "_call_chat", boom)
+    r = llm_client.summarize_mail("u", "k", "m", [_mail(0)])
+    assert r["groups"] == []
+    # 肯定式：钉住「就是解析那一支」，不写成「不等于网络那一支」
+    assert "返回内容无法解析为 JSON" in r["warnings"][0]

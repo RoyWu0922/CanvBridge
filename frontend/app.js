@@ -3020,7 +3020,7 @@ async function loadMail(){
   const r = await api("mail/list", { days: 7 });
   mailState.loading = false;
   if(r.ok !== true){
-    mailState.error = r.error || "";
+    mailState.error = r.error || t("mail.load_failed");
     renderMail();
     return false;          // 多半是 Okta 会话失效 —— 与 AIMS 同一个会话
   }
@@ -3112,15 +3112,25 @@ function askConfirm(titleText, bodyText){
 }
 
 /* AI 总结：取信 + 两级归类 + 摘要/DDL 都由后端一次做完（POST /api/mail/summarize）。
-   失败一律是 HTTP 200 + `{ok:false,error}`（`api()` 的契约），故只判 `ok`，不判状态码。 */
+   失败一律是 HTTP 200 + `{ok:false,error,reason}`（`api()` 的契约），故只判 `ok`，不判状态码。
+   `reason` 是后端在失败路径上多报的一个键（`"mail"` = 取信阶段、`"llm"` = AI 阶段）：
+   同一个 `except` 把两段合成一条失败通道时前端无法区分，于是「Okta 会话死了」会被
+   报成「AI 总结失败」—— 用户照着去查 API key，方向是错的。分流后取信失败才发登录问询，
+   **且必须发在 `withBusy` 之外**：`#overlay` 的 z-index(50) 高于弹层(40)，在遮罩里弹会被盖住。 */
 async function mailSummarize(){
   if(!mailState.mails.length){ setStatus(t("mail.need_refresh"), "err"); return; }
   const s = settings();
+  let failReason = "", failMsg = "";
   await withBusy(t("mail.summarize"), $("btnMailSummary"), async () => {
     const r = await api("mail/summarize", {
       llm_base_url: s.llm_base_url, llm_api_key: s.llm_api_key, llm_model: s.llm_model,
       days: 7, language: LANG() });
-    if(r.ok !== true){ setStatus(t("mail.ai_failed") + (r.error || ""), "err"); return; }
+    if(r.ok !== true){
+      failReason = r.reason || "llm";        // 老后端不带 reason：当 AI 阶段，绝不误发登录问询
+      failMsg = r.error || "";
+      setStatus((failReason === "mail" ? t("mail.load_failed") : t("mail.ai_failed")) + failMsg, "err");
+      return;
+    }
     mailState.mails = r.mails || mailState.mails;
     mailState.groups = r.groups || [];
     /* 警告整列照放，但分隔符跟语言走（裁定 R6）：后端文案是按 language 本地化的，
@@ -3131,6 +3141,10 @@ async function mailSummarize(){
       setStatus(r.warnings.join(LANG() === "zh" ? "；" : "; "), "info", 8000);
     renderMail();
   });
+  /* 遮罩已收（withBusy 返回）：取信阶段失败多半是 Okta 会话失效 —— 与 AIMS 同一个会话，
+     给一次手动登录的机会。AI 阶段失败**不**问：那是 API key / 模型服务的问题，让用户去
+     重登 AIMS 是另一种「指错方向」（同 memory 里 AIMS 那条坑）。 */
+  if(failReason === "mail") await offerManualLogin(failMsg);
 }
 
 /* 两级分组：课程 → 类型。还没点过 AI 总结（groups 为空）时退回 Task 7 的平铺列表。 */
@@ -3164,7 +3178,12 @@ function mailItemHtml(it, m, gi, ti, ii){
      抛 TypeError，并把 renderMail 变成静默的未处理 rejection（`mailState.groups` 此时已
      赋值 ⇒ 之后每次 renderMail 都跟着炸）。此处**不能先 filter 再 map**：`ei` 就是
      `data-e`，而点击处理器按**原始**下标 `arr[Number(b.dataset.e)]` 取行，过滤会把按钮
-     重新编号、取行却仍按原下标 —— 按钮显示的与它写下去的会是两条不同的 DDL。故按原下标早退。 */
+     重新编号、取行却仍按原下标 —— 按钮显示的与它写下去的会是两条不同的 DDL。故按原下标早退。
+
+     契约归属：**元素级校验的契约在这里**（下面两条 `!e || typeof e !== "object"`）。
+     后端 `_normalize_groups` 只保证 `calendar_events`/`reminders` 这两个键是 list
+     （不是 list 就换成 `[]`），**不保证元素形状** —— 元素可以是 `null` 或任意标量。
+     别把这段早退当成冗余删掉：删了就是本段开头描述的那种静默未处理 rejection。 */
   const evs = (it.calendar_events || []).map((e, ei) => {
     if(!e || typeof e !== "object") return "";
     return `<div class="mail-ddl"><span>${esc(e.title || "")} · ${esc(e.start || "")}</span>

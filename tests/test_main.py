@@ -1795,6 +1795,11 @@ def test_mail_summarize_joins_bodies_and_groups(monkeypatch):
     # 摊进响应仍能全绿。真正要钉的是「响应只有这四个键」，凭证侧的字段级防护
     # 在 tests/test_mail_client.py。
     assert set(body) == {"ok", "mails", "groups", "warnings"}
+    # 逐条邮件的键集合也要钉住：顶层白名单管不到元素，而 `mails` 正是前端的回指表。
+    # 用 `<=` 而不是 `==`：端点允许往后加字段（本轮的失败路径就加过 `reason`），
+    # 这里守的是「不许把 req 的字段（llm_api_key 等）摊进元素里」。
+    assert all(set(m) <= {"id", "subject", "sender", "received", "is_read", "index", "body"}
+               for m in body["mails"])
 
 
 def test_mail_summarize_indexes_are_contiguous(monkeypatch):
@@ -1848,7 +1853,42 @@ def test_mail_summarize_failure_is_200_json(monkeypatch):
     r = TestClient(main.app).post("/api/mail/summarize", json={
         "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m"})
     assert r.status_code == 200
-    assert r.json() == {"ok": False, "error": "邮箱会话已失效"}
+    # 失败路径的形状 = 原来的两键 + `reason`（本轮新增，前端据此分流登录问询）。
+    # 这里刻意写成整字典相等：失败响应的键集合是前端契约的一部分，多一个少一个都该红。
+    assert r.json() == {"ok": False, "reason": "mail", "error": "邮箱会话已失效"}
+
+
+def test_mail_summarize_fetch_bodies_failure_reports_mail_phase(monkeypatch):
+    """取信阶段（list_mail / fetch_bodies）炸了 → reason == "mail"。
+
+    前端据此才敢发手动登录问询：这一段失败多半是 Okta 会话失效。若把 phase 写死在
+    "llm" 上，用户会被指去查 API key —— 方向是错的。
+    """
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: [
+        {"id": "A", "subject": "作业", "sender": "", "received": "", "is_read": False}])
+
+    def boom(items):
+        raise mail_client.MailError("邮箱会话已失效")
+    monkeypatch.setattr(mail_client, "fetch_bodies", boom)
+    body = TestClient(main.app).post("/api/mail/summarize", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m"}).json()
+    assert body["ok"] is False
+    assert body["reason"] == "mail"
+
+
+def test_mail_summarize_llm_failure_reports_llm_phase(monkeypatch):
+    """AI 阶段炸了 → reason == "llm"：**不许**发手动登录问询（那是 API key 的问题）。"""
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: [
+        {"id": "A", "subject": "作业", "sender": "", "received": "", "is_read": False}])
+    monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "b"})
+
+    def boom(*a, **k):
+        raise RuntimeError("模型服务 500")
+    monkeypatch.setattr(llm_client, "summarize_mail", boom)
+    body = TestClient(main.app).post("/api/mail/summarize", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m"}).json()
+    assert body["ok"] is False
+    assert body["reason"] == "llm"
 
 
 def test_mail_summarize_no_mail_skips_llm(monkeypatch):

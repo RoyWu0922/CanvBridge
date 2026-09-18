@@ -655,9 +655,15 @@ class _Ctx:
         return p
 
 
-def test_is_mail_url_matches_both_owa_hosts():
+def test_is_mail_url_matches_all_mail_hosts():
+    """`MAIL_HOSTS` 现在是**三个**主机：两个 OWA 域名 + 邮箱登录中继。
+
+    原名 `test_is_mail_url_matches_both_owa_hosts` 只断言前两个 —— 名字与内容
+    双双停在「两个主机」的年代，第三个主机被漏在用例之外。
+    """
     assert banweb._is_mail_url("https://outlook.cloud.microsoft/mail/")
     assert banweb._is_mail_url("https://outlook.office.com/mail/")
+    assert banweb._is_mail_url("https://login.microsoftonline.com/common/oauth2/v2.0/authorize")
     assert not banweb._is_mail_url("https://banweb.cityu.edu.hk/x")
     assert not banweb._is_mail_url("")
 

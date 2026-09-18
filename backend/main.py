@@ -969,7 +969,13 @@ def mail_list(req: MailListRequest = MailListRequest()):
 
 @app.post("/api/mail/summarize")
 def mail_summarize(req: MailSummaryRequest):
-    """取信 + AI 两级归类/摘要/DDL。取信仍是纯读，不改已读状态。"""
+    """取信 + AI 两级归类/摘要/DDL。取信仍是纯读，不改已读状态。
+
+    失败路径**只多报一个** `reason` 键（成功路径的形状一个字节没变）：单靠 `error`
+    这一条通道，前端无法区分「取信阶段会话死了」与「AI 阶段炸了」，只能一律说
+    「AI 总结失败」—— 前者其实是 Okta 会话失效（该去重登），用户被指去查 API key。
+    """
+    phase = "mail"
     try:
         mails = mail_client.list_mail(req.days)
         if not mails:
@@ -979,9 +985,10 @@ def mail_summarize(req: MailSummaryRequest):
         for i, m in enumerate(mails):
             m["index"] = i
             m["body"] = bodies.get(m["id"], "")
+        phase = "llm"
         r = llm_client.summarize_mail(
             req.llm_base_url, req.llm_api_key, req.llm_model, mails,
             language=req.language)
         return {"ok": True, "mails": mails, **r}
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "reason": phase, "error": str(exc)}

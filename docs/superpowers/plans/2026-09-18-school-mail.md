@@ -21,7 +21,7 @@
 - **测试用 `.venv/bin/python -m pytest`**（系统 Python 没有 pytest）。当前基线 **395 passed**。
 - **新测试必须做变异检验**——临时改坏实现，确认测试真的失败，再还原。
 - **token 绝不落盘、绝不返回前端。** 只在后端内存中存活。
-- **绝不后台轮询、绝不自动重试登录。** 只在用户点按钮时抓；失败即停，复用已有 `#loginPrompt` 弹窗问是否手动登录。
+- **绝不后台轮询、绝不自动重试登录。** 只在用户点按钮时抓；失败即停，复用 `#loginPrompt` 弹窗问是否手动登录（该弹窗由**本分支**的 `00d6d6f` 引入，不是分支起点上就有的）。
 - **绝不调用 `MarkAsRead`。** `FindItem`/`GetItem` 是纯读的（spec §3.4 实测），不要画蛇添足加还原逻辑。
 - **不动 `DT` cookie。** 设备信任是免 MFA 的唯一凭据。
 - **不改动 AIMS 现有行为。** 对 `banweb.py` 的改动只允许「排除邮件域」这一件事。
@@ -1757,7 +1757,7 @@ $("btnMailRefresh").onclick = () => refreshMail();
 
 **注意**：`$("btnMailRefresh").onclick` 是顶层语句，`app.js` 在 `shell.js` 之前加载但 `index.html` 的 DOM 早已就绪（`app.js` 在 `</body>` 前），与现有 `$("btnWriteReminders").onclick` 写法一致，可直接用。
 
-`offerManualLogin(autoError)` 是 `frontend/app.js:158` 已有的函数，作用就是弹 `#loginPrompt` 问「是否手动登录」，确认后调 `/api/banweb/open_login`。邮箱与 AIMS 共用同一个 Okta 会话，所以复用它正是 spec §9 要求的做法，**不要另写一套**。
+`offerManualLogin` / `#loginPrompt`（由本分支的 `00d6d6f` 引入）就是弹 `#loginPrompt` 问「是否手动登录」，确认后调 `/api/banweb/open_login`。邮箱与 AIMS 共用同一个 Okta 会话，所以复用它正是 spec §9 要求的做法，**不要另写一套**。
 
 - [ ] **Step 7: 加样式**
 
