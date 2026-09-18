@@ -662,6 +662,34 @@ def test_is_mail_url_matches_both_owa_hosts():
     assert not banweb._is_mail_url("")
 
 
+def test_mail_hosts_stay_disjoint_from_aims_hosts():
+    """`_find_page` 第一段循环里的邮件过滤之所以是「无操作」，全靠这条不变式：
+    MAIL_HOSTS 与 {BANWEB, LOGIN_HOST} 不相交。日后加邮件域时若撞上 AIMS 的域名，
+    这条会立刻炸 —— 那时第一段循环的过滤不但会咬合，还会把 AIMS 登录页一起跳过。
+    这里也顺带钉住 LOGIN_HOST（Okta host）**不在** MAIL_HOSTS 里。"""
+    assert not any(
+        h.startswith(banweb.BANWEB) or h.startswith(banweb.LOGIN_HOST)
+        for h in banweb.MAIL_HOSTS
+    )
+
+
+def test_is_mail_url_covers_mail_login_relay_host():
+    """邮箱登录中继（login.microsoftonline.com）也必须算邮件域。
+
+    OWA 冷启动要经它跳转，SSO 期间邮件 tab 就停在这个 host 上；漏掉它，
+    `_find_page` 的兜底循环便会把这个 tab 交给 AIMS，再被 goto(TERM_PAGE)
+    导航走 —— 这正是本任务要消灭的那个 bug，只是换了个窗口期。
+    """
+    assert banweb._is_mail_url("https://login.microsoftonline.com/common/oauth2/v2.0/authorize")
+    assert banweb._is_mail_url("https://outlook.office.com/mail/")
+
+
+def test_find_page_never_returns_a_mail_login_relay_tab():
+    ctx = _Ctx(["https://login.microsoftonline.com/common/oauth2/v2.0/authorize"])
+    assert banweb._find_page(ctx) is None
+    assert ctx.new_pages == 0
+
+
 def test_find_page_prefers_aims_page_over_mail_tab():
     ctx = _Ctx(["https://outlook.cloud.microsoft/mail/",
                 "https://banweb.cityu.edu.hk/twkwkmgr.P_DispMyWeek"])
@@ -710,9 +738,71 @@ def test_ensure_mail_page_returns_mail_tab_not_aims_tab(monkeypatch):
 
 
 def test_ensure_mail_page_raises_when_browser_never_came_up(monkeypatch):
-    """_ensure_browser 抛错时不要吞 —— 原样传播，让上层报「会话已失效」。"""
+    """_ensure_browser 抛错时不要吞 —— 原样传播，让上层报「会话已失效」。
+
+    `_ctx` 必须**置为可用哨兵**：否则实现吞掉 _ensure_browser 的异常时，会接着
+    撞上 `if _ctx is None` 守卫、抛出同类型的 BanwebError，用例照样绿 —— 那就
+    分不清「原样传播」与「自己抛」。置上哨兵后，吞掉异常的实现会继续走到
+    `_find_mail_page` 并**正常返回**，`pytest.raises` 立刻以 DID NOT RAISE 判红。
+    """
     def boom(**k):
         raise banweb.BanwebError("AIMS 登录窗口未打开")
     monkeypatch.setattr(banweb, "_ensure_browser", boom)
-    with pytest.raises(banweb.BanwebError):
+    monkeypatch.setattr(banweb, "_ctx", _Ctx(["https://outlook.cloud.microsoft/mail/"]))
+    with pytest.raises(banweb.BanwebError, match="AIMS 登录窗口未打开"):
         banweb._ensure_mail_page()
+
+
+# --- 轮询（launch=False）不得优雅退出 Chrome（spec §3.2/§11）---
+
+class _Browser:
+    """browser 替身：只记 close() 被调了几次。"""
+
+    def __init__(self, ctx):
+        self.contexts = [ctx]
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+
+
+class _Driver:
+    """Playwright 驱动替身：connect_over_cdp 一律交回给定 browser 替身。"""
+
+    def __init__(self, browser):
+        self.chromium = self
+        self._browser = browser
+
+    def connect_over_cdp(self, url):
+        return self._browser
+
+
+def _poll(monkeypatch, ctx):
+    """用替身驱动 `_ensure_browser(launch=False)`，返回 browser 替身。"""
+    browser = _Browser(ctx)
+    monkeypatch.setattr(banweb, "_pw", _Driver(browser))
+    monkeypatch.setattr(banweb, "_page", None)
+    monkeypatch.setattr(banweb, "_ctx", None)
+    with pytest.raises(banweb.BanwebError):
+        banweb._ensure_browser(launch=False)
+    return browser
+
+
+def test_poll_with_only_mail_tab_must_not_close_browser(monkeypatch):
+    """轮询碰到「有页面、但没有 AIMS 页（只剩邮件 tab）」时**绝不能** close。
+
+    `browser.close()` 是优雅退出 Chrome —— spec §3.2/§11 明确把它列为会**丢
+    Okta 会话**的动作，而且它还会顺带关掉用户刚打开的邮件 tab。排除邮件 tab
+    之前，这条 close 尾只可能出现在「零页面」；排除之后「有页面但没 AIMS 页」
+    也会落到这里，于是轮询就能把会话关掉。只对真正的零页面保留 close。
+    """
+    ctx = _Ctx(["https://outlook.cloud.microsoft/mail/"])
+    browser = _poll(monkeypatch, ctx)
+    assert browser.close_calls == 0
+    assert ctx.new_pages == 0        # 顺带：轮询绝不弹窗
+
+
+def test_poll_with_truly_empty_page_list_still_disconnects(monkeypatch):
+    """零页面那条老路径保持不变：干净断开连接，再走 needs_login。"""
+    browser = _poll(monkeypatch, _Ctx([]))
+    assert browser.close_calls == 1

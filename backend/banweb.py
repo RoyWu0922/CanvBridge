@@ -30,7 +30,14 @@ LOGIN_HOST = "https://auth.cityu.edu.hk"
 BANWEB = "https://banweb.cityu.edu.hk"
 # 学校邮箱（OWA）的 host。邮件与 AIMS 共用同一个 persistent context，
 # 但必须是两个独立的 tab —— 见 _find_page 的排除逻辑。
-MAIL_HOSTS = ("https://outlook.cloud.microsoft", "https://outlook.office.com")
+# 必须与 {BANWEB, LOGIN_HOST} **不相交**（tests/test_banweb.py 有不变式用例）：
+# 特别是**不得**把 Okta 的 auth.cityu.edu.hk 放进来 —— AIMS 自己的登录也走它，
+# 放进来会让 _find_page 第一段循环跳过 AIMS 登录页、把 AIMS 登录弄坏。
+MAIL_HOSTS = (
+    "https://outlook.cloud.microsoft",      # OWA 邮箱本体
+    "https://outlook.office.com",           # OWA 另一域名，也是邮箱冷启动入口
+    "https://login.microsoftonline.com",    # 邮箱登录中继：SSO 期间 tab 停在这里
+)
 
 
 def _is_mail_url(url: str) -> bool:
@@ -624,7 +631,7 @@ def _term_ready(page) -> bool:
         return False
 
 
-def _find_page(ctx) -> object:
+def _find_page(ctx) -> object | None:
     """挑一个 AIMS 用的页；没有可用的返回 None（由调用方决定要不要开新页）。
 
     排除邮件 tab：邮件与 AIMS 共用同一个 persistent context，若 AIMS 认领了
@@ -662,6 +669,10 @@ def _ensure_mail_page() -> object:
     绝不能改用 _ensure_browser 的返回值 —— 它给的是 AIMS 页，拿它去
     goto(MAIL_URL) 会把 AIMS tab 导航走、毁掉 AIMS 会话。两者是同一个
     persistent context 里的两个 tab，必须各拿各的。
+
+    线程/锁契约：本函数**不**自带 `_on_browser_thread(lambda: _retry_once(_run))`
+    包装、也不持 `_lock`（Playwright sync API 绑定线程），与其余 AIMS 入口的
+    写法一致 —— 调用方必须自己照那个范式包一层。
     """
     _ensure_browser(launch=True)          # 只为保证 _ctx 就绪，丢弃返回的 AIMS 页
     if _ctx is None:
@@ -904,12 +915,17 @@ def _ensure_browser(launch: bool = True, headless: bool = True):
                         # 用户主动操作且进程还活着但没窗口 → 开个新标签页当窗口
                         _page = _ctx.new_page()
                         return _page
-                    # 轮询（launch=False）：进程在但没窗口 → 视为未开窗，
-                    # 绝不自己弹窗。干净断开连接后交给下方 needs_login 分支。
-                    try:
-                        browser.close()
-                    except Exception:
-                        pass
+                    # 轮询（launch=False）：进程在但没有可用 AIMS 页 → 视为未开窗，
+                    # 绝不自己弹窗，交给下方 needs_login 分支。
+                    if not _ctx.pages:
+                        # 真的一个页面都没有 → 干净断开 driver 里的连接再走清理。
+                        try:
+                            browser.close()
+                        except Exception:
+                            pass
+                    # 页面还在（如只剩邮件 tab）⇒ **绝不** close：browser.close() 是
+                    # 优雅退出 Chrome，spec §3.2/§11 列为会**丢 Okta 会话**的动作，
+                    # 还会顺带关掉用户刚打开的邮件 tab。连接保持活着即可。
             except Exception:
                 # 附着了但用不上（如窗口刚被用户关掉）→ 先干净断开 driver 里的
                 # 连接再走清理。否则直接 kill 底层 Chrome 会打崩 driver，后续
