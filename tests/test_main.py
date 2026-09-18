@@ -1758,3 +1758,84 @@ def test_mail_list_failure_is_200_json(monkeypatch):
     r = TestClient(main.app).post("/api/mail/list", json={})
     assert r.status_code == 200
     assert r.json() == {"ok": False, "error": "邮箱会话已失效"}
+
+
+def test_mail_summarize_joins_bodies_and_groups(monkeypatch):
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: [
+        {"id": "A", "subject": "作业", "sender": "李老師",
+         "received": "2026-09-17T08:31:00Z", "is_read": False}])
+    monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "交报告"})
+    seen = {}
+
+    def fake_summarize(base, key, model, mails, language="zh"):
+        seen["mails"] = mails
+        seen["language"] = language
+        return {"groups": [], "warnings": ["w"]}
+
+    monkeypatch.setattr(llm_client, "summarize_mail", fake_summarize)
+    body = TestClient(main.app).post("/api/mail/summarize", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
+        "days": 7, "language": "zh"}).json()
+    assert body["ok"] is True
+    assert body["warnings"] == ["w"]
+    # index 是回指锚，必须从 0 连续编号
+    assert [m["index"] for m in seen["mails"]] == [0]
+    assert seen["mails"][0]["body"] == "交报告"
+    assert "token" not in json.dumps(body)
+
+
+def test_mail_summarize_indexes_are_contiguous(monkeypatch):
+    """两封起验证：index 必须是 0,1 而不是固定值 —— 前端靠它回指原文。"""
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: [
+        {"id": "A", "subject": "甲", "sender": "", "received": "", "is_read": False},
+        {"id": "B", "subject": "乙", "sender": "", "received": "", "is_read": True}])
+    monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "a", "B": "b"})
+    seen = {}
+    # 假替身必须返回 **dict**：旧写法 `seen.setdefault("m", mails) or {...}` 里
+    # setdefault 返回的是非空 mails（真值），lambda 于是交回一个 list，端点
+    # `{"ok": True, "mails": mails, **r}` 抛 TypeError 被宽 except 吞成 {ok: false}；
+    # 而断言读的 seen["m"] 正是 mails，用例照样绿 —— 端点坏了却看不出来。
+    monkeypatch.setattr(llm_client, "summarize_mail",
+                        lambda b, k, m, mails, language="zh":
+                        (seen.setdefault("m", mails), {"groups": [], "warnings": []})[1])
+    body = TestClient(main.app).post("/api/mail/summarize", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m"}).json()
+    assert body["ok"] is True
+    assert [m["index"] for m in seen["m"]] == [0, 1]
+    assert [m["body"] for m in seen["m"]] == ["a", "b"]
+
+
+def test_mail_summarize_returns_mails_too(monkeypatch):
+    """前端要把 AI 结果的 mail_index 对回原邮件 → 响应必须同时带上 mails。"""
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: [
+        {"id": "A", "subject": "作业", "sender": "", "received": "", "is_read": False}])
+    monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "b"})
+    monkeypatch.setattr(llm_client, "summarize_mail",
+                        lambda *a, **k: {"groups": [], "warnings": []})
+    body = TestClient(main.app).post("/api/mail/summarize", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m"}).json()
+    assert body["mails"][0]["id"] == "A"
+    assert body["mails"][0]["body"] == "b"
+
+
+def test_mail_summarize_failure_is_200_json(monkeypatch):
+    def boom(days):
+        raise mail_client.MailError("邮箱会话已失效")
+    monkeypatch.setattr(mail_client, "list_mail", boom)
+    r = TestClient(main.app).post("/api/mail/summarize", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": False, "error": "邮箱会话已失效"}
+
+
+def test_mail_summarize_no_mail_skips_llm(monkeypatch):
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: [])
+    monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {})
+    called = []
+    monkeypatch.setattr(llm_client, "summarize_mail",
+                        lambda *a, **k: called.append(1) or {"groups": [], "warnings": []})
+    body = TestClient(main.app).post("/api/mail/summarize", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m"}).json()
+    assert body["ok"] is True
+    assert body["mails"] == []
+    assert called == []          # 没邮件就别浪费一次 LLM 调用

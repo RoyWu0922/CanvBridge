@@ -51,6 +51,11 @@ class MailListRequest(BaseModel):
     days: int = 7
 
 
+class MailSummaryRequest(LLMConfig):
+    days: int = 7
+    language: str = "zh"
+
+
 class SyncRequest(CanvasConfig):
     course_ids: list[int]
     start_date: str
@@ -958,5 +963,25 @@ def mail_list(req: MailListRequest = MailListRequest()):
     try:
         mails = mail_client.list_mail(req.days)
         return {"ok": True, "count": len(mails), "mails": mails}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/mail/summarize")
+def mail_summarize(req: MailSummaryRequest):
+    """取信 + AI 两级归类/摘要/DDL。取信仍是纯读，不改已读状态。"""
+    try:
+        mails = mail_client.list_mail(req.days)
+        if not mails:
+            return {"ok": True, "mails": [], "groups": [], "warnings": []}
+        bodies = mail_client.fetch_bodies(mails)
+        # index 是前端把 AI 结果对回原文的锚，必须是连续整数，不能靠标题匹配
+        for i, m in enumerate(mails):
+            m["index"] = i
+            m["body"] = bodies.get(m["id"], "")
+        r = llm_client.summarize_mail(
+            req.llm_base_url, req.llm_api_key, req.llm_model, mails,
+            language=req.language)
+        return {"ok": True, "mails": mails, **r}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
