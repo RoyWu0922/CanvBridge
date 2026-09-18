@@ -1,5 +1,7 @@
-"""OWA 取信层纯函数测试。全程合成 fixture，不出网。"""
+"""OWA 取信层测试（纯函数 + I/O）。全程合成 fixture，不出网。"""
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from backend import mail_client
 
@@ -172,3 +174,111 @@ def test_jwt_exp_returns_none_on_garbage():
     assert mail_client.jwt_exp("not-a-jwt") is None
     assert mail_client.jwt_exp("") is None
     assert mail_client.jwt_exp("h." + _b64({"nope": 1}) + ".s") is None
+
+
+# --- I/O 层：替身接管浏览器与 HTTP，仍不出网 ---
+# 注意 tests/conftest.py 的 netguard：任何真实 socket 尝试都会让用例红。
+
+
+class _FakePage:
+    """只用于占位 —— _capture_token 与 _post_json 在测试里都被替身接管。"""
+    url = mail_client.MAIL_URL
+
+
+@pytest.fixture
+def no_browser(monkeypatch):
+    """把浏览器边界与 REST 边界都换成替身，并让 executor 变成同步直调。"""
+    monkeypatch.setattr(mail_client.banweb, "_on_browser_thread", lambda fn: fn())
+    monkeypatch.setattr(mail_client.banweb, "_retry_once", lambda fn: fn())
+    monkeypatch.setattr(mail_client.banweb, "_ensure_mail_page", lambda: _FakePage())
+    monkeypatch.setattr(mail_client, "_capture_token", lambda page: "TOK")
+
+
+def test_collect_items_paginates_until_short_page(monkeypatch):
+    pages = {
+        0: [_item(f"A{n}") for n in range(mail_client.PAGE_SIZE)],
+        mail_client.PAGE_SIZE: [_item("LAST")],
+    }
+    calls = []
+
+    def fake_post(action, payload, token):
+        assert action == "FindItem"
+        assert token == "TOK"
+        off = payload["Body"]["Paging"]["Offset"]
+        calls.append(off)
+        return _find_resp(pages.get(off, []))
+
+    monkeypatch.setattr(mail_client, "_post_json", fake_post)
+    got = mail_client.collect_items("TOK", 7, NOW)
+    assert calls == [0, mail_client.PAGE_SIZE]      # 第二页不满 → 停，不翻第三页
+    assert len(got) == mail_client.PAGE_SIZE + 1
+
+
+def test_collect_items_stops_on_empty_page(monkeypatch):
+    calls = []
+
+    def fake_post(action, payload, token):
+        calls.append(payload["Body"]["Paging"]["Offset"])
+        return _find_resp([])
+
+    monkeypatch.setattr(mail_client, "_post_json", fake_post)
+    assert mail_client.collect_items("TOK", 7, NOW) == []
+    assert calls == [0]
+
+
+class _FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return NOW
+
+
+def test_list_mail_returns_scoped_items(no_browser, monkeypatch):
+    old = (NOW - timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    new = (NOW - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = [_item("旧读", recv=old, is_read=True),
+            _item("近读", recv=new, is_read=True),
+            _item("旧未读", recv=old, is_read=False)]
+    monkeypatch.setattr(mail_client, "_post_json", lambda a, p, t: _find_resp(rows))
+    monkeypatch.setattr(mail_client, "datetime", _FrozenDatetime)
+    got = mail_client.list_mail(7)
+    assert {x["id"] for x in got} == {"近读", "旧未读"}
+
+
+def test_fetch_bodies_batches_and_maps_back_by_id(no_browser, monkeypatch):
+    ids = [f"B{n}" for n in range(mail_client.BODY_BATCH + 3)]
+    batches = []
+
+    def fake_post(action, payload, token):
+        assert action == "GetItem"
+        got = [x["Id"] for x in payload["Body"]["ItemIds"]]
+        batches.append(got)
+        return _get_resp([(i, "正文" + i) for i in got])
+
+    monkeypatch.setattr(mail_client, "_post_json", fake_post)
+    monkeypatch.setattr(mail_client.time, "sleep", lambda s: None)   # 不真睡
+    out = mail_client.fetch_bodies([{"id": i} for i in ids])
+    assert [len(b) for b in batches] == [mail_client.BODY_BATCH, 3]
+    assert set(out) == set(ids)
+    assert out["B0"] == "正文B0"
+
+
+def test_fetch_bodies_empty_input_makes_no_request(no_browser, monkeypatch):
+    """没有邮件时绝不能去开浏览器 —— 用户没点刷新就不该有浏览器动作。"""
+    called = []
+    monkeypatch.setattr(mail_client.banweb, "_ensure_mail_page",
+                        lambda: called.append(1))
+    assert mail_client.fetch_bodies([]) == {}
+    assert called == []
+
+
+def test_capture_token_raises_when_page_never_emits(monkeypatch):
+    """页面没登入 → 截不到 token → 明确报错，不静默返回空串。"""
+    class _P:
+        def on(self, ev, fn): pass
+        def remove_listener(self, ev, fn): pass
+        def goto(self, *a, **k): pass
+        def wait_for_timeout(self, ms): pass
+
+    monkeypatch.setattr(mail_client, "_TOKEN_WAIT_TICKS", 2)
+    with pytest.raises(mail_client.MailError):
+        mail_client._capture_token(_P())

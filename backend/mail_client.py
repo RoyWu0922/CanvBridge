@@ -16,7 +16,10 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import time
 from datetime import datetime, timedelta, timezone
+
+from . import banweb
 
 SVC_URL = "https://outlook.cloud.microsoft/owa/service.svc"
 TIMEOUT = 30          # 单个 REST 请求超时（秒）
@@ -200,3 +203,119 @@ def extract_bearer(headers: dict) -> str | None:
                 and v.lower().startswith("bearer "):
             return v.split(" ", 1)[1].strip()
     return None
+
+
+# ---------------------------------------------------------------------------
+# I/O 层
+# ---------------------------------------------------------------------------
+
+MAIL_URL = "https://outlook.cloud.microsoft/mail/"
+_TOKEN_WAIT_TICKS = 40        # 截获 token 的轮询次数
+_TOKEN_WAIT_MS = 500          # 每次间隔 → 上限 20s
+
+
+def _post_json(action: str, payload: dict, token: str) -> dict:
+    """调用 service.svc。独立成函数，便于测试替身接管（本仓测试禁止真实出网）。"""
+    import requests
+    try:
+        r = requests.post(
+            SVC_URL,
+            params={"action": action, "app": "Mail"},
+            json=payload,
+            timeout=TIMEOUT,
+            headers={"Authorization": f"Bearer {token}",
+                     "Action": action,
+                     "Content-Type": "application/json; charset=utf-8",
+                     "X-OWA-Timezone": "China Standard Time"},
+        )
+    except Exception as exc:
+        raise MailError(f"OWA {action} 请求失败：{exc}") from exc
+    if not r.ok:
+        raise MailError(f"OWA {action} 失败：HTTP {r.status_code}")
+    try:
+        return r.json()
+    except ValueError as exc:
+        raise MailError(f"OWA {action} 返回的不是 JSON") from exc
+
+
+def _capture_token(page) -> str:
+    """让邮件页加载一次，从它自己打出的 service.svc 请求里截获 bearer token。
+
+    token 只在本函数返回值里存活，调用方用完即弃 —— 绝不落盘、绝不返回前端。
+    """
+    box: dict = {}
+
+    def _on_req(req):
+        if "service.svc" in req.url and "token" not in box:
+            t = extract_bearer(req.headers)
+            if t:
+                box["token"] = t
+
+    page.on("request", _on_req)
+    try:
+        page.goto(MAIL_URL, wait_until="domcontentloaded", timeout=60000)
+        for _ in range(_TOKEN_WAIT_TICKS):
+            if "token" in box:
+                break
+            page.wait_for_timeout(_TOKEN_WAIT_MS)
+    finally:
+        try:
+            page.remove_listener("request", _on_req)
+        except Exception:
+            pass
+    token = box.get("token")
+    if not token:
+        # 多半是 Okta 会话已失效 → 页面停在登录页。文案里绝不带 token 相关内容。
+        raise MailError("邮箱会话已失效，未能截获访问令牌。请先在 AIMS 页重新登录后再试。")
+    return token
+
+
+def collect_items(token: str, days: int, now: datetime) -> list[dict]:
+    """FindItem 翻页取列表 → 筛出「未读 ∪ 最近 days 天」。不含正文。"""
+    items: list[dict] = []
+    offset = 0
+    while True:
+        resp = _post_json("FindItem", find_item_payload(offset), token)
+        batch = parse_find_items(resp)
+        if not batch:
+            break
+        items += batch
+        if len(batch) < PAGE_SIZE:
+            break
+        offset += PAGE_SIZE
+    return select_scope(items, now, days)
+
+
+def _do_list(days: int) -> list[dict]:
+    page = banweb._ensure_mail_page()      # 邮件 tab，绝不是 AIMS 页
+    return collect_items(_capture_token(page), days, datetime.now(timezone.utc))
+
+
+def list_mail(days: int = DEFAULT_DAYS) -> list[dict]:
+    """拉取「未读 ∪ 最近 days 天」的邮件（不含正文）。"""
+    return banweb._on_browser_thread(lambda: banweb._retry_once(lambda: _do_list(days)))
+
+
+def _do_bodies(items: list[dict]) -> dict:
+    ids = [it["id"] for it in items]
+    page = banweb._ensure_mail_page()      # 邮件 tab，绝不是 AIMS 页
+    token = _capture_token(page)
+    out: dict = {}
+    chunks = [ids[i:i + BODY_BATCH] for i in range(0, len(ids), BODY_BATCH)]
+    for n, chunk in enumerate(chunks):
+        if n:
+            time.sleep(_THROTTLE)     # spec §9 请求节流
+        for row in parse_get_bodies(_post_json("GetItem", get_item_payload(chunk), token)):
+            out[row["id"]] = row["body"]
+    return out
+
+
+def fetch_bodies(items: list[dict]) -> dict:
+    """批量取正文，返回 {item_id: body}。
+
+    空输入直接返回 —— 绝不为了「取零封邮件的正文」去开浏览器。
+    全程纯读：不调 MarkAsRead，不改用户已读状态。
+    """
+    if not items:
+        return {}
+    return banweb._on_browser_thread(lambda: banweb._retry_once(lambda: _do_bodies(items)))
