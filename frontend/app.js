@@ -129,6 +129,44 @@ async function refreshAimsUi(){
     el.textContent = t("status.aims_not_saved");
   }
 }
+/* 自动登录失败 → 弹窗问「是否手动登录」。确认才开可见窗口，取消则停在退登态。
+   并发的询问共用同一个 promise（3s 轮询与用户点「重新登录」可能撞上），不叠弹窗。 */
+let loginPromptResolve = null;
+function confirmManualLogin(){
+  const m = $("loginPrompt");
+  if(!m) return Promise.resolve(false);   // 弹层缺失（旧页面缓存）→ 当作「取消」，绝不擅自开窗
+  if(loginPromptResolve) return loginPromptResolve;
+  loginPromptResolve = new Promise(resolve => {
+    const done = yes => {
+      loginPromptResolve = null;
+      m.hidden = true;
+      resolve(yes);
+    };
+    // 遮罩 / ✕ /「稍后再说」一律算取消；只有「手动登录」为确认
+    m.querySelector(".modal-backdrop").onclick = () => done(false);
+    $("btnLoginPromptClose").onclick = () => done(false);
+    $("btnLoginPromptNo").onclick    = () => done(false);
+    $("btnLoginPromptYes").onclick   = () => done(true);
+    m.hidden = false;
+    $("btnLoginPromptYes").focus();
+  });
+  return loginPromptResolve;
+}
+/* 供 Esc 关闭复用（挂进 app.js 已有的全局 keydown，不另起监听器） */
+function dismissLoginPrompt(){ const m=$("loginPrompt"); if(m && !m.hidden) $("btnLoginPromptNo").click(); }
+/* 自动登录失败后的统一出口：先问，确认才开手动登录窗口 */
+async function offerManualLogin(autoError){
+  if(!await confirmManualLogin()){
+    setStatus(t("status.aims_manual_declined"), "info", 6000);
+    return false;
+  }
+  const w = await api("banweb/open_login");
+  if(w.ok === true){ setStatus(t("status.login_opened"), "ok", 6000); return true; }
+  setStatus(t("status.login_fail") + (w.error || autoError || ""), "err");
+  return false;
+}
+/* 只做无头自动登录；失败时由调用方在 withBusy 结束后再问手动登录
+   （弹层 z-index 低于 #overlay 忙碌遮罩，在遮罩里弹会被盖住）。 */
 async function runAutoLogin(showBusy){
   aimsAutoTried = true;
   const attempt = async () => {
@@ -155,13 +193,15 @@ $("btnSaveAims").onclick = async () => {
   const username = $("aimsUsername").value.trim();
   const password = $("aimsPassword").value;
   if(!username || !password){ setStatus(t("status.aims_need_both"), "err"); return; }
-  await withBusy(t("status.aims_saving"), $("btnSaveAims"), async ()=>{
+  // 返回值：null=保存失败 / true=自动登录成功 / false=自动登录失败（需要手动登录）
+  const ok = await withBusy(t("status.aims_saving"), $("btnSaveAims"), async ()=>{
     const r = await api("banweb/credentials", { username, password });
-    if(r.ok !== true){ setStatus(t("status.aims_save_fail") + (r.error||""), "err"); return; }
+    if(r.ok !== true){ setStatus(t("status.aims_save_fail") + (r.error||""), "err"); return null; }
     setStatus(t("status.aims_saved_ok"), "ok", 4000);
     await refreshAimsUi();
-    await runAutoLogin(true);   // 保存后立即自动登录
+    return await runAutoLogin(true);   // 保存后立即自动登录
   });
+  if(ok === false) await offerManualLogin();   // withBusy 已退出，弹窗不会被忙碌遮罩盖住
 };
 $("btnClearAims").onclick = async () => {
   await withBusy(t("status.aims_clearing"), $("btnClearAims"), async ()=>{
@@ -230,6 +270,7 @@ $("detailModal").querySelector(".modal-backdrop").addEventListener("click", clos
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   if (modulePop && !modulePop.hidden){ closeModulePop(); return; }
+  if (!$("loginPrompt").hidden){ dismissLoginPrompt(); return; }   // Esc = 取消手动登录
   if (!$("detailModal").hidden) closeDetail();
 });
 
@@ -1770,7 +1811,8 @@ async function checkBanwebStatus(){
       if(cr.ok===true && cr.has_credentials){
         aimsAutoTried = true;
         setBanwebStatusText(t("status.aims_logging_in"), "muted");
-        await runAutoLogin(false);
+        // 失败 → 问是否手动登录（aimsAutoTried 已置位，轮询不会重复触发自动登录）
+        if(await runAutoLogin(false) === false) await offerManualLogin();
         return;   // runAutoLogin 成功时会直接加载学期
       }
       aimsAutoTried = true;
@@ -1791,27 +1833,25 @@ async function checkBanwebStatus(){
   }
 }
 $("btnBanwebLogin").onclick = async () => {
-  // 「重新登录」一律先无头自动登录：已存凭据即静默完成、不弹窗；
-  // 失败（未存凭据/密码错误/后端忙）才弹手动窗口兜底，而不是一上来就开窗。
+  // 「重新登录」一律先无头自动登录：已存凭据即静默完成、不开窗；
+  // 失败（未存凭据/密码错误/后端忙/MFA）才问用户要不要手动登录，而不是一上来就开窗。
   aimsAutoTried = true;   // 抑制 3s 轮询重复触发，避免并发双登录
   const loginBtn = $("btnBanwebLogin");
-  await withBusy(t("status.aims_logging_in"), loginBtn, async ()=>{
+  // 返回值：null=自动登录成功 / 字符串=失败原因（可能为空串）
+  const autoError = await withBusy(t("status.aims_logging_in"), loginBtn, async ()=>{
     const auto = await api("banweb/auto_login");
-    if(auto.ok === true){
-      aimsAutoTried = false;               // 成功 → 直接进入已登录态
-      if(loginBtn) loginBtn.hidden = true;
-      setBanwebStatusText(t("status.banweb_ok"), "ok");
-      stopBanwebPoll();
-      loadTerms();
-      setStatus(t("status.banweb_ok"), "ok", 4000);
-      return;
-    }
-    // 无头失败 → 落回弹手动登录窗口，用户可自行输入
-    const w = await api("banweb/open_login");
-    if(w.ok === true) setStatus(t("status.login_opened"), "ok", 6000);
-    else setStatus(t("status.login_fail") + (w.error || auto.error || ""), "err");
-    checkBanwebStatus();
+    if(auto.ok !== true) return auto.error || "";
+    aimsAutoTried = false;                 // 成功 → 直接进入已登录态
+    if(loginBtn) loginBtn.hidden = true;
+    setBanwebStatusText(t("status.banweb_ok"), "ok");
+    stopBanwebPoll();
+    loadTerms();
+    setStatus(t("status.banweb_ok"), "ok", 4000);
+    return null;
   });
+  if(autoError === null) return;           // 成功，无需手动登录
+  await offerManualLogin(autoError);       // 失败 → 先问再开窗（withBusy 已退出）
+  checkBanwebStatus();
 };
 function startBanwebPoll(){ if(banwebPollTimer) return; banwebPollTimer=setInterval(checkBanwebStatus, 3000); }
 function stopBanwebPoll(){ if(banwebPollTimer){ clearInterval(banwebPollTimer); banwebPollTimer=null; } }
@@ -2279,7 +2319,8 @@ async function initScheduleTab(){
   // 已存凭据 → 直接自动登录并加载学期（跳过慢速 status 探测）；未存 → 状态检查提示登录
   const cr = await api("banweb/credentials/status", undefined, "GET");
   if(cr.ok===true && cr.has_credentials){
-    await runAutoLogin(false);
+    // 失败 → 问是否手动登录（本函数是进课表页的主路径，不走 checkBanwebStatus）
+    if(await runAutoLogin(false) === false) await offerManualLogin();
   } else {
     await checkBanwebStatus();
   }

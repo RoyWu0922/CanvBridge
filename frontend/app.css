@@ -277,6 +277,12 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
   width:30px; height:30px; border-radius:50%; transition:background .15s, color .15s; }
 .modal-close:hover { background:var(--surface-2); color:var(--ink); }
 
+/* 小号确认弹层（当前唯一使用者：#loginPrompt「自动登录失败 → 是否手动登录」）。
+   比设置/详情弹层窄，只放一句正文 + 两个按钮。 */
+.modal-card.modal-sm { width:min(420px, calc(100vw - 32px)); }
+.confirm-text { margin:0 0 18px; font-size:13.5px; line-height:1.7; color:var(--ink); }
+.modal-actions { display:flex; justify-content:flex-end; gap:10px; }
+
 /* 课程详情弹层 */
 .modal-card.modal-lg { width:min(860px, calc(100vw - 32px)); }
 .detail-head { font-size:16px; font-weight:700; margin-bottom:6px; }
