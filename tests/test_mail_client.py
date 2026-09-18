@@ -381,12 +381,12 @@ def test_list_mail_keeps_target_closed_retry(monkeypatch):
     """归一化之后，「目标已关闭」的重试仍要照跑一次（spec §5.1 约束 2）。
 
     本用例锁的是这条**独立性质**：归一化没有破坏「邮件 tab 被看门狗清掉」的恢复路径。
-    它**不**判别归一写在哪儿 —— 把转换搬进 _retry_once 包着的那层，本用例照样绿。
-    原因是 _target_closed（banweb.py:783-784）判的是 str(exc) 的子串匹配，而归一后的
-    消息逐字回显了原始异常文本，重试因此仍能命中。
+    它**不**判别归一写在哪儿 —— 把转换搬进 _retry_once 包着的那层，本用例照样绿
+    （那时 _target_closed 靠归一后的消息逐字回显原始异常文本才命中）。
 
-    换句话说：这条恢复路径的存活挂在**消息文案**上，不挂在转换位置上。改
-    `MailError(f"...{exc}")` 的措辞（例如去掉 {exc}）就会静默废掉它 —— 那时本用例
+    所以这条恢复路径的存活与**消息文案**无关：只要归一留在 _retry_once 之外，
+    _retry_once 看到的就是**原始**异常，改 MailError(f"...{exc}") 的措辞（例如去掉
+    {exc}）不会影响它。**但一旦有人把归一搬进那层，耦合就出现了** —— 那时本用例
     是唯一会红的守卫。下面故意**不替身** _retry_once，走真实的它。
     """
     monkeypatch.setattr(mail_client.banweb, "_on_browser_thread", lambda fn: fn())
