@@ -28,6 +28,15 @@ except Exception:  # 未装 Playwright 时不影响其余功能
 
 LOGIN_HOST = "https://auth.cityu.edu.hk"
 BANWEB = "https://banweb.cityu.edu.hk"
+# 学校邮箱（OWA）的 host。邮件与 AIMS 共用同一个 persistent context，
+# 但必须是两个独立的 tab —— 见 _find_page 的排除逻辑。
+MAIL_HOSTS = ("https://outlook.cloud.microsoft", "https://outlook.office.com")
+
+
+def _is_mail_url(url: str) -> bool:
+    return any((url or "").startswith(h) for h in MAIL_HOSTS)
+
+
 TERM_PAGE = BANWEB + "/pls/PROD/bwskfshd.P_CrseSchdDetl"
 # 真实登录页：登出后 TERM_PAGE 只给「User Login」中转页（无表单），
 # 真正的 Okta 登录表单在 P_WWWLogin（2026-08-31 实测标题 "City University of Hong Kong - Sign In"）
@@ -616,10 +625,48 @@ def _term_ready(page) -> bool:
 
 
 def _find_page(ctx) -> object:
+    """挑一个 AIMS 用的页；没有可用的返回 None（由调用方决定要不要开新页）。
+
+    排除邮件 tab：邮件与 AIMS 共用同一个 persistent context，若 AIMS 认领了
+    邮件页，后续 goto(TERM_PAGE) 会把邮件 tab 导航走、毁掉邮件会话。
+
+    本函数**绝不** new_page —— 调用方 launch=False（轮询）时必须能拿到 None
+    去走「未开窗」分支，自己开页会违反「轮询绝不弹窗」。
+    """
     for p in ctx.pages:
+        if _is_mail_url(p.url):
+            continue
         if p.url.startswith(BANWEB) or p.url.startswith(LOGIN_HOST):
             return p
-    return ctx.pages[0] if ctx.pages else ctx.new_page()
+    for p in ctx.pages:
+        if not _is_mail_url(p.url):
+            return p          # 非邮件域的非 AIMS 页（如残留空白页）→ 照旧兜底
+    return None
+
+
+def _find_mail_page(ctx) -> object:
+    """挑邮件 tab；没有就开一个。
+
+    与 _find_page 不同，这里**允许** new_page：邮件操作永远由用户点按钮触发，
+    开窗不违反「轮询绝不弹窗」。
+    """
+    for p in ctx.pages:
+        if _is_mail_url(p.url):
+            return p
+    return ctx.new_page()
+
+
+def _ensure_mail_page() -> object:
+    """邮件侧的浏览器入口：确保浏览器在跑，返回**邮件 tab**。
+
+    绝不能改用 _ensure_browser 的返回值 —— 它给的是 AIMS 页，拿它去
+    goto(MAIL_URL) 会把 AIMS tab 导航走、毁掉 AIMS 会话。两者是同一个
+    persistent context 里的两个 tab，必须各拿各的。
+    """
+    _ensure_browser(launch=True)          # 只为保证 _ctx 就绪，丢弃返回的 AIMS 页
+    if _ctx is None:
+        raise BanwebError("AIMS 浏览器未就绪，无法打开邮箱页")
+    return _find_mail_page(_ctx)
 
 
 def _browser_executor_instance():
@@ -848,9 +895,10 @@ def _ensure_browser(launch: bool = True, headless: bool = True):
             try:
                 if browser.contexts:
                     _ctx = browser.contexts[0]
-                    if _ctx.pages:
-                        # 已有窗口（抓取页 / 登录页 / 残留空白页）→ 直接用
-                        _page = _find_page(_ctx)
+                    # 没有可用 AIMS 页 → None（无窗口，或只剩邮件 tab）。
+                    # 与「无窗口」同等对待，绝不擅自把邮件 tab 当 AIMS 页用。
+                    _page = _find_page(_ctx) if _ctx.pages else None
+                    if _page is not None:
                         return _page
                     if launch:
                         # 用户主动操作且进程还活着但没窗口 → 开个新标签页当窗口

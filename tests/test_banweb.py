@@ -634,3 +634,85 @@ def test_recover_browser_swaps_executor_lock_and_refs(monkeypatch):
     assert banweb._browser_executor is not ex0
     assert banweb._lock is not lock0
     assert banweb._ctx is None and banweb._page is None
+
+
+# --- 邮件 tab 隔离（spec §5.1 约束 1）---
+
+class _Page:
+    def __init__(self, url):
+        self.url = url
+
+
+class _Ctx:
+    def __init__(self, urls):
+        self.pages = [_Page(u) for u in urls]
+        self.new_pages = 0
+
+    def new_page(self):
+        self.new_pages += 1
+        p = _Page("about:blank")
+        self.pages.append(p)
+        return p
+
+
+def test_is_mail_url_matches_both_owa_hosts():
+    assert banweb._is_mail_url("https://outlook.cloud.microsoft/mail/")
+    assert banweb._is_mail_url("https://outlook.office.com/mail/")
+    assert not banweb._is_mail_url("https://banweb.cityu.edu.hk/x")
+    assert not banweb._is_mail_url("")
+
+
+def test_find_page_prefers_aims_page_over_mail_tab():
+    ctx = _Ctx(["https://outlook.cloud.microsoft/mail/",
+                "https://banweb.cityu.edu.hk/twkwkmgr.P_DispMyWeek"])
+    assert banweb._find_page(ctx).url.startswith(banweb.BANWEB)
+
+
+def test_find_page_never_returns_a_mail_tab():
+    """只剩邮件 tab 时必须返回 None —— 认领它会让 AIMS 把邮件页导航走。"""
+    ctx = _Ctx(["https://outlook.cloud.microsoft/mail/"])
+    assert banweb._find_page(ctx) is None
+    assert ctx.new_pages == 0        # 且绝不能自己开页
+
+
+def test_find_page_still_falls_back_to_unknown_blank_page():
+    """非邮件域的非 AIMS 页仍照旧兜底 —— 现有行为不能变。"""
+    ctx = _Ctx(["about:blank"])
+    assert banweb._find_page(ctx).url == "about:blank"
+
+
+def test_find_page_returns_none_when_no_pages():
+    assert banweb._find_page(_Ctx([])) is None
+
+
+def test_find_mail_page_reuses_existing_tab():
+    ctx = _Ctx(["https://banweb.cityu.edu.hk/x",
+                "https://outlook.cloud.microsoft/mail/"])
+    assert banweb._find_mail_page(ctx).url.startswith("https://outlook.cloud.microsoft")
+    assert ctx.new_pages == 0
+
+
+def test_find_mail_page_opens_one_when_absent():
+    ctx = _Ctx(["https://banweb.cityu.edu.hk/x"])
+    assert banweb._find_mail_page(ctx).url == "about:blank"
+    assert ctx.new_pages == 1
+
+
+def test_ensure_mail_page_returns_mail_tab_not_aims_tab(monkeypatch):
+    """关键：_ensure_browser 返回的是 **AIMS 页**，拿它去 goto 邮件 URL 会把
+    AIMS tab 导航走。邮件必须走 _ensure_mail_page 拿到邮件 tab。"""
+    ctx = _Ctx(["https://banweb.cityu.edu.hk/twkwkmgr.P_DispMyWeek",
+                "https://outlook.cloud.microsoft/mail/"])
+    monkeypatch.setattr(banweb, "_ensure_browser", lambda **k: ctx.pages[0])
+    monkeypatch.setattr(banweb, "_ctx", ctx)
+    got = banweb._ensure_mail_page()
+    assert got.url.startswith("https://outlook.cloud.microsoft")
+
+
+def test_ensure_mail_page_raises_when_browser_never_came_up(monkeypatch):
+    """_ensure_browser 抛错时不要吞 —— 原样传播，让上层报「会话已失效」。"""
+    def boom(**k):
+        raise banweb.BanwebError("AIMS 登录窗口未打开")
+    monkeypatch.setattr(banweb, "_ensure_browser", boom)
+    with pytest.raises(banweb.BanwebError):
+        banweb._ensure_mail_page()
