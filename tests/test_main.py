@@ -1,4 +1,3 @@
-import json
 import threading
 
 import pytest
@@ -1720,8 +1719,16 @@ def test_mail_list_returns_mails(monkeypatch):
     assert body["ok"] is True
     assert body["count"] == 1
     assert body["mails"][0]["subject"] == "作业"
-    # 硬约束：响应里绝不能出现 token
-    assert "token" not in json.dumps(body)
+    # 响应键白名单。原先这里是 `assert "token" not in json.dumps(body)` ——**真空**：
+    # mail dict 由 backend/mail_client.py:126-130 构造，只有
+    # id/subject/sender/received/is_read 五个键（字段级钉子见
+    # tests/test_mail_client.py:63 的 test_parse_find_items_maps_fields，它用整字典
+    # 相等钉死这五个键）；bearer token 是 _capture_token 的局部值，经入参传给
+    # collect_items/_post_json，从不落进任何 dict。所以那句「响应里没有 token」
+    # 恒真 —— 它看着像在守 spec §9「token 绝不回传前端」，实际守的是个永不出现
+    # 的子串，而往响应里加个名字不带 "token" 的凭证字段（如 llm_api_key）仍能全绿。
+    # 真正的防护是这里钉死响应键集合，加上 test_mail_client.py 的字段级用例。
+    assert set(body) == {"ok", "count", "mails"}
 
 
 def test_mail_list_defaults_to_seven_days(monkeypatch):
