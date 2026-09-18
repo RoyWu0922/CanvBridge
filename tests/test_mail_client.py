@@ -1,8 +1,6 @@
 """OWA 取信层纯函数测试。全程合成 fixture，不出网。"""
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from backend import mail_client
 
 
@@ -39,6 +37,12 @@ def test_find_item_payload_shape():
     uris = [x["FieldURI"] for x in body["ItemShape"]["AdditionalProperties"]]
     assert uris == ["item:Subject", "message:From",
                     "item:DateTimeReceived", "message:IsRead"]
+    assert p["Body"]["ItemShape"]["BaseShape"] == "IdOnly"
+
+
+def test_find_item_payload_defaults_to_page_size():
+    """不传参时 MaxEntriesReturned 必须是 PAGE_SIZE —— spec 钉的 50。"""
+    assert mail_client.find_item_payload()["Body"]["Paging"]["MaxEntriesReturned"] == 50
 
 
 def test_get_item_payload_shape():
@@ -46,6 +50,7 @@ def test_get_item_payload_shape():
     assert p["__type"] == "GetItemJsonRequest:#Exchange"
     assert p["Body"]["__type"] == "GetItemRequest:#Exchange"
     assert p["Body"]["ItemShape"]["BodyType"] == "Text"
+    assert p["Body"]["ItemShape"]["BaseShape"] == "Default"
     assert p["Body"]["ItemIds"] == [
         {"__type": "ItemId:#Exchange", "Id": "A"},
         {"__type": "ItemId:#Exchange", "Id": "B"}]
@@ -119,6 +124,23 @@ def test_select_scope_unparsable_date_is_kept():
     """时间读不出来宁可多给一封，也不能静默丢件。"""
     items = [{"id": "坏", "subject": "", "sender": "", "received": "???", "is_read": True}]
     assert [x["id"] for x in mail_client.select_scope(items, NOW, 7)] == ["坏"]
+
+
+def test_select_scope_no_offset_date_is_kept_and_does_not_raise():
+    """缺时区偏移的时间戳（naive）必须和「读不出来」同路：保留，不抛。
+
+    它曾被解析成 naive datetime，再与 aware 的 cutoff 比较 → TypeError 炸穿整个
+    select_scope —— 单封坏邮件就能让整次取信失败，且是本文件唯一一条 fail-closed 路径。
+    """
+    items = [{"id": "无偏移", "subject": "", "sender": "",
+              "received": "2026-09-17T08:31:00", "is_read": True}]
+    assert [x["id"] for x in mail_client.select_scope(items, NOW, 7)] == ["无偏移"]
+
+
+def test_select_scope_defaults_to_default_days():
+    """不传 days 时走 DEFAULT_DAYS —— spec 钉的 7。"""
+    items = [_mk("边界", 7, True), _mk("超一天", 8, True)]
+    assert {x["id"] for x in mail_client.select_scope(items, NOW)} == {"边界"}
 
 
 # --- bearer / JWT ---

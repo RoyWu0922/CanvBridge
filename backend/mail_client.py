@@ -147,13 +147,19 @@ def parse_get_bodies(resp: dict) -> list[dict]:
 
 
 def _parse_ts(raw: str) -> datetime | None:
-    """OWA 时间戳形如 2026-09-17T08:31:00Z。解析不出返回 None。"""
+    """OWA 时间戳形如 2026-09-17T08:31:00Z。解析不出返回 None。
+
+    缺时区偏移的（naive）也返回 None：它与 aware 的 cutoff 比较会抛 TypeError，
+    而那是本文件唯一一条 fail-closed 路径 —— 单封坏邮件就能炸穿整个 select_scope。
+    归到 None 即走「保留」分支，与其余坏输入的处理一致。
+    """
     if not isinstance(raw, str) or not raw:
         return None
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return None if ts.tzinfo is None else ts
 
 
 def select_scope(items: list[dict], now: datetime,
