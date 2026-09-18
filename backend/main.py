@@ -948,8 +948,13 @@ def library_search(req: LibrarySearchRequest):
 
 
 @app.post("/api/mail/list")
-def mail_list(req: MailListRequest):
-    """列出「未读 ∪ 最近 N 天」的学校邮箱邮件。只读，不调 LLM、不改已读状态。"""
+def mail_list(req: MailListRequest = MailListRequest()):
+    """列出「未读 ∪ 最近 N 天」的学校邮箱邮件。只读，不调 LLM、不改已读状态。
+
+    `req` 带默认实例（而非无默认）—— FastAPI 据此把 body 判为**可选**。前端
+    `util.js` 的 `api()` 在 `body` 为 `undefined` 时不发 body，若无默认则被
+    FastAPI 挡成 422，拿不到本端点契约里的 `{ok: ...}`。
+    """
     try:
         mails = mail_client.list_mail(req.days)
         return {"ok": True, "count": len(mails), "mails": mails}

@@ -1726,10 +1726,28 @@ def test_mail_list_returns_mails(monkeypatch):
 
 def test_mail_list_defaults_to_seven_days(monkeypatch):
     seen = {}
+    # 形状必须是 list。旧写法 `seen.setdefault("d", days) or []` 里 setdefault 返回的是
+    # 真值 7，`7 or []` 求值为 7，于是端点 len(7) 抛 TypeError 被 except 吞成
+    # {ok: false} —— 用例仍绿，但走的是错误分支，对成功路径零覆盖。
     monkeypatch.setattr(mail_client, "list_mail",
-                        lambda days: seen.setdefault("d", days) or [])
-    TestClient(main.app).post("/api/mail/list", json={})
+                        lambda days: (seen.setdefault("d", days), [])[1])
+    r = TestClient(main.app).post("/api/mail/list", json={})
     assert seen["d"] == 7
+    assert r.json()["ok"] is True        # 不能靠异常分支蒙混过关
+
+
+def test_mail_list_tolerates_bodyless_request(monkeypatch):
+    """无 body 的 POST 也要走通 —— 前端 api() 在 body 为 undefined 时不发 body。"""
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: [
+        {"id": "A", "subject": "作业", "sender": "李老師",
+         "received": "2026-09-17T08:31:00Z", "is_read": False}])
+    r = TestClient(main.app).post("/api/mail/list")   # 完全不带 body
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["count"] == 1
+    assert body["mails"][0]["subject"] == "作业"
+    assert "detail" not in body         # 不能是 FastAPI 的 422 错误体
 
 
 def test_mail_list_failure_is_200_json(monkeypatch):
