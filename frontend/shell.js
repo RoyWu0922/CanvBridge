@@ -100,7 +100,7 @@ $("homeTodayList").addEventListener("click", (e) => {
   const code = card.dataset.code || "";
   if (!code) return;
   const bw = ((banwebSchedule && banwebSchedule.courses) || []).find(c => c.code === code) || null;
-  const cv = matchCourseByCode(code);        // app.js:210，按「字母+4位数字」匹配，忽略 A/C 等后缀
+  const cv = matchCourseByCode(code);        // 按「字母+4位数字」匹配，忽略 A/C 等后缀
   openCourseHub(cv ? cv.id : null, bw);
 });
 
@@ -228,7 +228,7 @@ function renderHomeDdlList(){
        <em>${esc(short(String(it.date || "").slice(0, 10)))}</em></div>`).join("");
 }
 
-/* 成绩速览：**只读内存**里 gradesData（app.js:1360），用户访问过成绩页后才有内容。
+/* 成绩速览：**只读内存**里 gradesData（app.js 里的全局），用户访问过成绩页后才有内容。
    首页启动阶段不得为它发起 /api/grades —— 那会逐课程拉全部作业，代价与其余卡不在
    一个量级，放上首页会显著拖慢首屏。 */
 function renderHomeGradeCard(){
