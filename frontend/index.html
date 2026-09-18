@@ -37,6 +37,7 @@
       <button class="nav-item" data-page="grades"><span data-i18n="nav.grades"></span></button>
       <button class="nav-item" data-page="courses"><span data-i18n="nav.courses"></span></button>
       <button class="nav-item" data-page="library"><span data-i18n="nav.library"></span></button>
+      <button class="nav-item" data-page="mail"><span data-i18n="nav.mail"></span></button>
       <div class="nav-gap"></div>
       <button class="nav-item" data-page="settings"><span data-i18n="nav.settings"></span></button>
     </nav>
@@ -242,6 +243,17 @@
         <span id="libraryPageInfo"></span>
         <button class="btn" id="libraryNext" data-i18n="library.next"></button>
       </div>
+    </div>
+
+    <div id="page-mail" class="page" hidden>
+      <div class="card">
+        <div class="mail-toolbar">
+          <button class="btn btn-primary" id="btnMailRefresh" data-i18n="mail.refresh"></button>
+          <button class="btn" id="btnMailSummary" data-i18n="mail.summarize"></button>
+          <span class="mail-meta" id="mailMeta"></span>
+        </div>
+      </div>
+      <div id="mailList"></div>
     </div>
 
     <div id="page-settings" class="page" hidden>

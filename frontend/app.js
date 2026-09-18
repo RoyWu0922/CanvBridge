@@ -2327,16 +2327,25 @@ async function initScheduleTab(){
 }
 
 /* 图书馆检索的会话状态。
-   **声明在这里、而不是末尾那段图书馆代码里**：下面第 2298 行的顶层 `applyLang()`
+   **声明在这里、而不是末尾那段图书馆代码里**：下面第 2360 行的顶层 `applyLang()`
    已经会调用 `renderLibraryPage()`（钩子见 i18n.js 的 applyLang），而**函数声明是提升的**
    —— `typeof x === "function"` 守门拦不住它，于是它会去读状态；状态若还压在文件末尾的
    `let` 里，这一读就是 TDZ ReferenceError（实机验证抓到的白屏级错误，`node --check` 查不出来）。
-   本文件里凡 applyLang() 会碰的状态都在 2298 行之前声明（`hubCid` 那类不被它碰的才放在后面）。
+   本文件里凡 applyLang() 会碰的状态都在 2360 行之前声明（`hubCid` 那类不被它碰的才放在后面）。
    翻页要靠 parsed 原样回传 —— 后端第 2 页起不调 LLM，所以这份 parsed 必须与结果同源。
    `busy` 是检索在途标记（防连点重复消费 LLM，见 runLibrarySearch）。 */
 let libraryState = { parsed: null, page: 1, loaded: false, areas: [], last: null, busy: false };
 
 const LIBRARY_MAX_PAGES = 5;   /* 与后端 library_client.MAX_PAGES 一致；后端才是权威 */
+
+/* 学校邮箱的会话状态。
+   **声明在这里、而不是末尾那段邮箱代码里**：与上面的 `libraryState` 同一个道理 ——
+   下面第 2360 行的顶层 applyLang() 会经 i18n.js 的钩子调用 renderMail()，而 renderMail
+   是**函数声明**（提升），`typeof` 守门拦不住它；状态若压在文件末尾的 `let` 里，
+   这一读就是 TDZ ReferenceError，会让本文件顶层余下代码全部不执行（`node --check` 查不出来）。
+   邮箱与 AIMS 共用同一个 Okta 会话；登录失败一律由调用方在 withBusy 之外走 offerManualLogin，
+   spec §9「登录失败即停，绝不自动重试」。 */
+let mailState = { mails: [], groups: null, loading: false, error: "" };
 
 $("btnLang").onclick = () => {
   localStorage.setItem("sc_lang", LANG() === "zh" ? "en" : "zh");
@@ -2985,3 +2994,84 @@ function renderLibraryPager(r){
   $("libraryNext").disabled = !more;
   pager.hidden = false;
 }
+
+/* ---------- 学校邮箱 ---------- */
+/* 会话状态 `mailState` 声明在文件上部（applyLang() 那一段、`libraryState` 旁边）——
+   理由同上：applyLang() 会经 i18n.js 的钩子调用 renderMail()，状态不能压在文件末尾。 */
+
+function initMailTab(){
+  if(mailState.mails.length || mailState.loading){ renderMail(); return; }
+  // 首次进页没有遮罩，失败了直接发问
+  loadMail().then(ok => { if(!ok) offerManualLogin(mailState.error); });
+}
+
+/* 返回布尔：是否成功。**不在这里发问** —— 点刷新时外面套着 withBusy，
+   而 #overlay 的 z-index(50) 高于弹层(40)，在遮罩里弹会被盖住。
+   发问一律由调用方在 withBusy 之外做（同 memory 里 AIMS 那条坑）。 */
+async function loadMail(){
+  if(mailState.loading) return false;
+  mailState.loading = true; mailState.error = ""; mailState.groups = null;
+  renderMail();
+  const r = await api("mail/list", { days: 7 });
+  mailState.loading = false;
+  if(r.ok !== true){
+    mailState.error = r.error || "";
+    renderMail();
+    return false;          // 多半是 Okta 会话失效 —— 与 AIMS 同一个会话
+  }
+  mailState.mails = r.mails || [];
+  renderMail();
+  return true;
+}
+
+/* 刷新的唯一出口：遮罩内干活，遮罩外发问（spec §9「登录失败即停，绝不自动重试」） */
+async function refreshMail(){
+  let err = "";
+  await withBusy(t("mail.refresh"), $("btnMailRefresh"), async () => {
+    if(!await loadMail()) err = mailState.error;
+  });
+  if(err) offerManualLogin(err);
+}
+
+function renderMail(){
+  const box = $("mailList");
+  if(!box) return;
+  const meta = $("mailMeta");
+  if(meta){
+    meta.textContent = (mailState.loading || !mailState.mails.length) ? ""
+      : t("mail.count", { n: mailState.mails.length });
+  }
+  if(mailState.error){
+    box.innerHTML = `<div class="card mail-error">${esc(mailState.error)}</div>`;
+    return;
+  }
+  if(mailState.loading){
+    box.innerHTML = `<div class="card mail-empty">…</div>`;
+    return;
+  }
+  if(!mailState.mails.length){
+    box.innerHTML = `<div class="card mail-empty">${esc(t("mail.empty"))}</div>`;
+    return;
+  }
+  box.innerHTML = mailState.mails.map(mailRowHtml).join("");
+}
+
+function mailRowHtml(m){
+  const flag = m.is_read ? ""
+    : `<span class="mail-badge">${esc(t("mail.unread"))}</span>`;
+  return `<div class="card mail-row">
+    <div class="mail-row-head">${flag}<span class="mail-subject">${esc(m.subject || t("mail.no_body"))}</span></div>
+    <div class="mail-row-sub">${esc(m.sender || "")} · ${esc(fmtLocal(m.received))}</div>
+  </div>`;
+}
+
+/* ISO8601(UTC) → 本地可读串；解析不了就原样返回，绝不显示 Invalid Date */
+function fmtLocal(iso){
+  if(!iso) return "";
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return iso;
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+$("btnMailRefresh").onclick = () => refreshMail();

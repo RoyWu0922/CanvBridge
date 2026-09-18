@@ -528,3 +528,15 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
    它们的 `[hidden]` 规则本身即 no-op（`.fchildren[hidden]` 是已登记的待办）。 */
 .lib-pager[hidden] { display:none; }
 .lib-parsed, .lib-warnings { font-size: 12px; opacity: .8; margin-top: 8px; }
+
+/* ---------- 学校邮箱 ---------- */
+.mail-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mail-meta { color: var(--muted, #888); font-size: 13px; }
+.mail-row { padding: 10px 14px; }
+.mail-row-head { display: flex; align-items: center; gap: 8px; }
+.mail-subject { font-weight: 600; }
+.mail-row-sub { color: var(--muted, #888); font-size: 12px; margin-top: 4px; }
+.mail-badge { background: #d33; color: #fff; border-radius: 8px;
+              font-size: 11px; padding: 1px 6px; }
+.mail-empty, .mail-error { padding: 14px; color: var(--muted, #888); }
+.mail-error { color: var(--err, #c33); }

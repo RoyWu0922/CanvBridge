@@ -28,8 +28,18 @@ const FRONTEND = join(ROOT, "frontend");
    17 个 `library.*`/`nav.library` 键里有 10 个是**给 Task 7 预留**的动态文案
    （`area_any` `count` `empty` `loading` `need_input` `no_link` `page` `parsed`
    `warn.llm_degraded` `warn.domains_dropped`），Task 6 没有消费者。这 10 个键
-   由 Task 7 的渲染代码消费后，死键应回落 21 —— Task 7 已把本行降回 21。 */
-const DEAD_BASELINE = 21;
+   由 Task 7 的渲染代码消费后，死键应回落 21 —— Task 7 已把本行降回 21。
+
+   2026-09-19 Task 7（学校邮箱前端骨架）21 → 31：同一形态，同一个理由。按简报逐字加入的
+   17 个 `mail.*`/`confirm.*`/`nav.mail` 键里只有 7 个有消费者（`nav.mail` `mail.refresh`
+   `mail.summarize` 挂在 index.html 的 data-i18n 上；`mail.count` `mail.empty`
+   `mail.unread` `mail.no_body` 由 app.js 的 renderMail / mailRowHtml 调 t() 取用），
+   余下 10 个是**给 Task 8 预留**的：`mail.group_other` `mail.uncategorized` `mail.ddl`
+   `mail.write_event` `mail.write_reminder` `mail.ai_failed` `mail.need_refresh`
+   `mail.wrote` `confirm.cancel` `confirm.ok` —— Task 7 只做「能打开、能列邮件」，
+   AI 分组、写入日历/提醒按钮、确认弹层都在 Task 8，本任务没有地方引用它们。
+   这 10 个键由 Task 8 的渲染/写入代码消费后，死键应回落 21 —— 由 Task 8 把本行降回 21。 */
+const DEAD_BASELINE = 31;
 
 /* 动态家族前缀：源码里存在 "wd." 这样的引号字面量，键由它拼出来
    （app.js 的 t("wd."+d)）。这类键无法被字面量扫描判活，只能按前缀整体放行。
