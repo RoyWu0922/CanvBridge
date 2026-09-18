@@ -1,6 +1,7 @@
 import json
 
 import pytest
+import requests
 
 from backend import llm_client
 
@@ -255,6 +256,27 @@ def test_summarize_mail_drops_out_of_range_index(monkeypatch):
     assert r["warnings"]          # 丢了东西必须留痕，不静默
 
 
+def test_summarize_mail_warns_when_ai_covers_nothing(monkeypatch):
+    """模型给了结构合法但内容不可用的分组 → 必须留痕，绝不能和「邮箱是空的」混为一谈。"""
+    payload = {"groups": [{"course": "CS1315", "types": [
+        {"type": "作业", "items": ["交实验报告"]}]}]}
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: json.dumps(payload))
+    r = llm_client.summarize_mail("u", "k", "m", [_mail(0)])
+    assert r["groups"] == []
+    assert r["warnings"]
+
+
+def test_summarize_mail_drops_bool_index(monkeypatch):
+    """JSON 的 true 在 Python 里是 int 子类 → 不显式挡掉就会被当成 index 1，
+    把 AI 编的内容挂到第 2 封真邮件上。用两封邮件才能把这个变异钉红。"""
+    payload = {"groups": [{"course": "C", "types": [{"type": "T", "items": [
+        {"mail_index": True, "summary": "幽灵", "calendar_events": [], "reminders": []}]}]}]}
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: json.dumps(payload))
+    r = llm_client.summarize_mail("u", "k", "m", [_mail(0), _mail(1)])
+    assert r["groups"] == []
+    assert r["warnings"]
+
+
 def test_summarize_mail_falls_back_to_excerpt_for_bad_summary(monkeypatch):
     payload = {"groups": [{"course": "C", "types": [{"type": "T", "items": [
         {"mail_index": 0, "summary": 12345, "calendar_events": [], "reminders": []}]}]}]}
@@ -280,3 +302,13 @@ def test_summarize_mail_empty_input_skips_llm(monkeypatch):
                         lambda *a, **k: called.append(1) or "{}")
     assert llm_client.summarize_mail("u", "k", "m", []) == {"groups": [], "warnings": []}
     assert called == []
+
+
+def test_summarize_mail_reports_request_error_not_parse_error(monkeypatch):
+    """鉴权/网络失败不能被报成「返回内容无法解析为 JSON」。"""
+    def boom(*a, **k):
+        raise requests.HTTPError("401 Client Error")
+    monkeypatch.setattr(llm_client, "_call_chat", boom)
+    r = llm_client.summarize_mail("u", "k", "m", [_mail(0)])
+    assert r["groups"] == []
+    assert "JSON" not in r["warnings"][0]

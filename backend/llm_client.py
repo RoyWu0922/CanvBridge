@@ -336,6 +336,14 @@ def _normalize_groups(data: dict, mails: list[dict], language: str) -> dict:
                 types_out.append({"type": str(ty.get("type") or other), "items": items_out})
         if types_out:
             out.append({"course": str(g.get("course") or other), "types": types_out})
+    # 覆盖检查：prompt 要求每封邮件都被归类，没被任何条目引用的邮件必须留痕 ——
+    # 否则「AI 返回垃圾」与「邮箱是空的」在 UI 上无法区分（docstring 的「绝不静默降级」）。
+    placed = {it["mail_index"] for g in out for ty in g["types"] for it in ty["items"]}
+    missing = len(mails) - len(placed)
+    if missing > 0:
+        warnings.append(
+            f"AI 未覆盖 {missing} 封邮件，结果可能不完整" if language == "zh"
+            else f"AI did not cover {missing} mail(s); the result may be incomplete")
     if dropped:
         warnings.append(
             f"AI 返回的 {dropped} 条结果指向了不存在的邮件，已丢弃" if language == "zh"
@@ -355,7 +363,8 @@ def summarize_mail(base_url: str, api_key: str, model: str,
         return {"groups": [], "warnings": []}
     trimmed = trim_bodies(mails)
     prompt = _build_mail_prompt(trimmed, language)
-    data = None
+    data = None           # 首次就抛异常时，循环后的 isinstance 守卫要有值可查
+    last_exc = None
     for _attempt in range(2):
         try:
             content = _call_chat(base_url, api_key, model, prompt, json_mode=True)
@@ -363,13 +372,23 @@ def summarize_mail(base_url: str, api_key: str, model: str,
             if not isinstance(data, dict):
                 raise ValueError("LLM 返回非 JSON 对象")
             break
-        except (requests.RequestException, ValueError, KeyError, TypeError, RuntimeError):
-            # 重置哨兵：isinstance 抛出时 data 可能已是非 dict 的坏值，不能让它逃出循环
+        except (requests.RequestException, ValueError, KeyError, TypeError, RuntimeError) as exc:
+            last_exc = exc
+            # 防御性重置：值正确性上冗余（下一轮赋值会覆盖），与上面那行合起来才防住 UnboundLocalError
             data = None
             continue
     if not isinstance(data, dict):
-        return {"groups": [], "warnings": [
-            "AI 总结失败：返回内容无法解析为 JSON" if language == "zh"
-            else "AI summary failed: response was not parsable JSON"]}
+        # 按异常类型给原因，而不是一律说「解析失败」：401/5xx/网络错误由 _call_chat 抛出，
+        # 报成「无法解析」会把用户指向错误的方向（去查提示词而不是查 API key）。
+        if isinstance(last_exc, requests.RequestException):
+            msg = ("AI 总结失败：请求模型服务出错（网络或鉴权）" if language == "zh"
+                   else "AI summary failed: model request error (network or auth)")
+        elif isinstance(last_exc, json.JSONDecodeError):
+            msg = ("AI 总结失败：返回内容无法解析为 JSON" if language == "zh"
+                   else "AI summary failed: response was not parsable JSON")
+        else:
+            msg = ("AI 总结失败：AI 返回内容不可用" if language == "zh"
+                   else "AI summary failed: model returned unusable content")
+        return {"groups": [], "warnings": [msg]}
     # 归一化刻意放在重试循环之外：归一自身的缺陷不该被吞成「无法解析为 JSON」
     return _normalize_groups(data, trimmed, language)
