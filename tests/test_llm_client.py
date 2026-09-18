@@ -312,7 +312,8 @@ def test_summarize_mail_reports_request_error_not_parse_error(monkeypatch):
     monkeypatch.setattr(llm_client, "_call_chat", boom)
     r = llm_client.summarize_mail("u", "k", "m", [_mail(0)])
     assert r["groups"] == []
-    assert "JSON" not in r["warnings"][0]
+    # 肯定式：钉住「就是这一支」，否定式只能证明「不是解析那一支」
+    assert "请求模型服务出错" in r["warnings"][0]
 
 
 def test_summarize_mail_reports_parse_error_for_bad_json(monkeypatch):
@@ -321,3 +322,13 @@ def test_summarize_mail_reports_parse_error_for_bad_json(monkeypatch):
     r = llm_client.summarize_mail("u", "k", "m", [_mail(0)])
     assert r["groups"] == []
     assert "JSON" in r["warnings"][0]
+
+
+def test_summarize_mail_reports_generic_message_for_unknown_failure(monkeypatch):
+    """第三支（非请求、非解析）也要有自己的肯定式钉子 —— 否则它被合并进别的支也无人发现。"""
+    def boom(*a, **k):
+        raise ValueError("boom")
+    monkeypatch.setattr(llm_client, "_call_chat", boom)
+    r = llm_client.summarize_mail("u", "k", "m", [_mail(0)])
+    assert r["groups"] == []
+    assert "返回内容不可用" in r["warnings"][0]
