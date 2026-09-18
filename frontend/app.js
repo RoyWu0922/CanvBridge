@@ -271,6 +271,11 @@ document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   if (modulePop && !modulePop.hidden){ closeModulePop(); return; }
   if (!$("loginPrompt").hidden){ dismissLoginPrompt(); return; }   // Esc = 取消手动登录
+  /* #confirmPrompt 也要能被 Esc 关掉，且语义必须是**取消**：走 #btnConfirmNo 的 onclick，
+     也就是 askConfirm 里那个 `done(false)`（与 ✕ / 取消 / 点遮罩同一出口 —— promise 必须
+     落地、confirmResolve 必须清空，绝不留下悬着的 promise）。判据用 DOM 的 hidden 而不是
+     状态变量，与本处上两条同形，也避开晚声明的 `confirmResolve`。 */
+  if (!$("confirmPrompt").hidden){ $("btnConfirmNo").onclick(); return; }
   if (!$("detailModal").hidden) closeDetail();
 });
 
@@ -3155,14 +3160,23 @@ function mailItemHtml(it, m, gi, ti, ii){
   /* 按钮走既有 `.btn-xs`（裁定 R8）：`app.css:141` 的 `.btn-xs` 是 `padding:2px 8px;
      font-size:11.5px`，与本处要的形态一致（简报的 `.btn-sm` 只差 0.5px 字号），
      不新增近似重复的规则。 */
-  const evs = (it.calendar_events || []).map((e, ei) =>
-    `<div class="mail-ddl"><span>${esc(e.title || "")} · ${esc(e.start || "")}</span>
+  /* 元素是**未经校验的模型输出**（后端只保证这两个键是列表），`null` 占位会让 `e.title`
+     抛 TypeError，并把 renderMail 变成静默的未处理 rejection（`mailState.groups` 此时已
+     赋值 ⇒ 之后每次 renderMail 都跟着炸）。此处**不能先 filter 再 map**：`ei` 就是
+     `data-e`，而点击处理器按**原始**下标 `arr[Number(b.dataset.e)]` 取行，过滤会把按钮
+     重新编号、取行却仍按原下标 —— 按钮显示的与它写下去的会是两条不同的 DDL。故按原下标早退。 */
+  const evs = (it.calendar_events || []).map((e, ei) => {
+    if(!e || typeof e !== "object") return "";
+    return `<div class="mail-ddl"><span>${esc(e.title || "")} · ${esc(e.start || "")}</span>
        <button type="button" class="btn btn-xs" data-w="ev" data-g="${gi}" data-t="${ti}" data-i="${ii}" data-e="${ei}"
-         >${esc(t("mail.write_event"))}</button></div>`).join("");
-  const rms = (it.reminders || []).map((e, ei) =>
-    `<div class="mail-ddl"><span>${esc(e.title || "")} · ${esc(e.due_date || "")}</span>
+         >${esc(t("mail.write_event"))}</button></div>`;
+  }).join("");
+  const rms = (it.reminders || []).map((e, ei) => {
+    if(!e || typeof e !== "object") return "";
+    return `<div class="mail-ddl"><span>${esc(e.title || "")} · ${esc(e.due_date || "")}</span>
        <button type="button" class="btn btn-xs" data-w="rm" data-g="${gi}" data-t="${ti}" data-i="${ii}" data-e="${ei}"
-         >${esc(t("mail.write_reminder"))}</button></div>`).join("");
+         >${esc(t("mail.write_reminder"))}</button></div>`;
+  }).join("");
   const ddl = (evs || rms)
     ? `<div class="mail-ddls"><div class="mail-ddl-label">${esc(t("mail.ddl"))}</div>${evs}${rms}</div>`
     : "";
@@ -3194,10 +3208,14 @@ $("mailList").addEventListener("click", async e => {
   if(isEv && !cal){ setStatus(t("status.need_calendar"), "err"); return; }
   if(!isEv && !list){ setStatus(t("status.need_list"), "err"); return; }
 
-  /* 必填字段**先**校验（裁定 R4）：`AddEventRequest` 的 calendar_name/title/start/end
+  /* 必填字段**先**校验（裁定 R4 / F3）：`AddEventRequest` 的 calendar_name/title/start/end
      无默认值，`undefined` 会被 `JSON.stringify` 丢掉 → FastAPI 422 → `r.ok` 与
-     `r.error` 双双 undefined → 用户只看到「写入失败：」后面空空如也。 */
-  if(!row.title || (isEv ? !row.start : !row.due_date)){
+     `r.error` 双双 undefined → 用户只看到「写入失败：」后面空空如也。
+     且必须**是字符串**：只判真值会让 `{"title": 3}` 这类非串通过前端、被 Pydantic 以
+     `string_type` 挡成 422，用户又只看到那条空白的「写入失败：」—— 同样的病。
+     空串也拦（真值判断即已覆盖，这里显式写出以免被误「简化」掉）。 */
+  const isStr = v => typeof v === "string" && v !== "";
+  if(!isStr(row.title) || (isEv ? !isStr(row.start) : !isStr(row.due_date))){
     setStatus(t("status.write_fail") + t("mail.ddl_incomplete"), "err"); return;
   }
 
