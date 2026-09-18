@@ -38,8 +38,16 @@ const FRONTEND = join(ROOT, "frontend");
    `mail.write_event` `mail.write_reminder` `mail.ai_failed` `mail.need_refresh`
    `mail.wrote` `confirm.cancel` `confirm.ok` —— Task 7 只做「能打开、能列邮件」，
    AI 分组、写入日历/提醒按钮、确认弹层都在 Task 8，本任务没有地方引用它们。
-   这 10 个键由 Task 8 的渲染/写入代码消费后，死键应回落 21 —— 由 Task 8 把本行降回 21。 */
-const DEAD_BASELINE = 31;
+   这 10 个键由 Task 8 的渲染/写入代码消费后，死键应回落 21 —— Task 8 已把本行降回 21。
+
+   2026-09-19 Task 8（课程×类型两级分组 + 逐条确认写入）31 → 21：上一行预留的 10 个键
+   本任务全部消费，一个不剩 —— `mail.group_other` `mail.uncategorized` `mail.ddl`
+   `mail.wrote` `mail.ai_failed` `mail.need_refresh` 经 app.js 的 mailRenderGroups /
+   mailItemHtml / mailSummarize 内联 `t()` 取用，`confirm.cancel` `confirm.ok` 挂在
+   index.html 那个新弹层 `#confirmPrompt` 的 `data-i18n` 上。实测死键 21，与预留数
+   逐字吻合，故把本行下调到 21 收紧防线（本任务另新增 `mail.ddl_incomplete` 并有消费者，
+   不影响死键数）。 */
+const DEAD_BASELINE = 21;
 
 /* 动态家族前缀：源码里存在 "wd." 这样的引号字面量，键由它拼出来
    （app.js 的 t("wd."+d)）。这类键无法被字面量扫描判活，只能按前缀整体放行。

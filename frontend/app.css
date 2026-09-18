@@ -540,3 +540,15 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
               font-size: 11px; padding: 1px 6px; }
 .mail-empty, .mail-error { padding: 14px; color: var(--muted, #888); }
 .mail-error { color: var(--err, #c33); }
+
+/* AI 两级分组：课程卡片 → 类型小节 → 邮件条目 → 可写入的 DDL 行。
+   写入按钮用既有 `.btn-xs`（裁定 R8），不在此另立近似规则。 */
+.mail-group h3 { margin: 0 0 8px; }
+.mail-type h4 { margin: 10px 0 6px; color: var(--muted, #888); font-size: 13px; }
+.mail-item { border-top: 1px solid var(--line, #eee); padding: 8px 0; }
+.mail-item-subject { font-weight: 600; }
+.mail-item-sum { font-size: 13px; margin-top: 3px; }
+.mail-ddls { margin-top: 6px; }
+.mail-ddl-label { font-size: 12px; color: var(--muted, #888); }
+.mail-ddl { display: flex; align-items: center; justify-content: space-between;
+            gap: 10px; padding: 3px 0; font-size: 13px; }

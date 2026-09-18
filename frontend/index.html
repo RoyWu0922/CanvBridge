@@ -390,6 +390,21 @@
   </div>
 </div>
 
+<div id="confirmPrompt" class="modal" role="dialog" aria-modal="true" aria-labelledby="confirmPromptTitle" hidden>
+  <div class="modal-backdrop"></div>
+  <div class="modal-card modal-sm">
+    <div class="modal-head">
+      <h3 id="confirmPromptTitle"></h3>
+      <button id="btnConfirmClose" class="modal-close" data-i18n-aria="detail.close">✕</button>
+    </div>
+    <p class="confirm-text" id="confirmPromptBody"></p>
+    <div class="modal-actions">
+      <button id="btnConfirmNo" class="btn btn-ghost" data-i18n="confirm.cancel"></button>
+      <button id="btnConfirmYes" class="btn btn-primary" data-i18n="confirm.ok"></button>
+    </div>
+  </div>
+</div>
+
 <div id="modulePop" class="module-pop" role="dialog" aria-modal="false" hidden>
   <div id="modulePopTitle" class="module-pop-title"></div>
   <div class="module-pop-actions">

@@ -3038,7 +3038,10 @@ function renderMail(){
   if(!box) return;
   const meta = $("mailMeta");
   if(meta){
-    meta.textContent = (mailState.loading || !mailState.mails.length) ? ""
+    /* `mailState.error` 必须在这条判空里：错误卡与计数说的是两件事，同时出现就是骗人
+       —— 载入失败时 mails 仍是上一次的结果（loadMail 只在成功路径里覆写它），
+       于是「共 5 封」会挂在错误卡旁边，而那份列表已经不在屏幕上了。 */
+    meta.textContent = (mailState.loading || mailState.error || !mailState.mails.length) ? ""
       : t("mail.count", { n: mailState.mails.length });
   }
   if(mailState.error){
@@ -3053,7 +3056,7 @@ function renderMail(){
     box.innerHTML = `<div class="card mail-empty">${esc(t("mail.empty"))}</div>`;
     return;
   }
-  box.innerHTML = mailState.mails.map(mailRowHtml).join("");
+  box.innerHTML = mailRenderGroups();
 }
 
 function mailRowHtml(m){
@@ -3075,3 +3078,145 @@ function fmtLocal(iso){
 }
 
 $("btnMailRefresh").onclick = () => refreshMail();
+
+/* ---------- 学校邮箱：AI 两级分组 + 逐条写入 ---------- */
+
+/* 通用确认弹层。
+   **并发的询问不复用同一个 promise**（裁定 R2）：`askConfirm` 的返回值就是「这一次点击
+   要不要写」的答案。若第二个询问直接拿到第一个弹窗的 promise，它的调用方就会收到
+   **别人**的确认结果 —— 落在写入路径上，等于替用户写入一条他从没确认过的条目。
+   方向必须闭合：拿不准就当取消、绝不擅自写入（与 `!m` 那条同一原则）。
+   并发时**弹窗本身仍只开一个**（与 confirmManualLogin 同一范式）。 */
+let confirmResolve = null;
+function askConfirm(titleText, bodyText){
+  const m = $("confirmPrompt");
+  if(!m) return Promise.resolve(false);              // 弹层缺失 → 一律当取消，绝不擅自写入
+  if(confirmResolve) return Promise.resolve(false);  // 已有询问在开 → 后来者当取消，不搭便车
+  confirmResolve = new Promise(resolve => {
+    const done = yes => { confirmResolve = null; m.hidden = true; resolve(yes); };
+    $("confirmPromptTitle").textContent = titleText;
+    $("confirmPromptBody").textContent = bodyText;
+    m.querySelector(".modal-backdrop").onclick = () => done(false);
+    $("btnConfirmClose").onclick = () => done(false);
+    $("btnConfirmNo").onclick    = () => done(false);
+    $("btnConfirmYes").onclick   = () => done(true);
+    m.hidden = false;
+    $("btnConfirmYes").focus();
+  });
+  return confirmResolve;
+}
+
+/* AI 总结：取信 + 两级归类 + 摘要/DDL 都由后端一次做完（POST /api/mail/summarize）。
+   失败一律是 HTTP 200 + `{ok:false,error}`（`api()` 的契约），故只判 `ok`，不判状态码。 */
+async function mailSummarize(){
+  if(!mailState.mails.length){ setStatus(t("mail.need_refresh"), "err"); return; }
+  const s = settings();
+  await withBusy(t("mail.summarize"), $("btnMailSummary"), async () => {
+    const r = await api("mail/summarize", {
+      llm_base_url: s.llm_base_url, llm_api_key: s.llm_api_key, llm_model: s.llm_model,
+      days: 7, language: LANG() });
+    if(r.ok !== true){ setStatus(t("mail.ai_failed") + (r.error || ""), "err"); return; }
+    mailState.mails = r.mails || mailState.mails;
+    mailState.groups = r.groups || [];
+    /* 警告整列照放，但分隔符跟语言走（裁定 R6）：后端文案是按 language 本地化的，
+       硬编码「；」会让英文界面冒出中文标点。分隔符不值得一个 i18n 键 —— R6 说的
+       「不新增键」只指这一处（下方写入路径那条 `mail.ddl_incomplete` 不在此列：
+       它是写给用户看的一句完整的话，必须双语）。 */
+    if((r.warnings || []).length)
+      setStatus(r.warnings.join(LANG() === "zh" ? "；" : "; "), "info", 8000);
+    renderMail();
+  });
+}
+
+/* 两级分组：课程 → 类型。还没点过 AI 总结（groups 为空）时退回 Task 7 的平铺列表。 */
+function mailRenderGroups(){
+  const gs = mailState.groups || [];
+  if(!gs.length) return mailState.mails.map(mailRowHtml).join("");
+  let html = "";
+  gs.forEach((g, gi) => {
+    html += `<div class="card mail-group"><h3>${esc(g.course || t("mail.group_other"))}</h3>`;
+    (g.types || []).forEach((ty, ti) => {
+      html += `<div class="mail-type"><h4>${esc(ty.type || t("mail.uncategorized"))}</h4>`;
+      (ty.items || []).forEach((it, ii) => {
+        /* 对回原文一律按 `mail_index`（= `mailState.mails` 里的下标，后端 enumerate 赋的
+           `index`），**绝不靠标题匹配**：同题邮件不止一封，标题不是锚。 */
+        const m = mailState.mails[it.mail_index];
+        if(!m) return;                    // 越界（后端已过滤，前端再兜一层）
+        html += mailItemHtml(it, m, gi, ti, ii);
+      });
+      html += `</div>`;
+    });
+    html += `</div>`;
+  });
+  return html;
+}
+
+function mailItemHtml(it, m, gi, ti, ii){
+  /* 按钮走既有 `.btn-xs`（裁定 R8）：`app.css:141` 的 `.btn-xs` 是 `padding:2px 8px;
+     font-size:11.5px`，与本处要的形态一致（简报的 `.btn-sm` 只差 0.5px 字号），
+     不新增近似重复的规则。 */
+  const evs = (it.calendar_events || []).map((e, ei) =>
+    `<div class="mail-ddl"><span>${esc(e.title || "")} · ${esc(e.start || "")}</span>
+       <button type="button" class="btn btn-xs" data-w="ev" data-g="${gi}" data-t="${ti}" data-i="${ii}" data-e="${ei}"
+         >${esc(t("mail.write_event"))}</button></div>`).join("");
+  const rms = (it.reminders || []).map((e, ei) =>
+    `<div class="mail-ddl"><span>${esc(e.title || "")} · ${esc(e.due_date || "")}</span>
+       <button type="button" class="btn btn-xs" data-w="rm" data-g="${gi}" data-t="${ti}" data-i="${ii}" data-e="${ei}"
+         >${esc(t("mail.write_reminder"))}</button></div>`).join("");
+  const ddl = (evs || rms)
+    ? `<div class="mail-ddls"><div class="mail-ddl-label">${esc(t("mail.ddl"))}</div>${evs}${rms}</div>`
+    : "";
+  return `<div class="mail-item">
+    <div class="mail-item-subject">${esc(m.subject || t("mail.no_body"))}</div>
+    <div class="mail-item-sum">${esc(it.summary || "")}</div>${ddl}</div>`;
+}
+
+$("btnMailSummary").onclick = () => mailSummarize();
+
+/* 逐条写入：每条都先问一次，确认才写。
+   邮件里的日期比公告更容易被 AI 提取错，绝不自动批量写。 */
+$("mailList").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-w]");
+  if(!b) return;
+  const g  = (mailState.groups || [])[Number(b.dataset.g)];
+  const ty = g && (g.types || [])[Number(b.dataset.t)];
+  const it = ty && (ty.items || [])[Number(b.dataset.i)];
+  if(!it) return;
+  const isEv = b.dataset.w === "ev";
+  const arr = isEv ? (it.calendar_events || []) : (it.reminders || []);
+  const row = arr[Number(b.dataset.e)];
+  if(!row) return;
+
+  /* 目标日历/提醒列表**先**校验（裁定 R3）：这两样没选就根本写不成，让用户先确认、
+     再被告知「请先刷新并选择…」—— 那次确认毫无意义（用户确认了一个做不到的动作）。 */
+  const cal  = $("selCalendar") ? $("selCalendar").value : "";
+  const list = $("selList")     ? $("selList").value     : "";
+  if(isEv && !cal){ setStatus(t("status.need_calendar"), "err"); return; }
+  if(!isEv && !list){ setStatus(t("status.need_list"), "err"); return; }
+
+  /* 必填字段**先**校验（裁定 R4）：`AddEventRequest` 的 calendar_name/title/start/end
+     无默认值，`undefined` 会被 `JSON.stringify` 丢掉 → FastAPI 422 → `r.ok` 与
+     `r.error` 双双 undefined → 用户只看到「写入失败：」后面空空如也。 */
+  if(!row.title || (isEv ? !row.start : !row.due_date)){
+    setStatus(t("status.write_fail") + t("mail.ddl_incomplete"), "err"); return;
+  }
+
+  /* 防重入（裁定 R5）：`b.disabled = true` 必须在**第一个 await 之前**落地。
+     否则双击会在第一次请求返回前发出两次 POST，同一条 DDL 写两遍。
+     取消/失败都要把它恢复，否则一次取消会把按钮永久锁死。 */
+  b.disabled = true;
+
+  const label = isEv ? `${row.title} · ${row.start || ""}` : `${row.title} · ${row.due_date || ""}`;
+  if(!await askConfirm(t(isEv ? "mail.write_event" : "mail.write_reminder"), label)){
+    b.disabled = false;                 // 取消 → 按钮恢复可用
+    return;
+  }
+  const r = isEv
+    ? await api("add_calendar_event", { calendar_name: cal, title: row.title,
+        start: row.start, end: row.end || row.start, location: row.location || "",
+        notes: row.notes || "" })
+    : await api("add_reminder", { list_name: list, title: row.title,
+        due_date: row.due_date, notes: row.notes || "" });
+  if(r.ok === true) setStatus(t("mail.wrote", { n: 1 }), "ok");    // 写成 → 保持置灰
+  else { setStatus(t("status.write_fail") + (r.error || ""), "err"); b.disabled = false; }
+});
