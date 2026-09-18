@@ -1781,28 +1781,44 @@ def test_mail_summarize_joins_bodies_and_groups(monkeypatch):
     # index 是回指锚，必须从 0 连续编号
     assert [m["index"] for m in seen["mails"]] == [0]
     assert seen["mails"][0]["body"] == "交报告"
-    assert "token" not in json.dumps(body)
+    # 响应键白名单。这里刻意**不**断言「token 不在响应里」：邮箱 bearer token
+    # 只活在 mail_client 的 HTTP 层（header），从来不是 mail dict 的字段，所以
+    # 那句在 /api/mail/summarize 上恒真 —— 它看着像在守「凭证不回传前端」这条
+    # 硬约束，实际守的是个永远不会出现的串，而把 req 的字段（如 llm_api_key）
+    # 摊进响应仍能全绿。真正要钉的是「响应只有这四个键」，凭证侧的字段级防护
+    # 在 tests/test_mail_client.py。
+    assert set(body) == {"ok", "mails", "groups", "warnings"}
 
 
 def test_mail_summarize_indexes_are_contiguous(monkeypatch):
-    """两封起验证：index 必须是 0,1 而不是固定值 —— 前端靠它回指原文。"""
+    """两封起验证：index 必须是 0,1 而不是固定值 —— 前端靠它回指原文。
+
+    断言只认**调用当刻**的快照。假替身若存 mails 的引用，端点在这之后仍会往
+    同一批 dict 里补写 index/body，事后读 seen 看到的是已被改写过的状态，
+    于是「把赋值循环挪到 summarize_mail 之后」——线上会让每个非空邮箱都返回
+    {ok: false, error: "'index'"}（llm_client 在重试之外硬取 m["index"]）——
+    这种改动在用例里照样绿。快照必须在 summarize_mail 内取，那是端点写完
+    index/body 之后、返回之前的唯一观察点。
+    """
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
         {"id": "A", "subject": "甲", "sender": "", "received": "", "is_read": False},
         {"id": "B", "subject": "乙", "sender": "", "received": "", "is_read": True}])
     monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "a", "B": "b"})
     seen = {}
-    # 假替身必须返回 **dict**：旧写法 `seen.setdefault("m", mails) or {...}` 里
-    # setdefault 返回的是非空 mails（真值），lambda 于是交回一个 list，端点
-    # `{"ok": True, "mails": mails, **r}` 抛 TypeError 被宽 except 吞成 {ok: false}；
-    # 而断言读的 seen["m"] 正是 mails，用例照样绿 —— 端点坏了却看不出来。
-    monkeypatch.setattr(llm_client, "summarize_mail",
-                        lambda b, k, m, mails, language="zh":
-                        (seen.setdefault("m", mails), {"groups": [], "warnings": []})[1])
+
+    def fake_summarize(base, key, model, mails, language="zh"):
+        seen["at_call"] = [(m.get("index"), m.get("body")) for m in mails]
+        return {"groups": [], "warnings": []}
+
+    monkeypatch.setattr(llm_client, "summarize_mail", fake_summarize)
     body = TestClient(main.app).post("/api/mail/summarize", json={
         "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m"}).json()
     assert body["ok"] is True
-    assert [m["index"] for m in seen["m"]] == [0, 1]
-    assert [m["body"] for m in seen["m"]] == ["a", "b"]
+    # 承重断言：传给 LLM 时 index/body 就已写好
+    assert seen["at_call"] == [(0, "a"), (1, "b")]
+    # 顺带钉住返回给前端的形态
+    assert [m["index"] for m in body["mails"]] == [0, 1]
+    assert [m["body"] for m in body["mails"]] == ["a", "b"]
 
 
 def test_mail_summarize_returns_mails_too(monkeypatch):
@@ -1839,3 +1855,24 @@ def test_mail_summarize_no_mail_skips_llm(monkeypatch):
     assert body["ok"] is True
     assert body["mails"] == []
     assert called == []          # 没邮件就别浪费一次 LLM 调用
+
+
+def test_mail_summarize_missing_body_falls_back_to_empty(monkeypatch):
+    """取不到正文的那封退化成空串，不能把整次请求打成 {ok: false}。
+
+    取正文是尽力而为的：`bodies.get(m["id"], "")` 若被写成 `bodies[m["id"]]`，
+    一封取不到正文的邮件会让整个响应变成 {ok: false, error: "'B'"}（KeyError
+    被端点的宽 except 吞掉），其余邮件的摘要也随之全丢。
+    """
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: [
+        {"id": "A", "subject": "甲", "sender": "", "received": "", "is_read": False},
+        {"id": "B", "subject": "乙", "sender": "", "received": "", "is_read": True}])
+    monkeypatch.setattr(mail_client, "fetch_bodies",
+                        lambda items: {"A": "a"})      # B 没取到正文
+    monkeypatch.setattr(llm_client, "summarize_mail",
+                        lambda *a, **k: {"groups": [], "warnings": []})
+    body = TestClient(main.app).post("/api/mail/summarize", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m"}).json()
+    assert body["ok"] is True
+    assert [m["id"] for m in body["mails"]] == ["A", "B"]
+    assert [m["body"] for m in body["mails"]] == ["a", ""]
