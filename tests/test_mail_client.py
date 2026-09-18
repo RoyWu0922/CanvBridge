@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from backend import mail_client
+from backend import banweb, mail_client
 
 
 def _item(iid, subject="S", sender="老師", recv="2026-09-17T08:31:00Z", is_read=False):
@@ -226,6 +226,21 @@ def test_collect_items_stops_on_empty_page(monkeypatch):
     assert calls == [0]
 
 
+def test_collect_items_throttles_between_pages(monkeypatch):
+    """翻页之间要节流（spec §9）：inbox 无服务端日期过滤，大邮箱会被整仓扫一遍。
+
+    只在**首个请求之后**睡 —— 首个请求前睡是白等。
+    """
+    pages = {0: [_item(f"A{n}") for n in range(mail_client.PAGE_SIZE)],
+             mail_client.PAGE_SIZE: [_item("LAST")]}
+    slept = []
+    monkeypatch.setattr(mail_client.time, "sleep", slept.append)
+    monkeypatch.setattr(mail_client, "_post_json",
+                        lambda a, p, t: _find_resp(pages.get(p["Body"]["Paging"]["Offset"], [])))
+    mail_client.collect_items("TOK", 7, NOW)
+    assert slept == [mail_client._THROTTLE]
+
+
 class _FrozenDatetime(datetime):
     @classmethod
     def now(cls, tz=None):
@@ -238,7 +253,12 @@ def test_list_mail_returns_scoped_items(no_browser, monkeypatch):
     rows = [_item("旧读", recv=old, is_read=True),
             _item("近读", recv=new, is_read=True),
             _item("旧未读", recv=old, is_read=False)]
-    monkeypatch.setattr(mail_client, "_post_json", lambda a, p, t: _find_resp(rows))
+    def fake_post(action, payload, token):
+        # 钉住 _capture_token 的返回值真的被送到了 REST 层（否则这条链可以硬编码任何串）
+        assert token == "TOK"
+        return _find_resp(rows)
+
+    monkeypatch.setattr(mail_client, "_post_json", fake_post)
     monkeypatch.setattr(mail_client, "datetime", _FrozenDatetime)
     got = mail_client.list_mail(7)
     assert {x["id"] for x in got} == {"近读", "旧未读"}
@@ -250,6 +270,7 @@ def test_fetch_bodies_batches_and_maps_back_by_id(no_browser, monkeypatch):
 
     def fake_post(action, payload, token):
         assert action == "GetItem"
+        assert token == "TOK"       # 同上：_do_bodies 也必须把截到的 token 送下去
         got = [x["Id"] for x in payload["Body"]["ItemIds"]]
         batches.append(got)
         return _get_resp([(i, "正文" + i) for i in got])
@@ -282,3 +303,90 @@ def test_capture_token_raises_when_page_never_emits(monkeypatch):
     monkeypatch.setattr(mail_client, "_TOKEN_WAIT_TICKS", 2)
     with pytest.raises(mail_client.MailError):
         mail_client._capture_token(_P())
+
+
+def test_capture_token_reads_first_bearer_from_service_svc(monkeypatch):
+    """截 token 的全部接线：认 service.svc、只认第一个、截到即停、必摘监听器。"""
+    class _P:
+        def __init__(self): self.h, self.ticks, self.url = {}, 0, None
+        def on(self, ev, fn): self.h[ev] = fn
+        def remove_listener(self, ev, fn):
+            assert self.h.pop(ev) is fn          # 必须摘掉，否则监听器留在 page 上
+        def goto(self, url, **k):
+            self.url = url
+            for u, tok in (("https://x/static/a.js", "WRONG"),
+                           ("https://x/owa/service.svc?action=FindItem", "TOK1"),
+                           ("https://x/owa/service.svc?action=GetItem", "TOK2")):
+                self.h["request"](type("R", (), {"url": u,
+                                                 "headers": {"Authorization": f"Bearer {tok}"}})())
+        def wait_for_timeout(self, ms): self.ticks += 1
+
+    p = _P()
+    assert mail_client._capture_token(p) == "TOK1"   # 只认 service.svc、只认第一个
+    assert p.url == mail_client.MAIL_URL
+    assert p.ticks == 0                              # 截到即 break，不空转满 40 次
+
+
+# --- 公开入口的错误契约：归一成 MailError，但绝不二次包装 ---
+
+class _RawBrowserBoom(Exception):
+    """冒充 Playwright 抛出的原始异常（如 60s goto 超时）。"""
+
+
+def _boom(*_a, **_k):
+    raise _RawBrowserBoom("Timeout 60000ms exceeded.")
+
+
+def test_list_mail_normalizes_raw_browser_error(no_browser, monkeypatch):
+    """Playwright 原始异常必须变成 MailError，不能从公开入口原样冒出。
+
+    否则 Task 4 的端点认不出「会话失效」，只会回一个 500 + 英文 Playwright 文案，
+    而不是 #loginPrompt。
+    """
+    monkeypatch.setattr(mail_client, "_do_list", _boom)
+    with pytest.raises(mail_client.MailError):
+        mail_client.list_mail(7)
+
+
+def test_fetch_bodies_normalizes_raw_browser_error(no_browser, monkeypatch):
+    """同上，fetch_bodies 也走公开入口，同样不能漏。"""
+    monkeypatch.setattr(mail_client, "_do_bodies", _boom)
+    with pytest.raises(mail_client.MailError):
+        mail_client.fetch_bodies([{"id": "A"}])
+
+
+def test_public_entries_pass_own_errors_through_unwrapped(no_browser, monkeypatch):
+    """MailError / BanwebError 必须是**同一个对象**穿过去 —— 文案要原样到用户面前。"""
+    for exc in (mail_client.MailError("邮箱会话已失效"),
+                banweb.BanwebError("AIMS 浏览器无响应")):
+        def _raise(*_a, _exc=exc, **_k):
+            raise _exc
+
+        monkeypatch.setattr(mail_client, "_do_list", _raise)
+        with pytest.raises(type(exc)) as caught:
+            mail_client.list_mail(7)
+        assert caught.value is exc
+
+
+def test_list_mail_keeps_target_closed_retry(monkeypatch):
+    """归一化必须留在公开入口：_retry_once 仍要认得出「目标已关闭」并重跑一次。
+
+    把转换做进 _retry_once 包着的那层，_target_closed 就再也匹配不上原始异常，
+    「邮件 tab 被看门狗清掉」这条恢复路径会静默失效（spec §5.1 约束 2）。
+    本用例故意**不替身** _retry_once，走真实的它。
+    """
+    monkeypatch.setattr(mail_client.banweb, "_on_browser_thread", lambda fn: fn())
+    monkeypatch.setattr(mail_client.banweb, "_ensure_mail_page", lambda: _FakePage())
+    monkeypatch.setattr(mail_client.banweb, "_reset_browser", lambda: None)  # 绝不碰真浏览器
+    monkeypatch.setattr(mail_client, "_post_json", lambda a, p, t: _find_resp([]))
+    calls = []
+
+    def flaky_capture(page):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("Target page, context or browser has been closed")
+        return "TOK"
+
+    monkeypatch.setattr(mail_client, "_capture_token", flaky_capture)
+    assert mail_client.list_mail(7) == []
+    assert len(calls) == 2      # 第一次被 _retry_once 吞下并整体重跑

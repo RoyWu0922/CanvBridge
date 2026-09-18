@@ -275,6 +275,9 @@ def collect_items(token: str, days: int, now: datetime) -> list[dict]:
     items: list[dict] = []
     offset = 0
     while True:
+        if offset:
+            time.sleep(_THROTTLE)     # spec §9 请求节流：inbox 无服务端日期过滤，
+                                      # 大邮箱会被整仓扫一遍，不能连发
         resp = _post_json("FindItem", find_item_payload(offset), token)
         batch = parse_find_items(resp)
         if not batch:
@@ -293,7 +296,17 @@ def _do_list(days: int) -> list[dict]:
 
 def list_mail(days: int = DEFAULT_DAYS) -> list[dict]:
     """拉取「未读 ∪ 最近 days 天」的邮件（不含正文）。"""
-    return banweb._on_browser_thread(lambda: banweb._retry_once(lambda: _do_list(days)))
+    try:
+        return banweb._on_browser_thread(lambda: banweb._retry_once(lambda: _do_list(days)))
+    except (MailError, banweb.BanwebError):
+        raise
+    except Exception as exc:
+        # Playwright 的原始异常（如 goto 的 60s 超时）在这里归一成 MailError，
+        # 否则公开入口会漏出英文的 Playwright 文案 + 未处理的 500，Task 4 就认不出
+        # 「会话失效」这条 #loginPrompt 路径。归一必须做在**这里**、不能做进
+        # _retry_once 包着的那层：_target_closed 靠原始异常特征匹配，提前转换会
+        # 让「目标已关闭」的重试彻底失效。
+        raise MailError(f"读取邮件列表失败：{exc}") from exc
 
 
 def _do_bodies(items: list[dict]) -> dict:
@@ -318,4 +331,9 @@ def fetch_bodies(items: list[dict]) -> dict:
     """
     if not items:
         return {}
-    return banweb._on_browser_thread(lambda: banweb._retry_once(lambda: _do_bodies(items)))
+    try:
+        return banweb._on_browser_thread(lambda: banweb._retry_once(lambda: _do_bodies(items)))
+    except (MailError, banweb.BanwebError):
+        raise
+    except Exception as exc:
+        raise MailError(f"读取邮件正文失败：{exc}") from exc
