@@ -310,12 +310,18 @@ def list_mail(days: int = DEFAULT_DAYS) -> list[dict]:
         # **不是**因为「做进 _retry_once 包着的那层会毁掉重试」—— 那样并不会：实测把
         # 归一搬进去，四条公开入口用例仍全绿，重试照跑。
         #
-        # ⚠️ 「目标已关闭」的重试（spec §5.1 约束 2）之所以在归一化之后还能命中，
-        # 靠的是下面这条消息**逐字回显了原始异常文本** —— _target_closed
-        # （banweb.py:783-784）判的是 str(exc) 的子串匹配。也就是说，重试的存活
-        # 挂在文案上，而不是挂在转换位置上。**改这条消息的措辞前必须先看
-        # test_list_mail_keeps_target_closed_retry**：把 {exc} 去掉或改写（哪怕只是
-        # 为了给用户更干净的中文），重试就会静默失效，且不会有别的用例变红。
+        # 「目标已关闭」的重试（spec §5.1 约束 2）与文案无关，靠的是位置：
+        # _retry_once 包着的是 _do_list 本身，它在归一化**之前**就拿到了 Playwright
+        # 的原始异常，_target_closed（banweb.py:778-784）的 str(exc) 子串匹配判的是
+        # 原文，不是这条消息；重试耗尽之后才轮到本转换兜底。所以措辞是自由的 ——
+        # 去掉 {exc} 实测 30 条全绿，不会有别的用例变红。
+        #
+        # 这份自由随转换位置而来：**一旦有人把归一搬进 _retry_once 包着的那层**，
+        # _retry_once 看到的就是 MailError，_target_closed 便只剩一条命中路径 ——
+        # f"…{exc}" 逐字回显的原始文本。搬家者必须连同 {exc} 的回显一起保留（哪怕
+        # 只是为了给用户更干净的中文也不能删），否则 spec §5.1 约束 2 的恢复路径
+        # （邮件 tab 被看门狗清掉 → _reset_browser() → 整体重发）会静默失效，且全仓
+        # 只有 test_list_mail_keeps_target_closed_retry 会红（实测：搬进去且去掉）。
         raise MailError(f"读取邮件列表失败：{exc}") from exc
 
 
