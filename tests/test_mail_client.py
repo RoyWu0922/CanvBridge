@@ -308,10 +308,11 @@ def test_capture_token_raises_when_page_never_emits(monkeypatch):
 def test_capture_token_reads_first_bearer_from_service_svc(monkeypatch):
     """截 token 的全部接线：认 service.svc、只认第一个、截到即停、必摘监听器。"""
     class _P:
-        def __init__(self): self.h, self.ticks, self.url = {}, 0, None
+        def __init__(self):
+            self.h, self.ticks, self.url = {}, 0, None
+            self.removed = []                        # 摘除记录；见用例末尾的断言
         def on(self, ev, fn): self.h[ev] = fn
-        def remove_listener(self, ev, fn):
-            assert self.h.pop(ev) is fn          # 必须摘掉，否则监听器留在 page 上
+        def remove_listener(self, ev, fn): self.removed.append((ev, fn))
         def goto(self, url, **k):
             self.url = url
             for u, tok in (("https://x/static/a.js", "WRONG"),
@@ -325,6 +326,14 @@ def test_capture_token_reads_first_bearer_from_service_svc(monkeypatch):
     assert mail_client._capture_token(p) == "TOK1"   # 只认 service.svc、只认第一个
     assert p.url == mail_client.MAIL_URL
     assert p.ticks == 0                              # 截到即 break，不空转满 40 次
+
+    # 摘除必须**真发生**且摘的是 on 注册的同一个对象：断言放在用例里（而不是替身的
+    # remove_listener 内部）—— 放内部时，把 finally 整块删掉就没人调用它，断言根本不跑，
+    # 用例照样绿。每次都漏摘会让这个长寿命 page 对象累积监听器。
+    assert len(p.removed) == 1
+    ev, fn = p.removed[0]
+    assert ev == "request"
+    assert fn is p.h["request"]        # 传 None / 别的函数都必须红
 
 
 # --- 公开入口的错误契约：归一成 MailError，但绝不二次包装 ---
