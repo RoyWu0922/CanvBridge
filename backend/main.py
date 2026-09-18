@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import (apple_script, banweb, canvas_client, credentials, files_downloader,
-               library_areas, library_client, library_query, llm_client)
+               library_areas, library_client, library_query, llm_client, mail_client)
 
 app = FastAPI(title="CanvBridge")
 
@@ -45,6 +45,10 @@ class LLMConfig(BaseModel):
     llm_base_url: str
     llm_api_key: str
     llm_model: str
+
+
+class MailListRequest(BaseModel):
+    days: int = 7
 
 
 class SyncRequest(CanvasConfig):
@@ -941,3 +945,13 @@ def library_search(req: LibrarySearchRequest):
         pool.shutdown(wait=not stuck)
 
     return {"ok": True, "parsed": parsed, "warnings": warnings, **blocks}
+
+
+@app.post("/api/mail/list")
+def mail_list(req: MailListRequest):
+    """列出「未读 ∪ 最近 N 天」的学校邮箱邮件。只读，不调 LLM、不改已读状态。"""
+    try:
+        mails = mail_client.list_mail(req.days)
+        return {"ok": True, "count": len(mails), "mails": mails}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}

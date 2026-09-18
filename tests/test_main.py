@@ -1,9 +1,11 @@
+import json
 import threading
 
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import apple_script, banweb, canvas_client, credentials, files_downloader, llm_client, main
+from backend import (apple_script, banweb, canvas_client, credentials, files_downloader,
+                     llm_client, mail_client, main)
 
 client = TestClient(main.app)
 
@@ -1706,3 +1708,35 @@ def test_library_search_returns_json_when_the_domain_catalog_raises(monkeypatch)
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/json")
     assert r.json()["ok"] is True
+
+
+# --- 学校邮箱 ---
+
+def test_mail_list_returns_mails(monkeypatch):
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: [
+        {"id": "A", "subject": "作业", "sender": "李老師",
+         "received": "2026-09-17T08:31:00Z", "is_read": False}])
+    body = TestClient(main.app).post("/api/mail/list", json={"days": 7}).json()
+    assert body["ok"] is True
+    assert body["count"] == 1
+    assert body["mails"][0]["subject"] == "作业"
+    # 硬约束：响应里绝不能出现 token
+    assert "token" not in json.dumps(body)
+
+
+def test_mail_list_defaults_to_seven_days(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(mail_client, "list_mail",
+                        lambda days: seen.setdefault("d", days) or [])
+    TestClient(main.app).post("/api/mail/list", json={})
+    assert seen["d"] == 7
+
+
+def test_mail_list_failure_is_200_json(monkeypatch):
+    """取信失败不能裸 500 —— 前端 api() 靠 ok 字段走兜底。"""
+    def boom(days):
+        raise mail_client.MailError("邮箱会话已失效")
+    monkeypatch.setattr(mail_client, "list_mail", boom)
+    r = TestClient(main.app).post("/api/mail/list", json={})
+    assert r.status_code == 200
+    assert r.json() == {"ok": False, "error": "邮箱会话已失效"}
