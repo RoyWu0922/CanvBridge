@@ -196,3 +196,87 @@ def test_non_deepseek_host_untouched(monkeypatch):
     p = captured["payload"]
     assert p["model"] == "deepseek-chat"
     assert "thinking" not in p
+
+
+# --- summarize_mail ---
+
+def _mail(i, subject="作业", body="正文"):
+    return {"index": i, "subject": subject, "sender": "李老師",
+            "received": "2026-09-17T08:31:00Z", "body": body}
+
+
+def test_trim_bodies_preserves_count():
+    """条数永远不变 —— 对齐靠 index，丢一条就整体错位。"""
+    mails = [_mail(i, body="x" * 50000) for i in range(4)]
+    out = llm_client.trim_bodies(mails, budget=2000)
+    assert len(out) == 4
+    assert [m["index"] for m in out] == [0, 1, 2, 3]
+    assert all(len(m["body"]) <= 500 for m in out)
+
+
+def test_trim_bodies_caps_long_body():
+    out = llm_client.trim_bodies([_mail(0, body="y" * 99999)])
+    assert len(out[0]["body"]) == llm_client._MAX_BODY
+
+
+def test_trim_bodies_never_shrinks_below_floor():
+    """邮件极多时也不能把每封压到 0 字 —— 有下限，宁可超预算。"""
+    mails = [_mail(i, body="z" * 10000) for i in range(500)]
+    out = llm_client.trim_bodies(mails, budget=20000)
+    assert all(len(m["body"]) == llm_client._MIN_BODY for m in out)
+
+
+def test_trim_bodies_does_not_mutate_input():
+    m = _mail(0, body="q" * 99999)
+    llm_client.trim_bodies([m])
+    assert len(m["body"]) == 99999
+
+
+def test_summarize_mail_happy_path(monkeypatch):
+    payload = {"groups": [{"course": "CS1315", "types": [
+        {"type": "作业", "items": [{"mail_index": 0, "summary": "交实验报告",
+            "calendar_events": [], "reminders": [
+                {"title": "交报告", "due_date": "2026-09-25T23:59:00", "notes": ""}]}]}]}]}
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: json.dumps(payload))
+    r = llm_client.summarize_mail("u", "k", "m", [_mail(0)])
+    assert r["warnings"] == []
+    item = r["groups"][0]["types"][0]["items"][0]
+    assert item["mail_index"] == 0
+    assert item["reminders"][0]["title"] == "交报告"
+
+
+def test_summarize_mail_drops_out_of_range_index(monkeypatch):
+    """AI 编出的越界 index 必须丢 —— 绝不能把内容挂到不存在的邮件上。"""
+    payload = {"groups": [{"course": "C", "types": [{"type": "T", "items": [
+        {"mail_index": 99, "summary": "幽灵", "calendar_events": [], "reminders": []}]}]}]}
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: json.dumps(payload))
+    r = llm_client.summarize_mail("u", "k", "m", [_mail(0)])
+    assert r["groups"] == []
+    assert r["warnings"]          # 丢了东西必须留痕，不静默
+
+
+def test_summarize_mail_falls_back_to_excerpt_for_bad_summary(monkeypatch):
+    payload = {"groups": [{"course": "C", "types": [{"type": "T", "items": [
+        {"mail_index": 0, "summary": 12345, "calendar_events": [], "reminders": []}]}]}]}
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: json.dumps(payload))
+    r = llm_client.summarize_mail("u", "k", "m", [_mail(0, body="课程正文内容")])
+    s = r["groups"][0]["types"][0]["items"][0]["summary"]
+    assert isinstance(s, str) and "课程正文内容" in s
+
+
+def test_summarize_mail_retries_once_then_warns(monkeypatch):
+    calls = []
+    monkeypatch.setattr(llm_client, "_call_chat",
+                        lambda *a, **k: calls.append(1) or "不是 JSON")
+    r = llm_client.summarize_mail("u", "k", "m", [_mail(0)])
+    assert len(calls) == 2        # 重试一次
+    assert r["groups"] == []
+    assert r["warnings"]
+
+
+def test_summarize_mail_empty_input_skips_llm(monkeypatch):
+    called = []
+    monkeypatch.setattr(llm_client, "_call_chat",
+                        lambda *a, **k: called.append(1) or "{}")
+    assert llm_client.summarize_mail("u", "k", "m", []) == {"groups": [], "warnings": []}
+    assert called == []

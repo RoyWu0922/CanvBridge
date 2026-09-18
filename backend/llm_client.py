@@ -225,3 +225,151 @@ def summarize_syllabus(base_url: str, api_key: str, model: str,
         except Exception as exc:
             last_err = exc
     raise RuntimeError(f"Syllabus 总结失败: {last_err}") from last_err
+
+
+# ---------------------------------------------------------------------------
+# 邮件 AI 总结（课程 × 类型 两级）
+# ---------------------------------------------------------------------------
+
+_MAX_BODY = 4000          # 单封正文截断
+_MAX_MAIL_TOTAL = 20000   # 全部正文的总预算（对齐 _MAX_SYLLABUS 的先例）
+_MIN_BODY = 400           # 每封的下限：宁可超预算，也不把邮件压成 0 字
+
+
+def trim_bodies(mails: list[dict], budget: int = _MAX_MAIL_TOTAL) -> list[dict]:
+    """单封截断 + 总量预算。**条数永远不变**（对齐靠 index，丢条会整体错位）。"""
+    n = max(1, len(mails))
+    cap = min(_MAX_BODY, max(_MIN_BODY, budget // n))
+    return [{**m, "body": (m.get("body") or "")[:cap]} for m in mails]
+
+
+def _excerpt(m: dict) -> str:
+    """模型没给可用摘要时的回退 —— 用原文摘录，不编造。"""
+    text = (m.get("body") or "").strip() or (m.get("subject") or "").strip()
+    return text[:200]
+
+
+_MAIL_SCHEMA_ZH = """只输出如下 JSON，不要任何解释、不要 markdown 代码块：
+{"groups":[{"course":"课程代码或「学校行政」","types":[
+  {"type":"作业|考试|通知|行政|其他","items":[
+    {"mail_index":<输入里的邮件编号，整数>,
+     "summary":"一句话中文摘要",
+     "calendar_events":[{"title":"","start":"YYYY-MM-DDTHH:MM:SS","end":"YYYY-MM-DDTHH:MM:SS","location":"","notes":""}],
+     "reminders":[{"title":"","due_date":"YYYY-MM-DDTHH:MM:SS","notes":""}]}]}]}]}
+规则：
+- 邮件里**没有**明确截止时间时，calendar_events 与 reminders 都留空数组，绝不臆造日期。
+- 一封邮件只能出现一次。所有输入邮件都必须被覆盖到。
+- 归不进具体课程的（校方通知、图书馆、IT 等）course 填「学校行政」。"""
+
+_MAIL_SCHEMA_EN = """Output only the following JSON, no prose, no markdown fences:
+{"groups":[{"course":"course code or \\"Administration\\"","types":[
+  {"type":"assignment|exam|notice|admin|other","items":[
+    {"mail_index":<the mail number from the input, integer>,
+     "summary":"one-sentence summary",
+     "calendar_events":[{"title":"","start":"YYYY-MM-DDTHH:MM:SS","end":"YYYY-MM-DDTHH:MM:SS","location":"","notes":""}],
+     "reminders":[{"title":"","due_date":"YYYY-MM-DDTHH:MM:SS","notes":""}]}]}]}]}
+Rules:
+- If a mail states **no** explicit deadline, leave calendar_events and reminders empty. Never invent dates.
+- Each mail appears exactly once. Every input mail must be covered.
+- Non-course mail goes under course "Administration"."""
+
+
+def _build_mail_prompt(mails: list[dict], language: str = "zh") -> str:
+    if language == "en":
+        head = ("You are triaging a CityU student's school mailbox. Group the mails "
+                "below by course then type, with a summary and any deadlines.\n")
+        schema = _MAIL_SCHEMA_EN
+    else:
+        head = ("你在帮一名香港城市大学学生整理学校邮箱。下面是本次要处理的邮件，"
+                "请按「课程 → 类型」两级归类，并给出摘要与截止事项。\n")
+        schema = _MAIL_SCHEMA_ZH
+    parts = [head, schema, "\n---\n"]
+    for m in mails:
+        parts.append(
+            f"### 邮件 #{m['index']}\n"
+            f"主题：{m.get('subject', '')}\n"
+            f"发件人：{m.get('sender', '')}\n"
+            f"时间：{m.get('received', '')}\n"
+            f"正文：\n{m.get('body', '')}\n\n")
+    return "".join(parts)
+
+
+def _normalize_groups(data: dict, mails: list[dict], language: str) -> dict:
+    """把模型输出收敛成可信结构：越界 index 丢弃、坏字段回退、全程留痕。"""
+    other = "Other" if language == "en" else "其他"
+    warnings: list[str] = []
+    dropped = 0
+    groups = data.get("groups") if isinstance(data, dict) else None
+    if not isinstance(groups, list):
+        return {"groups": [], "warnings": [
+            "AI 返回的结构不可用，未生成分组" if language == "zh"
+            else "AI returned an unusable structure; no groups produced"]}
+    out = []
+    for g in groups:
+        if not isinstance(g, dict):
+            continue
+        types_out = []
+        for ty in (g.get("types") or []):
+            if not isinstance(ty, dict):
+                continue
+            items_out = []
+            for it in (ty.get("items") or []):
+                if not isinstance(it, dict):
+                    continue
+                idx = it.get("mail_index")
+                # 越界 / 非整数一律丢：绝不能把 AI 编的内容挂到真实邮件上
+                if isinstance(idx, bool) or not isinstance(idx, int) \
+                        or not (0 <= idx < len(mails)):
+                    dropped += 1
+                    continue
+                summary = it.get("summary")
+                items_out.append({
+                    "mail_index": idx,
+                    "summary": summary if isinstance(summary, str) and summary.strip()
+                               else _excerpt(mails[idx]),
+                    "calendar_events": it.get("calendar_events")
+                                       if isinstance(it.get("calendar_events"), list) else [],
+                    "reminders": it.get("reminders")
+                                 if isinstance(it.get("reminders"), list) else [],
+                })
+            if items_out:
+                types_out.append({"type": str(ty.get("type") or other), "items": items_out})
+        if types_out:
+            out.append({"course": str(g.get("course") or other), "types": types_out})
+    if dropped:
+        warnings.append(
+            f"AI 返回的 {dropped} 条结果指向了不存在的邮件，已丢弃" if language == "zh"
+            else f"Dropped {dropped} AI item(s) pointing at nonexistent mail")
+    return {"groups": out, "warnings": warnings}
+
+
+def summarize_mail(base_url: str, api_key: str, model: str,
+                   mails: list[dict], language: str = "zh") -> dict:
+    """对邮件做「课程 × 类型」两级归类 + 摘要 + DDL/待办抽取。
+
+    `mails` 每项：{index, subject, sender, received, body}。
+    返回 {"groups": [...], "warnings": [...]}；整体失败时 groups 为空、warnings 有话说，
+    **绝不静默降级**。
+    """
+    if not mails:
+        return {"groups": [], "warnings": []}
+    trimmed = trim_bodies(mails)
+    prompt = _build_mail_prompt(trimmed, language)
+    data = None
+    for _attempt in range(2):
+        try:
+            content = _call_chat(base_url, api_key, model, prompt, json_mode=True)
+            data = _parse_json(content)
+            if not isinstance(data, dict):
+                raise ValueError("LLM 返回非 JSON 对象")
+            break
+        except (requests.RequestException, ValueError, KeyError, TypeError, RuntimeError):
+            # 重置哨兵：isinstance 抛出时 data 可能已是非 dict 的坏值，不能让它逃出循环
+            data = None
+            continue
+    if not isinstance(data, dict):
+        return {"groups": [], "warnings": [
+            "AI 总结失败：返回内容无法解析为 JSON" if language == "zh"
+            else "AI summary failed: response was not parsable JSON"]}
+    # 归一化刻意放在重试循环之外：归一自身的缺陷不该被吞成「无法解析为 JSON」
+    return _normalize_groups(data, trimmed, language)
