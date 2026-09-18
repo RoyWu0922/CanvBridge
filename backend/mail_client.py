@@ -303,9 +303,19 @@ def list_mail(days: int = DEFAULT_DAYS) -> list[dict]:
     except Exception as exc:
         # Playwright 的原始异常（如 goto 的 60s 超时）在这里归一成 MailError，
         # 否则公开入口会漏出英文的 Playwright 文案 + 未处理的 500，Task 4 就认不出
-        # 「会话失效」这条 #loginPrompt 路径。归一必须做在**这里**、不能做进
-        # _retry_once 包着的那层：_target_closed 靠原始异常特征匹配，提前转换会
-        # 让「目标已关闭」的重试彻底失效。
+        # 「会话失效」这条 #loginPrompt 路径。归一放在最外层边界**本身就对**：上面的
+        # except (MailError, BanwebError): raise 让已成型的实例原样穿过，且与 banweb
+        # 自己的边界归一惯例一致（banweb.py:1146 / :1200 / :1230 都在公开入口转换）。
+        #
+        # **不是**因为「做进 _retry_once 包着的那层会毁掉重试」—— 那样并不会：实测把
+        # 归一搬进去，四条公开入口用例仍全绿，重试照跑。
+        #
+        # ⚠️ 「目标已关闭」的重试（spec §5.1 约束 2）之所以在归一化之后还能命中，
+        # 靠的是下面这条消息**逐字回显了原始异常文本** —— _target_closed
+        # （banweb.py:783-784）判的是 str(exc) 的子串匹配。也就是说，重试的存活
+        # 挂在文案上，而不是挂在转换位置上。**改这条消息的措辞前必须先看
+        # test_list_mail_keeps_target_closed_retry**：把 {exc} 去掉或改写（哪怕只是
+        # 为了给用户更干净的中文），重试就会静默失效，且不会有别的用例变红。
         raise MailError(f"读取邮件列表失败：{exc}") from exc
 
 
