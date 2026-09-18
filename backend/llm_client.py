@@ -254,8 +254,10 @@ def trim_bodies(mails: list[dict], budget: int = _MAX_MAIL_TOTAL) -> list[dict]:
     """单封截断 + 总量预算。**条数永远不变**（对齐靠 index，丢条会整体错位）。
 
     **下限优先于总额**：`len(mails) > 50` 时 `budget // n < _MIN_BODY`，`max()` 取到下限，
-    于是实际总额是 `n × _MIN_BODY` —— 可以超 `_MAX_MAIL_TOTAL` 达 10×（400 × 500 封 = 20 万）。
-    这是有意的：宁可超预算，也不把邮件压成 0 字。
+    于是实际总额是 `n × _MIN_BODY` —— **随 n 线性增长，没有上界**（取信路径
+    `list_mail` / `select_scope` 都不限条数，只由邮箱里未读邮件的多少兜着）：
+    n=500 时约 10×（400 × 500 = 20 万），n=1000 时约 20×。**「10×」是 n=500 那一点，
+    不是上界。** 这是有意的：宁可超预算，也不把邮件压成 0 字。
     """
     n = max(1, len(mails))
     cap = min(_MAX_BODY, max(_MIN_BODY, budget // n))
