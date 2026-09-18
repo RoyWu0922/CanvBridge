@@ -295,7 +295,11 @@ def _build_mail_prompt(mails: list[dict], language: str = "zh") -> str:
 
 
 def _normalize_groups(data: dict, mails: list[dict], language: str) -> dict:
-    """把模型输出收敛成可信结构：越界 index 丢弃、坏字段回退、全程留痕。"""
+    """把模型输出收敛成可信结构：越界 index 丢弃、坏字段回退。
+
+    留痕的确切保证：越界 / 非整数 mail_index 的条目被丢弃时留痕；未被任何条目引用的
+    邮件留痕。其余畸形形状（如某组 items 全是非 dict）只丢弃、不留痕 —— 不承诺「全程留痕」。
+    """
     other = "Other" if language == "en" else "其他"
     warnings: list[str] = []
     dropped = 0
@@ -380,12 +384,14 @@ def summarize_mail(base_url: str, api_key: str, model: str,
     if not isinstance(data, dict):
         # 按异常类型给原因，而不是一律说「解析失败」：401/5xx/网络错误由 _call_chat 抛出，
         # 报成「无法解析」会把用户指向错误的方向（去查提示词而不是查 API key）。
-        if isinstance(last_exc, requests.RequestException):
-            msg = ("AI 总结失败：请求模型服务出错（网络或鉴权）" if language == "zh"
-                   else "AI summary failed: model request error (network or auth)")
-        elif isinstance(last_exc, json.JSONDecodeError):
+        # JSONDecodeError 判在前面：requests 的 JSONDecodeError 同时继承 RequestException 与 json.JSONDecodeError，
+        # 落进这一支才诚实 —— 「响应体本身不是 JSON」而不是「鉴权/网络故障」。
+        if isinstance(last_exc, json.JSONDecodeError):
             msg = ("AI 总结失败：返回内容无法解析为 JSON" if language == "zh"
                    else "AI summary failed: response was not parsable JSON")
+        elif isinstance(last_exc, requests.RequestException):
+            msg = ("AI 总结失败：请求模型服务出错（网络或鉴权）" if language == "zh"
+                   else "AI summary failed: model request error (network or auth)")
         else:
             msg = ("AI 总结失败：AI 返回内容不可用" if language == "zh"
                    else "AI summary failed: model returned unusable content")

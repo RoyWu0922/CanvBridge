@@ -253,7 +253,8 @@ def test_summarize_mail_drops_out_of_range_index(monkeypatch):
     monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: json.dumps(payload))
     r = llm_client.summarize_mail("u", "k", "m", [_mail(0)])
     assert r["groups"] == []
-    assert r["warnings"]          # 丢了东西必须留痕，不静默
+    # 钉住「因由专属」的那条告警：只断言 warnings 非空的话，覆盖率告警会替它通过
+    assert any("不存在的邮件" in w for w in r["warnings"])
 
 
 def test_summarize_mail_warns_when_ai_covers_nothing(monkeypatch):
@@ -312,3 +313,11 @@ def test_summarize_mail_reports_request_error_not_parse_error(monkeypatch):
     r = llm_client.summarize_mail("u", "k", "m", [_mail(0)])
     assert r["groups"] == []
     assert "JSON" not in r["warnings"][0]
+
+
+def test_summarize_mail_reports_parse_error_for_bad_json(monkeypatch):
+    """真·解析失败仍必须说「无法解析为 JSON」—— 否则 FIX-2 的分流等于没分流。"""
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: "不是 JSON")
+    r = llm_client.summarize_mail("u", "k", "m", [_mail(0)])
+    assert r["groups"] == []
+    assert "JSON" in r["warnings"][0]
