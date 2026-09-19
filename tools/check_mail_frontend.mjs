@@ -136,10 +136,19 @@ const mutate = (src, anchor, repl, label) => {
      的亏）。传函数则一律按**字面**替换，witness 与实际替换必然一致。 */
   const out = src.replace(anchor, () => repl);
   if (out === src) throw new Error(`[${label}] 变异未生效（替换后与原文一字不差）：${JSON.stringify(repl)}`);
-  /* 自证：实际替换结果必须**逐字**含有下面打出的那段文本（repl 为空时由上面那条拦住）。 */
+  /* **回归护栏，当前结构下不会触发 —— 别把它当成活的断言。** 函数式替换下
+     `out = A + repl + B`，故 `out.includes(repl)` **恒真**（复审按此断言模糊替换 30000 次，
+     命中 0 次）。留着它是为了钉住「替换必须是**字面**替换」这件事：一旦有人把上面那行改回
+     `src.replace(anchor, repl)`（字符串式），repl 里的 `$&`/`$1` 会被当替换模式展开，此时
+     只要 repl 含有 `$&` 一类，这条就会立刻炸出来 —— 它守的是替换方式，不是某一次替换的结果。
+     repl 为空（`--mutate-no-esc`）时由上面那条「替换后与原文一字不差」拦住。 */
   if (repl && !out.includes(repl))
     throw new Error(`[${label}] 实际替换与 witness 不一致：${JSON.stringify(repl)}`);
-  console.log(`[mutate] ${label} → ${repl.split("\n")[0]}`);
+  /* witness 必须**如实**表示真正落下去的东西：单行且无控制字符时**原样**打（与以往逐字一致），
+     否则 JSON 引号化 —— 新行/制表符等被转义、内容一概不截断。此前只打 `split("\n")[0]`，
+     多行替换会打出**一行** witness 配**多行**插入，即 N2 说的「witness 撒谎」。 */
+  const witness = /[\u0000-\u001F\u007F]/.test(repl) ? JSON.stringify(repl) : repl;
+  console.log(`[mutate] ${label} → ${witness}`);
   return out;
 };
 
