@@ -16,7 +16,8 @@
  * `mailItemHtml` / `$("mailList")` 的点击写入路径 / `mailState` 结构之后。
  *
  * 零出网：`fetch` 是桩，只放行上面那两条写入端点并记账，其余 URL 一律 throw。
- * 全部数据都是合成的 `SYNTH-*` 串，不含任何真实邮件内容、真实邮箱地址或 token。
+ * 全部夹具都是合成的，不含任何真实邮件内容、真实邮箱地址或 token：标签一律 `SYNTH-*`，
+ * 发件地址用 RFC 2606 保留域（`s0@example.invalid` / `s1@example.invalid`，永不解析）。
  *
  * 用法：node tools/check_mail_frontend.mjs [变异开关…]
  *
@@ -36,7 +37,8 @@
  *   每个变异锚点必须**恰好命中一次**；没命中、或替换后与原文一字不差（空转探针），
  *   都会直接抛错退出。替换成功时会在 stdout 打一行 `[mutate] …`，自证改到了哪一行。
  *
- * 退出码：0 = 全部断言通过；1 = 有断言未通过 / 变异锚点无效 / 源码读不到。
+ * 退出码：0 = 全部断言通过；1 = 有断言未通过 / 变异开关用错（锚点没命中、命中不止一次、
+ *   替换后与原文一字不差、`--mutate-widx` 的表达式为空）/ 变异后的源码加载不了 / 源码读不到。
  */
 import vm from "node:vm";
 import fs from "node:fs";
@@ -128,8 +130,15 @@ if (MUTATE_WIDX && !WIDX_EXPR.trim()) throw new Error("--mutate-widx 的表达�
 const mutate = (src, anchor, repl, label) => {
   const hits = src.split(anchor).length - 1;
   if (hits !== 1) throw new Error(`[${label}] 变异锚点命中 ${hits} 次（应为 1）：${JSON.stringify(anchor)}`);
-  const out = src.replace(anchor, repl);
+  /* **函数式替换**：`String.replace(anchor, repl)` 会把 repl 里的 `$&`/`$1` 当**替换模式**
+     展开，于是真正写进去的东西与下一行打出的 witness 可以**不是一回事** —— 而这一行
+     witness 正是「变异非空转」的证明本身，会撒谎的证明比没有证明更糟（本仓吃过空转探针
+     的亏）。传函数则一律按**字面**替换，witness 与实际替换必然一致。 */
+  const out = src.replace(anchor, () => repl);
   if (out === src) throw new Error(`[${label}] 变异未生效（替换后与原文一字不差）：${JSON.stringify(repl)}`);
+  /* 自证：实际替换结果必须**逐字**含有下面打出的那段文本（repl 为空时由上面那条拦住）。 */
+  if (repl && !out.includes(repl))
+    throw new Error(`[${label}] 实际替换与 witness 不一致：${JSON.stringify(repl)}`);
   console.log(`[mutate] ${label} → ${repl.split("\n")[0]}`);
   return out;
 };
@@ -171,7 +180,13 @@ for (const f of ["i18n.js", "util.js", "app.js", "shell.js"]) {
         `const row = ${WIDX_EXPR};`, "widx");
     }
   }
-  vm.runInContext(src, sandbox, { filename: f });
+  try {
+    vm.runInContext(src, sandbox, { filename: f });
+  } catch (err) {
+    /* 变异把代码改成了语法错误（例如表达式里带了 `$&` 一类）时，要让失败说清是谁干的，
+       而不是抛一个看不出与变异有关的裸 SyntaxError。 */
+    throw new Error(`加载 frontend/${f} 失败（跑过变异开关的话，多半是它把代码改坏了）：${err.message}`);
+  }
 }
 
 const run = code => vm.runInContext(code, sandbox);

@@ -32,6 +32,7 @@
 .venv/bin/python -m pytest -q
 node tools/check_i18n_keys.mjs
 node tools/check_dom_ids.mjs
+node tools/check_mail_frontend.mjs
 cat frontend/i18n.js frontend/util.js frontend/app.js frontend/shell.js > /tmp/four.js && node --check /tmp/four.js
 ```
 
@@ -1570,6 +1571,7 @@ git commit -m "feat(mail): /api/mail/summarize 端点（取信 + AI 分组）"
 .venv/bin/python -m pytest -q            # 期望全绿
 node tools/check_i18n_keys.mjs           # 记录基线键数与死键数
 node tools/check_dom_ids.mjs             # 记录 id 基线
+node tools/check_mail_frontend.mjs       # 记录邮件前端自检基线
 ```
 
 把三个数字记下来，收尾要对得上。
@@ -1782,6 +1784,7 @@ $("btnMailRefresh").onclick = () => refreshMail();
 ```bash
 node tools/check_i18n_keys.mjs
 node tools/check_dom_ids.mjs
+node tools/check_mail_frontend.mjs
 cat frontend/i18n.js frontend/util.js frontend/app.js frontend/shell.js > /tmp/four.js && node --check /tmp/four.js
 .venv/bin/python -m pytest -q
 ```
@@ -2000,6 +2003,7 @@ $("mailList").addEventListener("click", async e => {
 ```bash
 node tools/check_i18n_keys.mjs
 node tools/check_dom_ids.mjs
+node tools/check_mail_frontend.mjs
 cat frontend/i18n.js frontend/util.js frontend/app.js frontend/shell.js > /tmp/four.js && node --check /tmp/four.js
 .venv/bin/python -m pytest -q
 ```
@@ -2027,6 +2031,7 @@ git commit -m "feat(mail): 课程×类型两级分组渲染 + 逐条确认写入
 .venv/bin/python -m pytest -q
 node tools/check_i18n_keys.mjs
 node tools/check_dom_ids.mjs
+node tools/check_mail_frontend.mjs
 cat frontend/i18n.js frontend/util.js frontend/app.js frontend/shell.js > /tmp/four.js && node --check /tmp/four.js
 ```
 
