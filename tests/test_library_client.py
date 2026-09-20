@@ -109,8 +109,10 @@ def test_build_params_sends_exactly_one_qInclude_param_on_the_wire():
         值域合并 / `rtype:` 前缀分组）、`include` 精度、`include,...,1` 后缀、
         `blendFacetsSeparately=true` —— 9 种写法**全是 AND 或空转**：
         两条 rtype 一律 **0**，两个 domain 一律 **7**（MEDLINE ∩ arXiv.org）。
-      所以 `compile_filters` 反过来保证**同一 facet 只发一个值**（见该函数与
-      `_first_per_facet`），把「多值」这件事挡在编码之前，而不是指望这里能 OR。
+      所以 `compile_filters` 对**互斥值**（rtype / domain）只发一个，把「多值」
+      挡在编码之前，而不是指望这里能 OR；而**可叠加**的值（`tlevel` 的
+      `peer_reviewed` + `open_access`）仍然全发 —— 它们的交集正是用户勾两个框时
+      想要的语义，实测非空（本馆 21 / PC 533,967）。取舍规则见 `compile_filters`。
     """
     p = library_client.build_params(
         "CentralIndex", "q",

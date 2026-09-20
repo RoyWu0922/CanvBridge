@@ -1,5 +1,7 @@
 """检索式解析与编译。LLM 一律用替身，不打真实网络。"""
+import re
 from datetime import datetime
+from pathlib import Path
 
 from backend import llm_client, library_query
 
@@ -124,8 +126,14 @@ def test_compile_filters_prefixes_every_facet_expression():
     它**永远**拼 `"facet_"+name+","+precision+","+value`，区间 facet 拼
     `"facet_"+name+","+precision+",["+a+" TO "+b+"]"`。
 
-    这里逐个检查**每一个**编译出的表达式 —— 漏掉任何一个 facet，对应的那个
-    筛选项就会静默失效。
+    这里逐个检查**编译出的每一个 facet 表达式**都带前缀 —— 漏掉任何一个，
+    对应的那个筛选项就会静默失效。
+
+    ⚠️ **覆盖范围的如实说明**：本用例的夹具**不含 `domains`**，所以它**看不到**
+    `domain` 那条 —— 而 `domain` 正是**唯一刻意不带前缀**的 facet（两种写法实测
+    结果不同，机制未查明，见 `compile_filters` 里的说明），把它放进夹具会让
+    `startswith("facet_")` 直接红。`domain` 的形态由
+    `test_compile_filters_puts_domain_on_external_scope_only` 单独钉住。
     """
     parsed = {"rtype": ["articles"], "peer_reviewed_only": True,
               "open_access_only": True, "year_from": 2024, "year_to": 2024}
@@ -610,22 +618,25 @@ def test_compile_filters_year_cap_keeps_the_recent_end():
     assert years[0] == 1997 and years[-1] == 2026
 
 
-def test_year_span_cap_is_silent_and_does_not_rewrite_parsed():
+def test_year_span_cap_narrows_the_filter_but_not_parsed():
     """F-7：30 年是**实现自定**的界（规格 §6 只写「逐年一条」，没有任何上限），
-    截断只发生在**编译出的过滤集**上 —— `parsed.year_from` 照旧是用户原值，
-    所以这次收窄是静默的（回显写着 1900–2026，实际只过滤 1997–2026）。
+    截断只发生在**编译出的过滤集**上 —— `parsed.year_from` 照旧是用户原值。
     钉住「选定的行为」：保留靠今年的一端、只收窄过滤集、`_YEAR_SPAN_CAP` 不动。
 
-    ⚠️ **这个上限如今只剩下害处**：它原本的理由是「别生成 127 个 qInclude 参数」，
+    ⚠️ **这个上限如今只剩下害处**：它原本的理由是「别生成上百个 qInclude 参数」
+    （按 `_MIN_YEAR`=1800 到今年算是 **227** 条，「1900 年以来」也有 **127** 条），
     而区间形式**永远只发 1 条**，那条理由已被本次修复消除。实测 `[1900 TO 2026]`
     两个 scope 都正常返回（本馆 34,018 / PC 2,078,579），所以收窄已无必要。
-    本次**不动它**（改窗口语义属于另一件事），但它是一条**已登记的**静默收窄，
-    见 `_YEAR_SPAN_CAP` 处注释。改掉它时这条用例要一起改。
+    本次**不动它**（改窗口语义属于另一件事）。
+
+    **收窄本身已不再静默**：`narrowing_warnings` 会报 `year_narrowed`
+    （见 `test_narrowing_warnings_reports_a_clamped_year_window`）——
+    本用例钉的是「编译出的区间怎么算」，不涉及那个警告。改掉这个上限时两条一起改。
     """
     parsed = {"year_from": 1900, "year_to": 2026}
     inc, _ = library_query.compile_filters(parsed, "MyInstitution")
     assert inc == ["facet_creationdate,exact,[1997 TO 2026]"]              # 恰好 30 年
-    assert parsed["year_from"] == 1900      # 用户输入不被改写 —— 这正是「静默」之处
+    assert parsed["year_from"] == 1900      # 用户输入不被改写（回显仍是原值）
 
 
 # ---------- 修复轮：缺省 year_to 的上界必须是**今年**（真缺陷） ----------
@@ -752,3 +763,137 @@ def test_mutating_returned_parsed_does_not_pollute_empty_parsed():
     assert library_query.EMPTY_PARSED["areas"] == []
     assert library_query.EMPTY_PARSED["domains"] == []
     assert library_query.validate_parsed(None)["areas"] == []
+
+
+def test_compile_filters_emits_both_tlevel_values_because_they_intersect():
+    """**同一 facet 的两个值并非一律只发一个** —— 判据是「互斥还是可叠加」。
+
+    `rtype` / `domain` 的取值**互斥**，交集恒为空，所以只发第一个（见上一条）；
+    `tlevel` 的两个标记可以**同时成立**，两条一起发换来的是**交集**，
+    而那正是用户勾两个框时想要的语义（「同行评审**且**开放获取」）。
+
+    2026-09-20 实测（q = `any,contains,machine learning`，`|,|` 连接成一个 qInclude）：
+      · 本馆：peer_reviewed **45**、open_access **250** → 两个都发 **21**（= 交集，非空）
+      · PC  ：896,913 / 953,408               → 两个都发 **533,967**（= 交集，非空）
+
+    两条都**严格小于**各自单独的值 ⇒ tlevel 是逐条可多值的，交集真的有内容，
+    不是被 AND 成空集。若哪天有人为「统一」把它改成只发第一条，
+    用户勾的两个框里会有一个静默失效，这条用例会红。
+    """
+    both = {"peer_reviewed_only": True, "open_access_only": True}
+    for scope in ("MyInstitution", "CentralIndex"):
+        inc, _ = library_query.compile_filters(both, scope)
+        assert [e for e in inc if e.startswith("facet_tlevel")] == [
+            "facet_tlevel,exact,peer_reviewed",
+            "facet_tlevel,exact,open_access",
+        ], scope
+
+
+def test_narrowing_warnings_reports_a_type_filter_that_vanished():
+    """**整条类型约束消失**与「窄化」是两回事，必须有自己的码。
+
+    `journals` 在本馆词表里、`articles` 在 PC 词表里，但**都不在对方的词表里** ——
+    于是各自都有一栏**根本没按类型筛**，返回的是**全部类型**，而回显里
+    `parsed.rtype` 照旧写着用户要的那个类型。不说出来，用户会以为那一栏筛过了。
+
+    与「求交后还剩至少一个值」的对比：那种情况那一栏**仍被类型筛着**，只是比用户
+    要的窄（两套词表的常态差异），**不报** —— 报了会把警告训练成噪声。
+    """
+    assert "rtype_dropped" in library_query.narrowing_warnings(
+        {"rtype": ["journals"]}, "CentralIndex"), "journals 不在 PC 词表"
+    assert "rtype_dropped" in library_query.narrowing_warnings(
+        {"rtype": ["articles"]}, "MyInstitution"), "articles 不在本馆词表"
+    # 还剩可用类型 ⇒ 仍被类型筛着 ⇒ 不报 dropped
+    assert "rtype_dropped" not in library_query.narrowing_warnings(
+        {"rtype": ["articles", "books"]}, "MyInstitution")
+    # 交集非空的正常情形也不该冒出这个码
+    assert "rtype_dropped" not in library_query.narrowing_warnings(
+        {"rtype": ["books"]}, "CentralIndex")
+    # 根本没提类型 ⇒ 谈不上「消失」
+    assert "rtype_dropped" not in library_query.narrowing_warnings({}, "CentralIndex")
+
+
+def test_narrowing_warnings_reports_a_clamped_year_window():
+    """`_YEAR_SPAN_CAP` 的收窄以前是**静默**的：回显 `year_from=1900`，
+    实际只筛 1997–2026。现在由 `year_narrowed` 说出来。
+
+    触发条件是**真的被抬过**，不是「有年份」—— 窗口落在 CAP 内时一字未改，不报。
+    """
+    assert "year_narrowed" in library_query.narrowing_warnings(
+        {"year_from": 1900, "year_to": 2026}, "MyInstitution")
+    assert "year_narrowed" not in library_query.narrowing_warnings(
+        {"year_from": 2020, "year_to": 2026}, "MyInstitution"), "30 年内，没被抬过"
+    assert "year_narrowed" not in library_query.narrowing_warnings({}, "MyInstitution")
+
+
+# ---------- 警告码的跨语言契约 ----------
+
+I18N_JS = Path(__file__).resolve().parents[1] / "frontend" / "i18n.js"
+
+
+def _i18n_language_blocks() -> dict[str, set[str]]:
+    """从 `frontend/i18n.js` 取出两种语言各自的键集合。
+
+    用正则切块而不是求值 JS：那个文件的两种语言是两个**形状固定**的字面量对象
+    （`  zh: {` / `\n  en: {` 起、`\n};` 收）。切不出块或切出的键太少就直接 raise
+    —— 守卫**绝不能在文件改版后静默退化成空集**、从此永远通过。
+    """
+    src = I18N_JS.read_text()
+    if "  zh: {" not in src or "\n  en: {" not in src:
+        raise AssertionError("frontend/i18n.js 的语言块形状变了，切块逻辑要跟着更新")
+    zh_block = src.split("  zh: {", 1)[1].split("\n  en: {", 1)[0]
+    en_block = src.split("\n  en: {", 1)[1].split("\n};", 1)[0]
+    blocks = {}
+    for lang, block in (("zh", zh_block), ("en", en_block)):
+        keys = set(re.findall(r'"([^"]+)":', block))
+        if len(keys) < 100:
+            raise AssertionError(f"{lang} 只切出 {len(keys)} 个键，切块逻辑错了")
+        blocks[lang] = keys
+    return blocks
+
+
+def test_every_warning_code_has_a_translation_in_both_languages():
+    """警告码是**跨语言契约**：后端发一个 i18n.js 里没有的码，`t()` 的兜底链
+    （`?? I18N.zh[key] ?? key`）会把**键名本身**当文案显示给用户；
+    只有中文有、英文没有时，英文界面会冒中文。两种语言都必须有，且非空。
+    """
+    blocks = _i18n_language_blocks()
+    missing = []
+    for code in library_query.WARNING_CODES:
+        key = f"library.warn.{code}"
+        for lang in ("zh", "en"):
+            if key not in blocks[lang]:
+                missing.append(f"{lang}:{key}")
+    assert not missing, f"这些警告码没有译文：{missing}"
+
+
+def test_i18n_has_the_same_keys_in_both_languages():
+    """两种语言的键集合必须**逐个相同**：少一个键就回退到中文，
+    于是英文界面上出现中文 —— 而这种缺陷**没有任何运行时报错**。
+    """
+    blocks = _i18n_language_blocks()
+    assert blocks["zh"] == blocks["en"], {
+        "only_zh": sorted(blocks["zh"] - blocks["en"]),
+        "only_en": sorted(blocks["en"] - blocks["zh"]),
+    }
+
+
+def test_declared_warning_codes_match_every_code_the_module_emits():
+    """`WARNING_CODES` 是本模块发码的**唯一清单**，不能与实际发码处脱节。
+
+    扫源码（不求值）—— 本模块发码只有三种写法，源码里都是字面量：
+    `warnings.append("x")`、`out.append("x")`、返回元组里的 `["x"]`
+    （`return fallback_parsed(text), ["llm_degraded"]`）。
+
+    断言的是**相等**：多登记一个从不发出的码、或发出一个没登记的码，两者都会红。
+    扫不到任何码时也红 —— 防止正则失效后守卫**静默变成空转**。
+    """
+    src = (Path(__file__).resolve().parents[1]
+           / "backend" / "library_query.py").read_text()
+    emitted = set(re.findall(r'(?:warnings|out)\.append\("([a-z_]+)"\)', src))
+    emitted |= set(re.findall(r'(?:,\s*|\+\s*)\["([a-z_]+)"\]', src))
+    assert emitted, "一个发码处都没扫到 —— 正则失效了，别让它静默通过"
+    assert emitted == set(library_query.WARNING_CODES), {
+        "declared_only": sorted(set(library_query.WARNING_CODES) - emitted),
+        "emitted_only": sorted(emitted - set(library_query.WARNING_CODES)),
+    }

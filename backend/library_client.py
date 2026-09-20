@@ -142,15 +142,25 @@ def build_params(scope: str, q: str, *, q_include: list[str] | None = None,
     `"facet_rtype,exact,articles"`），这里把它们拼成**一个**值，用 `|,|` 连接。
 
     ⚠️ **不能写成重复的同名参数**（那是旧实现，2026-09-20 实测推翻）：
-    重复时 Primo **只认第一个，其余静默丢弃** —— 不报错、不 0 命中，
-    只是过滤没生效（`facet_rtype,exact,books` + `[1900 TO 1901]`：
-    重复参数 → 25,490 = books 单独的值；`|,|` 连接 → 1，两个都生效）。
+    **不同 facet** 重复时 Primo **只认第一个，其余静默丢弃** —— 不报错、不 0 命中，
+    只是过滤没生效（`facet_rtype,exact,books` + `facet_creationdate,exact,[1900 TO 1901]`：
+    重复参数 → 25,490 = books 单独的值；两条**互换顺序** → 1 = 日期单独的值，
+    可见只有第一个参数被读到）。连接成一个值 → 1，两个都生效。
     厂商 UI 也正是发一个值：`bundle.js` 里 `…map(facetToString).join("|,|")`。
 
     **连接后 facet 之间是 AND**（实测三条不同 facet → PC 715,116，都生效），
-    **同一 facet 之间也是 AND**（`articles|,|books` → **0**）—— 所以调用方
-    （`library_query.compile_filters`）保证**同一 facet 只给一个值**，
-    `|,|` 在这里只用于「不同 facet 之间」。详见该函数。
+    **同一 facet 之间也是 AND**（`articles|,|books` → **0**）。
+
+    ⚠️ 但「同一 facet 只给一个值」**不是本层替调用方保证的约束**，它只是
+    `compile_filters` 对**互斥值**（rtype / domain）的取舍：同一 facet 里
+    **可叠加**的值本来就该全发 —— `tlevel` 的 `peer_reviewed` + `open_access`
+    连接后是**交集**，实测本馆 **21**（45 ∩ 250）、PC **533,967**
+    （896,913 ∩ 953,408），都非空，而交集正是用户勾两个框时想要的语义。
+
+    另有一处**机制未查明、只登记实测**：同样写重复参数，**同 facet** 的两个
+    tlevel 值返回的是交集（21），并不服从上面那条「只认第一个」（那样应是 45）。
+    成因不明，所以本层不据此做任何假设 —— 统一走 `|,|` 连接，因为那是厂商 UI
+    的写法，且上述情形实测都对。取舍规则与实测数字详见 `compile_filters`。
     """
     params = {
         "vid": PRIMO_VID,

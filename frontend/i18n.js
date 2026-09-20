@@ -398,6 +398,8 @@ const I18N = {
     "library.warn.domains_dropped": "AI 选的来源库不在可选列表里，已忽略",
     "library.warn.rtype_narrowed": "AI 选了多个文献类型，只采用了第一个（图书馆接口无法在同类内取并集）",
     "library.warn.domains_narrowed": "AI 选了多个来源库，只采用了第一个（图书馆接口无法在同类内取并集）",
+    "library.warn.rtype_dropped": "AI 选的文献类型在某类来源里没有对应类型，那一栏未按类型筛选",
+    "library.warn.year_narrowed": "年份跨度过大，只保留了最近的一段（更早的结果未包含）",
   },
   en: {
     "app.title": "Canvas Course Assistant",
@@ -798,6 +800,8 @@ const I18N = {
     "library.warn.domains_dropped": "AI picked source databases that aren't available — ignored",
     "library.warn.rtype_narrowed": "AI picked several item types — only the first was used (the library API can't union values within one category)",
     "library.warn.domains_narrowed": "AI picked several source databases — only the first was used (the library API can't union values within one category)",
+    "library.warn.rtype_dropped": "The item types the AI picked don't exist in one of the sources — that column isn't filtered by type",
+    "library.warn.year_narrowed": "The year range was very wide — only the most recent span was applied (earlier results excluded)",
   },
 };
 

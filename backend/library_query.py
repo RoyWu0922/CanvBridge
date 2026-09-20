@@ -54,21 +54,40 @@ _MIN_YEAR = 1800
 # 年份区间的**最大跨度**（年数）。它现在收窄的是区间两端之间的距离，不再是
 # qInclude 参数条数 —— 2026-09-20 起年份发的是**一条区间表达式**（见 compile_filters）。
 #
-# ⚠️ **这个上限如今只剩下害处，是本次登记的已知静默收窄。**
-# 它原本的理由是「不设界的话『1900 年以前至今』会生成 227 个 qInclude 参数，
-# 既撑大请求也可能被上游拒」—— 区间形式**永远只发 1 条**，那条理由已被编码方式
-# 本身消除。事后实测 `facet_creationdate,exact,[1900 TO 2026]` 两个 scope 都正常
-# 返回（本馆 34,018 / PC 2,078,579），所以「区间语法未验证」也不再成立。
-# 换言之：现在它**只会**把用户要的年份悄悄砍掉（1900–2026 → 只过滤 1997–2026），
-# 而 `parsed.year_from` 照旧回显 1900，用户看不到。
+# ⚠️ **这个上限只剩下害处，是本次登记的已知收窄 —— 但它不再静默。**
+# 它原本的理由是「不设界的话年份区间会展开成上百个 qInclude 参数，既撑大请求
+# 也可能被上游拒」：按 `_MIN_YEAR`=1800 到 2026 算是 **227** 条，即使用户写
+# 「1900 年以来」也有 **127** 条（两个数字指的是**不同起点**，不是互相矛盾）。
+# 区间形式**永远只发 1 条**，那条理由已被编码方式本身消除。事后实测
+# `facet_creationdate,exact,[1900 TO 2026]` 两个 scope 都正常返回
+# （本馆 34,018 / PC 2,078,579），所以「区间语法未验证」也不再成立。
+# 换言之：现在它**只会**把用户要的年份砍掉**老的那一端**（1900–2026 → 只过滤
+# 1997–2026）。`parsed.year_from` 照旧回显 1900（用户输入不被改写），
+# 但这次收窄**不再静默** —— `narrowing_warnings` 会报 `year_narrowed`。
 #
 # **本次不删**：改窗口语义是独立的一件事，混进「修无结果」这轮会让 diff 说不清。
-# 留给下一次改动处理，改的时候 tests/test_library_query.py 里那几条一起改。
+# 留给下一次改动处理（`end` 直接取用户值即可，届时不报 `year_narrowed`）；
+# 改的时候 tests/test_library_query.py 里那几条一起改。
 #
 # 收窄**只允许发生在老的那一端**（下界）：上界缺省时取今年，近端永远保到今年
-# （见 compile_filters 里的说明）。曾经上界也被 `year_from + CAP` 卡住，
-# 于是「1990 年以后」只查得到 1991–2020 —— 那不是收窄，是把最相关的几年丢掉。
+# （见 `_year_window`，区间与收窄判定的唯一实现处）。曾经上界也被
+# `year_from + CAP` 卡住，于是「1990 年以后」只查得到 1991–2020 ——
+# 那不是收窄，是把最相关的几年丢掉。
 _YEAR_SPAN_CAP = 30
+
+# 本模块能发出的**全部**警告码 —— 这是一份**跨语言契约**：前端按
+# `library.warn.<code>` 查译文（`frontend/i18n.js`），后端发一个前端没有译文的码，
+# 界面上就会**直接显示出这个 key 本身**（`t()` 的兜底链是 `?? I18N.zh[key] ?? key`），
+# 英文界面还会因此冒中文。tests/test_library_query.py 里有守卫按这个集合核对
+# i18n.js 的**两种语言**，另有一条扫描本模块的发码处，防止「发了码却没登记」。
+WARNING_CODES = (
+    "llm_degraded",      # parse_natural：LLM 挂了，已降级成原文关键词
+    "domains_dropped",   # parse_natural：LLM 编了词表里没有的来源库名
+    "rtype_narrowed",    # narrowing_warnings：多个**互斥**类型，只用了第一个
+    "rtype_dropped",     # narrowing_warnings：用户要的类型本 scope 一个都没有
+    "domains_narrowed",  # narrowing_warnings：多个来源库，只用了第一个
+    "year_narrowed",     # narrowing_warnings：年份窗口被 _YEAR_SPAN_CAP 抬掉了老端
+)
 
 EMPTY_PARSED = {
     "keywords": [], "synonyms": [], "year_from": None, "year_to": None,
@@ -274,29 +293,81 @@ def _surviving_rtypes(parsed: dict, scope: str) -> list[str]:
     return [r for r in parsed.get("rtype") or [] if r in known]
 
 
+def _year_window(parsed: dict) -> tuple[int, int] | None:
+    """按 `_YEAR_SPAN_CAP` 编译出的闭区间 `(start, end)`；没有年份约束时 `None`。
+
+    **区间跨度的收窄只有这一处实现**：`compile_filters`（发什么区间）与
+    `narrowing_warnings`（要不要报 `year_narrowed`）都从这里取 —— 两边各写一份的话，
+    日后只改一处就会出现「报了没收窄」或「收窄了没报」，而后者正是本次在修的那类
+    静默。
+    """
+    year_from, year_to = parsed.get("year_from"), parsed.get("year_to")
+    if not year_from:
+        return None
+    # 上界缺省（用户说「X **以后**的论文」，LLM 就该给 year_to=null）= **今年**。
+    # 曾经写成 `min(now, year_from + _YEAR_SPAN_CAP)`，那样两处同时错：
+    #   year_from=1990, year_to=None → end 被卡在 2020，接着 start 又被抬到 1991，
+    #   实际只过滤 1991–2020 —— 用户要「1990 年以后的」，拿到的最新结果是 **2020**，
+    #   最近几年（最相关的那批）**静默消失**，而回显仍写着 1990，用户无从察觉。
+    # 上界取今年才与下面「区间比 CAP 宽时保留靠今年的一端」自洽：收窄只发生在
+    # 下界（老的那一端），近端永远保到今年。显式给了 year_to 的路径一字不变。
+    end = year_to or datetime.now().year
+    # 颠倒区间（year_to < year_from）必须夹回来：否则区间为空、**年份约束无声蒸发**
+    # —— 不报错也不 0 命中，而回显里还写着 2024–2020，看不出没生效。
+    # 同一路径也覆盖 year_from = now+1（_as_year 明确放行）而 end 被 now 卡住的情形。
+    if end < year_from:
+        end = year_from
+    # 窗口长度是**闭区间**（end - start + 1 ≤ CAP），所以是 end - CAP + 1；
+    # 写成 end - CAP 会多算一年，正好越过上限一条。
+    # 区间比 CAP 宽时**保留靠今年的一端**（1900–2026 → 1997–2026）：用户写
+    # 「1900 年以来」要的是「老到今」，丢掉近端等于把最相关的那几年排除掉。
+    start = max(year_from, end - _YEAR_SPAN_CAP + 1)
+    return start, end
+
+
+def _year_window_is_narrowed(parsed: dict) -> bool:
+    """用户给的 `year_from` 是否被 `_YEAR_SPAN_CAP` 抬高过（即真的发生了收窄）。"""
+    window = _year_window(parsed)
+    return bool(window) and window[0] != parsed.get("year_from")
+
+
 def narrowing_warnings(parsed: dict, scope: str) -> list[str]:
-    """因为「同一 facet 只能发一个值」而被迫窄化时，返回要报的**警告码**。
+    """这一栏**实际发出去的过滤**比用户的检索式窄时，返回要报的**警告码**。
 
     警告是**码**不是句子 —— 前端按 `library.warn.<code>` 翻译（照 `parse_natural`
-    的既有约定）。目前两个码：
+    的既有约定）。目前四个码：
 
-      · `rtype_narrowed`    —— 求交后仍多于一个文献类型，只用了第一个
+      · `rtype_narrowed`    —— 求交后仍多于一个**互斥**的文献类型，只用了第一个
+      · `rtype_dropped`     —— 用户要的文献类型本 scope **一个都没有**，整条类型约束
+                               消失（这一栏根本没按类型筛，回显却还写着它）
       · `domains_narrowed`  —— 多于一个来源库，只用了第一个（只在 PC 报，本馆不发
                                domain 过滤）
+      · `year_narrowed`     —— `_YEAR_SPAN_CAP` 把年份窗口从**老的那一端**抬掉了
+                               （`parsed.year_from` 照旧回显用户原值）
 
-    **触发条件是「求交后仍剩多于一个」，不是「LLM 给了多于一个」。** 值被词表挡掉
-    属于**变宽**（用户仍拿得到结果，且是两套词表的常态差异），按 `compile_filters`
-    里的约定**故意不报**；只有真的丢了**本可用**的第二个值才报 —— 那种情况下回显里
-    `parsed.rtype` 仍是两个值，不说出来用户就会以为两个都筛了。
+    **`rtype_narrowed` 的触发条件是「求交后仍剩多于一个」，不是「LLM 给了多于一个」。**
+    值被词表挡掉属于**变宽**（用户仍拿得到结果，且是两套词表的常态差异），只要还剩
+    至少一个可用值就**故意不报**（见 `compile_filters` 里的约定）；只有真的丢了
+    **本可用**的第二个值才报 —— 那时回显里 `parsed.rtype` 仍是两个值，不说出来用户
+    就会以为两个都筛了。
+
+    **但「一个都不剩」是另一回事，必须报**（`rtype_dropped`）：那时这一栏完全没在按
+    类型筛，返回的是**全部类型**，而回显照旧写着用户要的类型 —— 那是回显与实际查询
+    不一致，不是「变宽」两个字能解释掉的。
 
     这个函数与 `compile_filters` 必须**同口径**：两个 scope 各调一次，所以同一次
     查询可能两个 scope 都报同一个码（前端按码去重即可，端点也做了去重）。
     """
     out: list[str] = []
-    if len(_surviving_rtypes(parsed, scope)) > 1:
+    surviving = _surviving_rtypes(parsed, scope)
+    if len(surviving) > 1:
         out.append("rtype_narrowed")
+    if parsed.get("rtype") and not surviving:
+        out.append("rtype_dropped")
     if scope == "CentralIndex" and len(parsed.get("domains") or []) > 1:
         out.append("domains_narrowed")
+    if _year_window_is_narrowed(parsed):
+        out.append("year_narrowed")
     return out
 
 
@@ -323,45 +394,36 @@ def compile_filters(parsed: dict, scope: str) -> tuple[list[str], list[str]]:
     include: list[str] = []
     exclude: list[str] = []
     is_pc = scope == "CentralIndex"
-    known_rtype = KNOWN_RTYPE_PC if is_pc else KNOWN_RTYPE_LOCAL
 
     # **只取求交后的第一个值。**
     # 求交：本 scope 没有的类别丢掉（发出去只会换回 0 条 —— `articles` 本馆实测 0；
     # 或 1 条 —— `journals`/`databases` PC 实测 1 / 0；界面上都长得像「没有结果」）。
-    # 丢掉只是让这一栏**变宽**，用户仍看得到结果，所以不为此发警告码：这是两套
-    # 词表的**常态**差异，不是异常 —— 给常发生的正常情况报警告，会把警告训练成噪声。
-    # 取第一个：`|,|` 连接后同一 facet 之间是 AND，两个 rtype 实测换回 **0** 条
-    # （`articles|,|books` PC = 0）—— 那正是本次在修的症状；而本端点**没有**
-    # 「同 facet OR」的表达方式（9 种写法全试过，见 `_first_per_facet`）。
+    # 取第一个：`|,|` 连接后同一 facet 之间是 **AND**，两个**互斥**的 rtype 实测换回
+    # **0** 条（`articles|,|books` PC = 0）—— 那正是本次在修的症状；而本端点**没有**
+    # 「同 facet OR」的表达方式（9 种写法实测全是 AND 或空转，见 `build_params` 的说明）。
     # 这是**改动之前事实上就在发生**的事（重复参数写法下 Primo 本来也只认第一个），
     # 不改变已有行为；被丢掉的第二个值由 `narrowing_warnings` 报出来，不静默。
+    #
+    # ⚠️ **「同一 facet 只发一个值」不是绝对律，别把本函数读成那个保证。**
+    # 它成立的范围仅限**互斥的备选值**：rtype 的取值、domain 的来源库 —— 这些取两个
+    # 的交集恒为空，没有任何用户会想要。
+    # 反例是下面的 `tlevel`：`peer_reviewed` 与 `open_access` 可以**同时成立**，两条
+    # 都发换来的是**交集**，而交集恰恰是用户勾两个框时想要的语义 —— 实测本馆
+    # 45 ∩ 250 = **21**、PC 896,913 ∩ 953,408 = **533,967**，都不是 0
+    # （2026-09-20 实测，q = `any,contains,machine learning`）。
+    # 所以判据是「这几个值互斥还是可叠加」，**不是**「是不是同一个 facet」。
+    #
+    # 词表挡掉值只在**整条类型约束都消失**时才报 `rtype_dropped`：还剩至少一个值 ⇒
+    # 这一栏仍被类型筛着，只是比用户要的窄（属两套词表的常态差异，为它报警会把警告
+    # 训练成噪声）；**一个都不剩 ⇒ 这一栏根本没在按类型筛**，而回显里 `parsed.rtype`
+    # 照旧写着用户要的类型 —— 那是「回显与实际查询不一致」，必须说出来。
     surviving_rtypes = _surviving_rtypes(parsed, scope)
     if surviving_rtypes:
         include.append(f"facet_rtype,exact,{surviving_rtypes[0]}")
 
-    year_from, year_to = parsed.get("year_from"), parsed.get("year_to")
-    if year_from:
-        # 上界缺省（用户说「X **以后**的论文」，LLM 就该给 year_to=null）= **今年**。
-        # 曾经写成 `min(now, year_from + _YEAR_SPAN_CAP)`，那样两处同时错：
-        #   year_from=1990, year_to=None → end 被卡在 2020，接着 start 又被抬到 1991，
-        #   实际只过滤 1991–2020 —— 用户要「1990 年以后的」，拿到的最新结果是 **2020**，
-        #   最近几年（最相关的那批）**静默消失**，而回显仍写着 1990，用户无从察觉。
-        # 上界取今年才与下面「区间比 CAP 宽时保留靠今年的一端」自洽：收窄只发生在
-        # 下界（老的那一端），近端永远保到今年。显式给了 year_to 的路径一字不变。
-        end = year_to or datetime.now().year
-        # 颠倒区间（year_to < year_from）必须夹回来：否则区间为空、**年份约束
-        # 无声蒸发** —— 不报错也不 0 命中，而回显里还写着 2024–2020，看不出没生效。
-        # 同一路径也覆盖 year_from = now+1（_as_year 明确放行）而 end 被 now 卡住的情形。
-        if end < year_from:
-            end = year_from
-        # 窗口长度是**闭区间**（end - start + 1 ≤ CAP），所以是 end - CAP + 1；
-        # 写成 end - CAP 会多算一年，正好越过上限一条。
-        # 区间比 CAP 宽时**保留靠今年的一端**（1900–2026 → 1997–2026）：用户写
-        # 「1900 年以来」要的是「老到今」，丢掉近端等于把最相关的那几年排除掉。
-        # 这一步只收窄**编译出的过滤集**，不动 `parsed.year_from` —— 回显仍是用户
-        # 输入的原值，所以收窄是静默的（见 _YEAR_SPAN_CAP 处的说明，那里登记了
-        # 「这个上限如今只剩下害处」）。
-        start = max(year_from, end - _YEAR_SPAN_CAP + 1)
+    year_window = _year_window(parsed)
+    if year_window:
+        start, end = year_window
         # ⚠️ **发区间，不是逐年一条。** 旧的逐年写法
         # `facet_creationdate,exact,<year>` 在 CentralIndex 上是**完全空转**的：
         # 实测无年份过滤 2,082,251 → `exact,2014` 仍 2,082,251 → `exact,2014` +
@@ -369,6 +431,11 @@ def compile_filters(parsed: dict, scope: str) -> tuple[list[str], list[str]]:
         # 在外部库里等于**根本没过滤**，用户看不出来。
         # 闭区间形式两个 scope 都真的过滤（实测 `[2010 TO 2015]`：本馆 34,105 →
         # 3,780；PC 2,082,251 → 92,528）。顺带把最多 30 个 qInclude 参数压成 **1** 个。
+        #
+        # 窗口本身（上界为什么取今年、区间为什么夹回来、跨度怎么卡在 CAP）**全在
+        # `_year_window` 里**，与本函数同源 —— 别在这里重算一遍。
+        # 它只收窄**编译出的过滤集**，不动 `parsed.year_from`：回显仍是用户输入的原值；
+        # 那处收窄如今由 `year_narrowed` 警告码说出来，不再静默。
         include.append(f"facet_creationdate,exact,[{start} TO {end}]")
 
     if is_pc:
@@ -388,9 +455,16 @@ def compile_filters(parsed: dict, scope: str) -> tuple[list[str], list[str]]:
     # 规格写「tlevel / attribute / domain 都是 Primo Central 独有的 facet」，
     # 实测推翻了 tlevel 那半：本馆**有** tlevel，而且过滤真的生效 ——
     # `any,contains,machine learning` 本馆无过滤 **34,105** →
-    # `facet_tlevel,exact,peer_reviewed` **45**。
+    # `facet_tlevel,exact,peer_reviewed` **45**、`facet_tlevel,exact,open_access` **250**。
     # 若照规格只在 PC 发，用户勾的「同行评审 / 开放获取」在本馆那栏就**静默失效**
     # —— 正是本次在修的那一类缺陷，不能修别的 facet 时把它留在原地。
+    #
+    # **两个勾同时给出两条同 facet 表达式，是刻意的 —— 别把它「统一」成只发一条。**
+    # 两条连接后是 AND = **交集**，而交集恰恰是「同行评审**且**开放获取」的语义：
+    # 实测本馆 45 ∩ 250 = **21**、PC 896,913 ∩ 953,408 = **533,967**，两个都非空且都
+    # 严格小于各自单独的值 —— 可见 tlevel 是**逐条可多值**的，交集真的有内容。
+    # （对比 rtype / domain：那两个的值互斥，交集恒为空，所以只发第一个并报窄化。）
+    # 若这里改成只发第一条，用户勾的两个框会有一个**静默失效** —— 那正是本次的缺陷类型。
     if parsed.get("peer_reviewed_only"):
         include.append("facet_tlevel,exact,peer_reviewed")
     if parsed.get("open_access_only"):

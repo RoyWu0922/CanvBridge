@@ -1391,6 +1391,39 @@ def test_library_search_does_not_warn_for_a_single_llm_facet_choice(monkeypatch)
     assert body["warnings"] == []
 
 
+def test_library_search_warns_when_the_type_filter_vanishes(monkeypatch):
+    """整条类型约束**消失**时报 `rtype_dropped`（与「窄化」是两个码）。
+
+    `journals` 只在本馆词表里（PC 词表没有它），取 `["journals"]` 于是：
+      · 本馆：求交后剩 `journals` ⇒ 照发过滤，不报
+      · PC  ：求交后一个不剩 ⇒ **根本没按类型筛**，返回全部类型
+    而回显里 `parsed.rtype` 仍是 `["journals"]` —— 只看回显会以为 PC 那栏筛过了。
+    """
+    _patch_library(monkeypatch)
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "page": 2,
+        "parsed": {"keywords": ["ml"], "rtype": ["journals"]}}).json()
+    assert body["ok"] is True
+    assert body["warnings"] == ["rtype_dropped"]       # 一个 scope 报，去重后恰好一条
+    assert body["parsed"]["rtype"] == ["journals"]     # 回显照旧，不回填也不改写
+
+
+def test_library_search_warns_once_when_the_year_window_is_clamped(monkeypatch):
+    """`year_narrowed` 与 scope 无关 —— 两个 scope 各调一次 `narrowing_warnings`
+    **必然**都算出它，所以端点那条「按码去重」在这里是必被用到的路径
+    （不像 `rtype_narrowed` 要靠挑夹具才触发两个 scope）。
+
+    回显 `year_from` 仍是用户原值 1900，而实际只筛 1997–2026 —— 警告是唯一的补偿通道。
+    """
+    _patch_library(monkeypatch)
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "page": 2,
+        "parsed": {"keywords": ["ml"], "year_from": 1900, "year_to": 2026}}).json()
+    assert body["ok"] is True
+    assert body["warnings"] == ["year_narrowed"]       # 恰好一条 ⇒ 两个 scope 去过重
+    assert body["parsed"]["year_from"] == 1900         # 回显是原值，不被改写
+
+
 def test_library_search_compiles_two_different_param_sets(monkeypatch):
     """两个 scope 的过滤参数**不是同一套**（spec §6）。
 
