@@ -11,22 +11,59 @@ from datetime import datetime
 from . import llm_client
 
 # 实测：rtype 的值是**复数**。单数形式返回 0 命中。
+#
+# `KNOWN_RTYPE` 是**给 LLM 的枚举**，也是 `validate_parsed` 的白名单。
+# 它**不等于**任何一侧的词表 —— 它是两份实测词表的并集里「用户可能主动要」的那部分。
 KNOWN_RTYPE = ["articles", "books", "journals", "databases", "dissertations",
                "conference_proceedings", "book_chapters", "preprint",
                "reviews", "text_resources"]
+
+# 2026-09-20 实测。q = `any,contains,machine learning`，`facet_rtype,exact,<v>`，
+# offset=0/limit=1 取 `info.total`。**两份词表是逐个值测出来的，不是抄一份求交。**
+#
+#   CentralIndex：articles 1,280,371 · books 28,672 · dissertations 24,801 ·
+#                 conference_proceedings 219,737 · book_chapters 158,429 ·
+#                 preprint 314,707 · reviews 1,616 · text_resources 269
+#                 —— journals **1**、databases **0**（这两个是**本馆**的值）
+#   MyInstitution：books 25,490 · dissertations 6,754 · conference_proceedings 1,212 ·
+#                 videos 540 · journals 176 · audios 7 · other 3 · databases 2
+#                 —— articles **0**（本馆没有这个类别）
+#
+# 把某 scope 不支持的值发过去，换回的是一个 **0** 或 **1** —— 在界面上都长得像
+# 「没有结果」。这是用户报的那个症状的**第三条成因**（前两条：facet 缺 `facet_`
+# 前缀；逐年 `creationdate` 在 PC 上完全空转）。
+#
+# 交集只有 **3** 个值：books / dissertations / conference_proceedings。
+#
+# 注意 `videos` / `audios` / `other` 只在本地词表里 —— 它们**目前 LLM 提不出来**
+# （不在 `KNOWN_RTYPE` 里，`validate_parsed` 会剔掉）。仍然收进本地词表：这是测出来
+# 的完整词表，缺了它们会给「日后把 videos 加进 LLM 枚举」的人埋一个 0 命中的坑。
+KNOWN_RTYPE_PC = frozenset({
+    "articles", "books", "dissertations", "conference_proceedings",
+    "book_chapters", "preprint", "reviews", "text_resources",
+})
+KNOWN_RTYPE_LOCAL = frozenset({
+    "books", "dissertations", "conference_proceedings",
+    "videos", "journals", "audios", "other", "databases",
+})
 
 _MAX_ITEMS = 12        # 每个列表最多几条
 _MAX_STR = 200         # 单个字符串最长多少字符
 _MIN_YEAR = 1800
 
-# 年份区间最多生成多少条 `creationdate` 过滤（**每条一个重复的 qInclude 参数**，
-# 区间语法未验证，spec §6 明确不作默认）。**规格没有规定这个上限** —— 规格 §6 只说
-# 「逐年一条」，30 是实现自己定的界，理由是：不设界的话「1900 年以前至今」会生成
-# 227 个 qInclude 参数，既撑大请求也可能被上游拒。**真的被截断时用户看不到**：
-# `parsed.year_from` 照旧回显 1900，被悄悄收窄的是实际编译出的过滤集
-# （1900–2026 → 只过滤 1997–2026）。已知的静默收窄，故意保留在 30，
-# 不改数值也不加提示（要改就得先有依据）。详见
-# tests/test_library_query.py 里钉住这条行为的用例。
+# 年份区间的**最大跨度**（年数）。它现在收窄的是区间两端之间的距离，不再是
+# qInclude 参数条数 —— 2026-09-20 起年份发的是**一条区间表达式**（见 compile_filters）。
+#
+# ⚠️ **这个上限如今只剩下害处，是本次登记的已知静默收窄。**
+# 它原本的理由是「不设界的话『1900 年以前至今』会生成 227 个 qInclude 参数，
+# 既撑大请求也可能被上游拒」—— 区间形式**永远只发 1 条**，那条理由已被编码方式
+# 本身消除。事后实测 `facet_creationdate,exact,[1900 TO 2026]` 两个 scope 都正常
+# 返回（本馆 34,018 / PC 2,078,579），所以「区间语法未验证」也不再成立。
+# 换言之：现在它**只会**把用户要的年份悄悄砍掉（1900–2026 → 只过滤 1997–2026），
+# 而 `parsed.year_from` 照旧回显 1900，用户看不到。
+#
+# **本次不删**：改窗口语义是独立的一件事，混进「修无结果」这轮会让 diff 说不清。
+# 留给下一次改动处理，改的时候 tests/test_library_query.py 里那几条一起改。
 #
 # 收窄**只允许发生在老的那一端**（下界）：上界缺省时取今年，近端永远保到今年
 # （见 compile_filters 里的说明）。曾经上界也被 `year_from + CAP` 卡住，
@@ -227,22 +264,80 @@ def build_q(parsed: dict) -> str:
     return "any,contains," + " ".join(uniq)
 
 
+def _surviving_rtypes(parsed: dict, scope: str) -> list[str]:
+    """`parsed["rtype"]` 里**本 scope 词表真的支持**的那些值，保持原顺序。
+
+    求交规则只有这一处实现：`compile_filters`（发哪一个）与 `narrowing_warnings`
+    （要不要为此报警告）都从这里取，免得两边各写一份、日后只改一处。
+    """
+    known = KNOWN_RTYPE_PC if scope == "CentralIndex" else KNOWN_RTYPE_LOCAL
+    return [r for r in parsed.get("rtype") or [] if r in known]
+
+
+def narrowing_warnings(parsed: dict, scope: str) -> list[str]:
+    """因为「同一 facet 只能发一个值」而被迫窄化时，返回要报的**警告码**。
+
+    警告是**码**不是句子 —— 前端按 `library.warn.<code>` 翻译（照 `parse_natural`
+    的既有约定）。目前两个码：
+
+      · `rtype_narrowed`    —— 求交后仍多于一个文献类型，只用了第一个
+      · `domains_narrowed`  —— 多于一个来源库，只用了第一个（只在 PC 报，本馆不发
+                               domain 过滤）
+
+    **触发条件是「求交后仍剩多于一个」，不是「LLM 给了多于一个」。** 值被词表挡掉
+    属于**变宽**（用户仍拿得到结果，且是两套词表的常态差异），按 `compile_filters`
+    里的约定**故意不报**；只有真的丢了**本可用**的第二个值才报 —— 那种情况下回显里
+    `parsed.rtype` 仍是两个值，不说出来用户就会以为两个都筛了。
+
+    这个函数与 `compile_filters` 必须**同口径**：两个 scope 各调一次，所以同一次
+    查询可能两个 scope 都报同一个码（前端按码去重即可，端点也做了去重）。
+    """
+    out: list[str] = []
+    if len(_surviving_rtypes(parsed, scope)) > 1:
+        out.append("rtype_narrowed")
+    if scope == "CentralIndex" and len(parsed.get("domains") or []) > 1:
+        out.append("domains_narrowed")
+    return out
+
+
 def compile_filters(parsed: dict, scope: str) -> tuple[list[str], list[str]]:
     """把检索式编译成 `(qInclude, qExclude)` 两份过滤表达式。
 
-    **按 scope 分流**（spec §6）——这是本模块最容易写错的地方：
-    `tlevel` / `attribute` / `domain` 都是 **Primo Central 独有**的 facet，
-    本馆馆藏记录没有这些维度。把它们套到 `MyInstitution` 上不会报错，
-    只会**静默返回 0 命中**，馆藏那栏整块空掉，而且看不出原因。
+    **三条实测约束决定了整个形状** —— 改动前先读这三处：
 
-    只有 `CentralIndex` 吃全部过滤。
+    1. **每个 facet 都要带 `facet_` 前缀**（`facet_<name>,<precision>,<value>`）。
+       不带前缀时 CentralIndex **一律 0 命中**，MyInstitution 侧有的被**静默忽略**
+       （`tlevel,exact,peer_reviewed` 返回 34,105 = 完全没过滤的基线，看着没报错，
+       其实那个勾没生效）。两种表现都是「没有结果」。
+       上游权威来源是 Primo UI 自己的 `facetToString`（`discovery/lib/bundle.js`）。
+       **唯一例外是 `domain`**——两种写法结果不同，见下方注释。
+    2. **两个 scope 的 rtype 词表不同**，交集只有 3 个值（见 `KNOWN_RTYPE_LOCAL`
+       / `KNOWN_RTYPE_PC` 处的实测计数）。不支持的值**丢掉**，不能发出去换一个 0/1。
+    3. **年份必须发区间表达式**。逐年 `creationdate,exact,<year>` 在 CentralIndex 上
+       **完全空转**（见下方注释）。
+
+    **按 scope 分流**（spec §6）：`domain`（来源数据库）与 `attribute`（撤稿标记）
+    只在 `CentralIndex`。**`tlevel` 是例外 —— spec §6 写它「PC 独有」，实测为假**，
+    两个 scope 都发（见下方注释）。
     """
     include: list[str] = []
     exclude: list[str] = []
     is_pc = scope == "CentralIndex"
+    known_rtype = KNOWN_RTYPE_PC if is_pc else KNOWN_RTYPE_LOCAL
 
-    for rtype in parsed.get("rtype") or []:
-        include.append(f"rtype,exact,{rtype}")
+    # **只取求交后的第一个值。**
+    # 求交：本 scope 没有的类别丢掉（发出去只会换回 0 条 —— `articles` 本馆实测 0；
+    # 或 1 条 —— `journals`/`databases` PC 实测 1 / 0；界面上都长得像「没有结果」）。
+    # 丢掉只是让这一栏**变宽**，用户仍看得到结果，所以不为此发警告码：这是两套
+    # 词表的**常态**差异，不是异常 —— 给常发生的正常情况报警告，会把警告训练成噪声。
+    # 取第一个：`|,|` 连接后同一 facet 之间是 AND，两个 rtype 实测换回 **0** 条
+    # （`articles|,|books` PC = 0）—— 那正是本次在修的症状；而本端点**没有**
+    # 「同 facet OR」的表达方式（9 种写法全试过，见 `_first_per_facet`）。
+    # 这是**改动之前事实上就在发生**的事（重复参数写法下 Primo 本来也只认第一个），
+    # 不改变已有行为；被丢掉的第二个值由 `narrowing_warnings` 报出来，不静默。
+    surviving_rtypes = _surviving_rtypes(parsed, scope)
+    if surviving_rtypes:
+        include.append(f"facet_rtype,exact,{surviving_rtypes[0]}")
 
     year_from, year_to = parsed.get("year_from"), parsed.get("year_to")
     if year_from:
@@ -254,29 +349,57 @@ def compile_filters(parsed: dict, scope: str) -> tuple[list[str], list[str]]:
         # 上界取今年才与下面「区间比 CAP 宽时保留靠今年的一端」自洽：收窄只发生在
         # 下界（老的那一端），近端永远保到今年。显式给了 year_to 的路径一字不变。
         end = year_to or datetime.now().year
-        # 颠倒区间（year_to < year_from）必须夹回来：否则 range 为空、**年份约束
+        # 颠倒区间（year_to < year_from）必须夹回来：否则区间为空、**年份约束
         # 无声蒸发** —— 不报错也不 0 命中，而回显里还写着 2024–2020，看不出没生效。
         # 同一路径也覆盖 year_from = now+1（_as_year 明确放行）而 end 被 now 卡住的情形。
         if end < year_from:
             end = year_from
-        # +1 是为了让**闭区间**长度不超过 _YEAR_SPAN_CAP（end - start + 1 ≤ CAP）。
-        # 写成 end - CAP 会得到 CAP+1 条，正好越过上限一条。
+        # 窗口长度是**闭区间**（end - start + 1 ≤ CAP），所以是 end - CAP + 1；
+        # 写成 end - CAP 会多算一年，正好越过上限一条。
         # 区间比 CAP 宽时**保留靠今年的一端**（1900–2026 → 1997–2026）：用户写
         # 「1900 年以来」要的是「老到今」，丢掉近端等于把最相关的那几年排除掉。
         # 这一步只收窄**编译出的过滤集**，不动 `parsed.year_from` —— 回显仍是用户
-        # 输入的原值，所以收窄是静默的（见 _YEAR_SPAN_CAP 处的说明）。
+        # 输入的原值，所以收窄是静默的（见 _YEAR_SPAN_CAP 处的说明，那里登记了
+        # 「这个上限如今只剩下害处」）。
         start = max(year_from, end - _YEAR_SPAN_CAP + 1)
-        for year in range(start, end + 1):
-            include.append(f"creationdate,exact,{year}")
+        # ⚠️ **发区间，不是逐年一条。** 旧的逐年写法
+        # `facet_creationdate,exact,<year>` 在 CentralIndex 上是**完全空转**的：
+        # 实测无年份过滤 2,082,251 → `exact,2014` 仍 2,082,251 → `exact,2014` +
+        # `exact,2015` 还是 2,082,251。本馆侧只是碰巧有效 —— 于是「2020 年以后」
+        # 在外部库里等于**根本没过滤**，用户看不出来。
+        # 闭区间形式两个 scope 都真的过滤（实测 `[2010 TO 2015]`：本馆 34,105 →
+        # 3,780；PC 2,082,251 → 92,528）。顺带把最多 30 个 qInclude 参数压成 **1** 个。
+        include.append(f"facet_creationdate,exact,[{start} TO {end}]")
 
     if is_pc:
-        for domain in parsed.get("domains") or []:
-            include.append(f"domain,exact,{domain}")
-        if parsed.get("peer_reviewed_only"):
-            include.append("tlevel,exact,peer_reviewed")
-        if parsed.get("open_access_only"):
-            include.append("tlevel,exact,open_access")
-        if parsed.get("exclude_retracted"):
-            exclude.append("attribute,exact,retracted_publication")
+        # `domain` 是**唯一不带 `facet_` 前缀的 facet**，故意如此：
+        # 两种写法行为**不同**（实测 arXiv.org：`domain,exact,` **38** 条 vs
+        # `facet_domain,exact,` **142** 条），而 spec §3.3 验证过的是**不带**前缀那条。
+        # 差异机制未查明 ⇒ 按已验证的那条走。查明之前不要为了「统一」把它改带前缀。
+        #
+        # **同样只取第一个**：两个 domain 连接后是 AND —— 实测
+        # `domain,exact,MEDLINE|,|domain,exact,arXiv.org` = **7** 条
+        # （20096 与 21602 的交集），用户看到的就是「没有结果」。
+        domains = parsed.get("domains") or []
+        if domains:
+            include.append(f"domain,exact,{domains[0]}")
+
+    # **tlevel 两个 scope 都发 —— spec §6 的门控在这里是错的。**
+    # 规格写「tlevel / attribute / domain 都是 Primo Central 独有的 facet」，
+    # 实测推翻了 tlevel 那半：本馆**有** tlevel，而且过滤真的生效 ——
+    # `any,contains,machine learning` 本馆无过滤 **34,105** →
+    # `facet_tlevel,exact,peer_reviewed` **45**。
+    # 若照规格只在 PC 发，用户勾的「同行评审 / 开放获取」在本馆那栏就**静默失效**
+    # —— 正是本次在修的那一类缺陷，不能修别的 facet 时把它留在原地。
+    if parsed.get("peer_reviewed_only"):
+        include.append("facet_tlevel,exact,peer_reviewed")
+    if parsed.get("open_access_only"):
+        include.append("facet_tlevel,exact,open_access")
+
+    # `attribute`（撤稿标记）仍**只在 PC** —— 与 tlevel 相反，这个门控实测成立：
+    # 本馆把它当 qExclude 发出去**一条都不排除**（实测 34,105 → 34,105，差 0），
+    # 说明本馆没有这个 facet。Retraction Watch 本来就是外部数据源。
+    if is_pc and parsed.get("exclude_retracted"):
+        exclude.append("facet_attribute,exact,retracted_publication")
 
     return include, exclude

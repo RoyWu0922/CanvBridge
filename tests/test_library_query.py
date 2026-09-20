@@ -113,52 +113,107 @@ def test_synonym_promotion_does_not_duplicate_q(monkeypatch):
     assert warnings == []
 
 
+def test_compile_filters_prefixes_every_facet_expression():
+    """**根因**：Primo 的 qInclude 吃的是 facet 表达式 `facet_<name>,<precision>,<value>`。
+
+    不带 `facet_` 前缀时 CentralIndex **一律 0 命中**（实测 `rtype,exact,articles`
+    两侧都返回 0），本馆侧有的被**静默忽略**（`tlevel,exact,peer_reviewed` 返回
+    34,105 = 完全没过滤的基线，看着「没报错」，其实那个勾根本没生效）。
+
+    上游权威来源是 Primo UI 自己的 `facetToString`（`discovery/lib/bundle.js`）：
+    它**永远**拼 `"facet_"+name+","+precision+","+value`，区间 facet 拼
+    `"facet_"+name+","+precision+",["+a+" TO "+b+"]"`。
+
+    这里逐个检查**每一个**编译出的表达式 —— 漏掉任何一个 facet，对应的那个
+    筛选项就会静默失效。
+    """
+    parsed = {"rtype": ["articles"], "peer_reviewed_only": True,
+              "open_access_only": True, "year_from": 2024, "year_to": 2024}
+    for scope in ("MyInstitution", "CentralIndex"):
+        inc, _ = library_query.compile_filters(parsed, scope)
+        assert inc, f"{scope} 竟然编译出空过滤集"
+        for expr in inc:
+            assert expr.startswith("facet_"), (scope, expr)
+
+
 def test_compile_filters_uses_plural_rtype():
-    """实测：rtype 的值是复数。'database' 返回 0，'databases' 才对。"""
-    inc, exc = library_query.compile_filters({"rtype": ["articles"]}, "CentralIndex")
-    assert "rtype,exact,articles" in inc
+    """实测：rtype 的值是**复数**。'database' 返回 0，'databases' 才对。
+
+    断言**整个列表**而不是 `in`：`facet_` 前缀、逗号精度、值三处任一写错都要弄红。
+    """
+    inc, exc = library_query.compile_filters({"rtype": ["databases"]}, "MyInstitution")
+    assert inc == ["facet_rtype,exact,databases"]
 
 
 def test_compile_filters_excludes_retracted():
     inc, exc = library_query.compile_filters({"exclude_retracted": True}, "CentralIndex")
-    assert "attribute,exact,retracted_publication" in exc
+    assert exc == ["facet_attribute,exact,retracted_publication"]
 
 
-def test_compile_filters_puts_pc_only_filters_on_external_scope_only():
-    """spec §6 关键：tlevel/attribute 是 Primo Central 独有的 facet。
-    套到 MyInstitution（本馆馆藏）上会**静默返回 0** —— 馆藏那栏会整块空掉。"""
-    parsed = {"peer_reviewed_only": True, "open_access_only": True, "exclude_retracted": True}
-    local_inc, local_exc = library_query.compile_filters(parsed, "MyInstitution")
-    ext_inc, ext_exc = library_query.compile_filters(parsed, "CentralIndex")
-    assert all("tlevel" not in e and "attribute" not in e for e in local_inc + local_exc)
-    assert "tlevel,exact,peer_reviewed" in ext_inc
-    assert "tlevel,exact,open_access" in ext_inc
-    assert "attribute,exact,retracted_publication" in ext_exc
+def test_compile_filters_tlevel_applies_to_both_scopes():
+    """**实测推翻了 spec §6 的前提。** 规格写「tlevel 是 Primo Central 独有的 facet」，
+    可本馆**有** tlevel，而且过滤真的生效：`any,contains,machine learning` 本馆
+    无过滤 **34,105** → `facet_tlevel,exact,peer_reviewed` **45**。
+
+    留着旧的 PC-only 门控 = 用户勾的「同行评审」「开放获取」在本馆那栏**静默失效**
+    —— 这正是本次要修的那一类缺陷，不能在修别的 facet 时把它留在原地。两个 scope 都发。
+    """
+    parsed = {"peer_reviewed_only": True, "open_access_only": True}
+    for scope in ("MyInstitution", "CentralIndex"):
+        inc, _ = library_query.compile_filters(parsed, scope)
+        assert "facet_tlevel,exact,peer_reviewed" in inc, scope
+        assert "facet_tlevel,exact,open_access" in inc, scope
+
+
+def test_compile_filters_attribute_stays_external_only():
+    """`attribute`（撤稿标记）仍只在 PC：Retraction Watch 是外部数据源，
+    本馆馆藏没有这个维度。spec §6 的门控对 attribute 成立（对 tlevel 不成立，
+    见上一条 —— 同一个门控里两个 facet 的实测结论相反）。"""
+    parsed = {"exclude_retracted": True}
+    assert library_query.compile_filters(parsed, "MyInstitution")[1] == []
+    assert library_query.compile_filters(parsed, "CentralIndex")[1] == [
+        "facet_attribute,exact,retracted_publication"]
 
 
 def test_compile_filters_puts_domain_on_external_scope_only():
-    """domain 也是 PC 侧概念，本馆馆藏没有这个维度。"""
+    """domain 是 PC 侧概念（来源数据库），本馆馆藏没有这个维度。
+
+    **`domain` 故意不带 `facet_` 前缀**：两种写法行为**不同**（实测 arXiv.org：
+    `domain,exact,` **38** 条 vs `facet_domain,exact,` **142** 条），而 spec §3.3
+    验证过的是**不带**前缀那条。差异机制未查明 ⇒ 按已验证的那条走，查明前不动它。
+    """
     parsed = {"domains": ["MEDLINE"]}
-    assert "domain,exact,MEDLINE" in library_query.compile_filters(parsed, "CentralIndex")[0]
+    assert library_query.compile_filters(parsed, "CentralIndex")[0] == ["domain,exact,MEDLINE"]
     assert library_query.compile_filters(parsed, "MyInstitution")[0] == []
 
 
-def test_compile_filters_year_becomes_one_include_per_year():
-    """逐年一条 qInclude（区间参数未验，spec §6 定它不作默认）。"""
+def test_compile_filters_year_becomes_one_range_expression():
+    """**真缺陷（根因之二）**：逐年一条 `creationdate,exact,<year>` 在 CentralIndex 上是
+    **完全空转**的 —— 实测 `any,contains,machine learning`：无年份过滤 **2,082,251**
+    → `exact,2014` 仍 **2,082,251** → `exact,2014` + `exact,2015` 还是 **2,082,251**。
+    本馆侧只是碰巧有效，于是「2020 年以后」在外部库里等于**根本没过滤**。
+
+    区间形式两个 scope 都真的过滤（实测 `[2010 TO 2015]`：本馆 34,105 → **3,780**；
+    PC 2,082,251 → **92,528**）。闭区间，**恰好一条** qInclude。
+    """
     inc, _ = library_query.compile_filters({"year_from": 2022, "year_to": 2024}, "MyInstitution")
-    assert inc.count("creationdate,exact,2022") == 1
-    assert "creationdate,exact,2023" in inc and "creationdate,exact,2024" in inc
+    assert inc == ["facet_creationdate,exact,[2022 TO 2024]"]
 
 
-def test_compile_filters_year_range_capped():
-    """别让 1900-2026 生成 127 条 qInclude。"""
+def test_compile_filters_year_range_span_is_capped():
+    """`_YEAR_SPAN_CAP` 现在收窄的是**区间跨度**，不再是 qInclude 条数 ——
+    区间形式永远只发 1 条，所以「别生成 127 个参数」那条理由已经消失（见常量处注释）。"""
     inc, _ = library_query.compile_filters({"year_from": 1900, "year_to": 2026}, "MyInstitution")
-    assert len([e for e in inc if e.startswith("creationdate")]) <= 30
+    years = _cd_years(inc)
+    assert len(years) == library_query._YEAR_SPAN_CAP
+    assert years[-1] == 2026                      # 保留靠今年的一端
 
 
 def test_compile_filters_open_ended_year_to_uses_now():
-    inc, _ = library_query.compile_filters({"year_from": 2025, "year_to": None}, "MyInstitution")
-    assert "creationdate,exact,2025" in inc
+    """上界缺省 ⇒ 今年。用 `datetime.now().year` 断言，**不写死年份**。"""
+    now = datetime.now().year
+    inc, _ = library_query.compile_filters({"year_from": now, "year_to": None}, "MyInstitution")
+    assert inc == [f"facet_creationdate,exact,[{now} TO {now}]"]
 
 
 # ---------- parse_natural：降级 ----------
@@ -276,59 +331,163 @@ def test_build_prompt_tolerates_empty_catalogs():
 # ---------- F1：颠倒区间不能让年份约束无声蒸发（真缺陷修复） ----------
 
 def test_compile_filters_inverted_year_range_still_filters():
-    """year_to < year_from 时 `range()` 为空 → **一条 creationdate 都不生成**，
+    """year_to < year_from 时如果直接拿去做区间，`[2024 TO 2020]` 是**空区间** ——
     年份约束无声蒸发：不报错、不 0 命中，回显里却还写着 2024–2020。"""
     inc, _ = library_query.compile_filters({"year_from": 2024, "year_to": 2020},
                                            "MyInstitution")
-    assert "creationdate,exact,2024" in inc
+    assert inc == ["facet_creationdate,exact,[2024 TO 2024]"]
 
 
 def test_compile_filters_future_year_from_survives():
     """第二个可达入口：`_as_year` 明确放行 now+1（未来年份）。
 
     **当前机制**（与上面那条不同，别照抄旧注释）：`end = year_to or datetime.now().year`
-    —— 上界缺省时取**今年**。只要今年比 2027 小，取今年得到的 `end` 就比 `year_from`
-    小，于是紧跟着的夹取 `if end < year_from: end = year_from`（`library_query.py:260-261`）
-    把它抬到 2027（未来那一年本身）；随后 `start = max(2027, 1998) = 2027`、
-    `range(2027, 2028)` 非空 ⇒ 2027 保留。**抬它的是夹取那一行，不是取今年那一行。**
+    —— 上界缺省时取**今年**。只要今年比 `year_from` 小，取今年得到的 `end` 就比
+    `year_from` 小，于是紧跟着的夹取 `if end < year_from: end = year_from` 把它抬到
+    `year_from`（未来那一年本身），区间因此非空 ⇒ 那一年保留。
+    **抬它的是夹取那一行，不是取今年那一行。**
 
     历史（`3be358a` 之前）：那时上界写的是 `min(now, year_from + _YEAR_SPAN_CAP)`。
     但它**并没有吞掉未来年份** —— 同一版里夹取已经在（`3be358a^:239-240`），
-    `year_from=2027` 照样被抬回 2027，`range` 非空。那道 `min` 真正伤到的是
-    **下界很远**的情形：`year_from=1990` 时 end 被卡在 2020，2021–2026 静默消失
-    —— 这才是 `compile_filters` 里那段注释讲的缺陷。`min` 已删，本用例守的是
-    删掉之后仍然成立的性质（未来年份不被静默吞掉）。测试名里的 `_now_cap` 已随之去掉。
+    `year_from=2027` 照样被抬回 2027。那道 `min` 真正伤到的是**下界很远**的情形：
+    `year_from=1990` 时 end 被卡在 2020，2021–2026 静默消失 —— 这才是
+    `compile_filters` 里那段注释讲的缺陷。`min` 已删，本用例守的是删掉之后仍然
+    成立的性质（未来年份不被静默吞掉）。测试名里的 `_now_cap` 已随之去掉。
     """
     inc, _ = library_query.compile_filters({"year_from": 2027, "year_to": None},
                                            "MyInstitution")
-    assert "creationdate,exact,2027" in inc
+    assert _cd_years(inc) == [2027]
 
 
 def test_compile_filters_inverted_range_clamps_end_exactly():
     """颠倒区间夹回来的**上端**必须正好是 `year_from`，不能多算一年。
 
-    上面那条只断言 `2024` **在**集合里 —— 而 `end = year_from` 改成
-    `end = year_from + 1` 时，`range(2024, 2026)` 仍然含 2024，所以那条**杀不掉**
-    这个 off-by-one（实测：变异存活，`393 passed`）。这里改成直接断言**编译出的
-    整个 creationdate 集合**，把上端也钉死。
+    上面那条只断言 `2024` 被覆盖 —— 而 `end = year_from` 改成 `end = year_from + 1`
+    时，区间变成 `[2024 TO 2025]`，仍然含 2024，所以那条**杀不掉**这个 off-by-one。
+    这里直接断言**编译出的完整年份序列**，把上端也钉死。
 
     为什么值得钉：夹回的上端若多一年，`2024–2020` 这种输入会**静默**多放行一整年
     （2025）的结果 —— 回显仍写着 2024–2020，用户看不出多出来的那一年是哪儿来的。
     """
     inc, _ = library_query.compile_filters({"year_from": 2024, "year_to": 2020},
                                            "MyInstitution")
-    years = sorted(int(e.rsplit(",", 1)[1]) for e in inc
-                   if e.startswith("creationdate,exact,"))
-    assert years == [2024]
+    assert _cd_years(inc) == [2024]
 
 
-# ---------- F2：rtype 是两侧通用维度，不能被 is_pc 门控 ----------
+# ---------- F2：rtype 是两侧通用维度，但**两侧词表不同** ----------
 
 def test_compile_filters_keeps_rtype_on_local_scope():
-    """既有真机实测：`rtype,exact,databases` + scope=MyInstitution 返回 CityU 全部
-    66 个库 —— 所以 rtype **不是** PC 独有 facet（与 tlevel/attribute/domain 不同）。"""
-    inc, _ = library_query.compile_filters({"rtype": ["articles"]}, "MyInstitution")
-    assert "rtype,exact,articles" in inc
+    """既有真机实测：rtype + scope=MyInstitution 返回 CityU 馆藏 —— 所以 rtype
+    **不是** PC 独有 facet（与 domain/attribute 不同）。用的值得是本馆**有的**那个。"""
+    inc, _ = library_query.compile_filters({"rtype": ["databases"]}, "MyInstitution")
+    assert inc == ["facet_rtype,exact,databases"]
+
+
+def test_compile_filters_drops_rtype_the_scope_does_not_have():
+    """**根因之三：两个 scope 的 rtype 词表不同，交集只有 3 个值。**
+
+    旧行为把值原样发到两侧，于是本馆不支持的值换回一个 **0**
+    （实测 `facet_rtype,exact,articles` 本馆 = **0**），
+    PC 不支持的值换回 **1 条**（`journals` = **1**、`databases` = **0**）——
+    两者在界面上都长得像「没有结果」。
+
+    所以按 scope 求交：不支持的**丢掉**。丢掉只会让那一栏**变宽**（返回不限类型的
+    命中），不会变窄 —— 用户仍看得到结果，所以不加警告码：这是两套词表的**常态**
+    差异，不是异常。给常发生的正常情况报警告，会把警告训练成噪声。
+
+    **求交之后仍只会发出一个值**（见下一条用例）—— 所以这里断言的是「活下来的
+    那一个」，不是一个列表。
+    """
+    # articles 只有 PC 有；journals/databases 只有本馆有；books 两侧都有
+    parsed = {"rtype": ["articles", "journals", "books"]}
+    assert library_query.compile_filters(parsed, "CentralIndex")[0] == [
+        "facet_rtype,exact,articles"]
+    assert library_query.compile_filters(parsed, "MyInstitution")[0] == [
+        "facet_rtype,exact,journals"]
+
+
+def test_compile_filters_keeps_only_one_value_per_facet():
+    """**同一个 facet 只发一个值**（先按 scope 词表求交，**再**取第一个）。
+
+    PC 上 `["articles", "journals", "books"]` 求交后是 `[articles, books]`，
+    取 `articles`；本馆求交后是 `[journals, books]`，取 `journals`。
+    **顺序是先求交再取首个** —— 否则「第一个值本 scope 没有」会把整条过滤丢掉
+    （= 变宽），而用户以为自己在按类型筛。
+
+    ⚠️ **为什么不把两个都发出去**（2026-09-20 实测，真实 API）：
+    同一 facet 的多个值在本端点**要么被静默丢弃、要么把结果变成 0**：
+
+      · 重复同名参数（旧写法）→ Primo **只认第一个**，其余静默丢弃
+        （`facet_rtype,exact,books` + 日期 → 25,490 = books 单独的值）
+      · `|,|` 连接（修法）→ facet **之间**是 AND，同 facet 之间**也是 AND**：
+        `facet_rtype,exact,articles|,|facet_rtype,exact,books` PC = **0**；
+        两个 domain = **7**（MEDLINE ∩ arXiv.org）
+
+    试过的 9 种「同 facet OR」写法全部无效（重复参数 / `|,|` 两种拼法 /
+    `multiFacets` 三种形态 / `include` 精度 / `include,...,1` /
+    `blendFacetsSeparately=true`）—— 详见 `test_library_client` 里那条
+    钉 URL 的用例。**结论：OR 做不到，所以多值必须挡在编码之前。**
+
+    「只发第一个」正是**改动之前事实上就在发生**的事（第二个值本来就被丢），
+    所以这一步**不改变任何已有行为**；它只是把既成事实写成明文，并交给
+    `narrowing_warnings` 把它**说出来** —— 静默窄化才是本仓的大忌。
+    """
+    parsed = {"rtype": ["articles", "journals", "books"]}
+    assert library_query.compile_filters(parsed, "CentralIndex")[0] == [
+        "facet_rtype,exact,articles"]
+    assert library_query.compile_filters(parsed, "MyInstitution")[0] == [
+        "facet_rtype,exact,journals"]
+    # 两个 domain 同理：只留第一个（否则连接后是 AND → 7 条）
+    parsed = {"domains": ["MEDLINE", "arXiv.org"]}
+    assert library_query.compile_filters(parsed, "CentralIndex")[0] == [
+        "domain,exact,MEDLINE"]
+
+
+def test_narrowing_warnings_fire_only_when_a_value_was_actually_dropped():
+    """窄化要**报警告码** —— 回显里 `parsed.rtype` 仍是两个值，
+    不说出来用户就会以为筛选按两个值都做了（回显恒等于「照做了」= 补偿机制归零）。
+
+    触发条件是「**求交后仍剩多于一个**」，不是「LLM 给了多于一个」：
+    `["articles", "journals"]` 在 PC 上求交后只剩 `articles` 一个 —— 那是
+    词表差异导致的**变宽**，按上一条用例的约定**故意不报警**（常态差异报警告
+    会把警告训练成噪声）；只有真的丢了本可用的第二个值才报。
+    """
+    multi = {"rtype": ["articles", "books"]}
+    assert library_query.narrowing_warnings(multi, "CentralIndex") == ["rtype_narrowed"]
+    # 本馆词表里 articles 不存在 ⇒ 求交后只剩 books ⇒ 没窄化，不报
+    assert library_query.narrowing_warnings(multi, "MyInstitution") == []
+
+    # domains 只在 PC 发，所以只在 PC 报
+    doms = {"domains": ["MEDLINE", "arXiv.org"]}
+    assert library_query.narrowing_warnings(doms, "CentralIndex") == ["domains_narrowed"]
+    assert library_query.narrowing_warnings(doms, "MyInstitution") == []
+
+    # 单值 / 空值：无事发生
+    assert library_query.narrowing_warnings({"rtype": ["books"]}, "CentralIndex") == []
+    assert library_query.narrowing_warnings({}, "CentralIndex") == []
+
+
+def test_rtype_vocabularies_are_the_measured_ones():
+    """钉住两份**逐个测出来的**词表（2026-09-20，`any,contains,machine learning`，
+    `facet_rtype,exact,<v>`）。不是从 PC 那份推的，也不是抄 spec 的。
+
+    两处最反直觉、也是本次缺陷来源的点：
+    - `articles` 在**本馆 = 0**（本馆根本没有这个类别）；
+    - `journals` / `databases` 在 **PC = 1 / 0**（它们是本馆的值，不该出现在 PC 枚举里）。
+
+    实测计数见两侧词表常量处的注释。
+    """
+    assert library_query.KNOWN_RTYPE_PC == frozenset({
+        "articles", "books", "dissertations", "conference_proceedings",
+        "book_chapters", "preprint", "reviews", "text_resources"})
+    assert library_query.KNOWN_RTYPE_LOCAL == frozenset({
+        "books", "dissertations", "conference_proceedings",
+        "videos", "journals", "audios", "other", "databases"})
+    assert library_query.KNOWN_RTYPE_PC & library_query.KNOWN_RTYPE_LOCAL == {
+        "books", "dissertations", "conference_proceedings"}
+    assert "articles" not in library_query.KNOWN_RTYPE_LOCAL
+    assert "journals" not in library_query.KNOWN_RTYPE_PC
+    assert "databases" not in library_query.KNOWN_RTYPE_PC
 
 
 # ---------- F3：area 的全部约束力都押在提示词那句一致性约束上（spec §4.1） ----------
@@ -439,13 +598,16 @@ def test_fallback_parsed_returns_full_shape_with_single_keyword():
 
 def test_compile_filters_year_cap_keeps_the_recent_end():
     """区间被 _YEAR_SPAN_CAP 截断时保留**靠今年的一端**（1900–2026 → 1997–2026）：
-    改成保留远端（1900–1929）时 32 条曾经全绿。"""
+    改成保留远端（1900–1929）时旧写法曾经全绿。
+
+    断言**完整年份序列**（含两端）：`1900 in years` 与 `len == 30` 两条各自都能被
+    不同的错法绕过，合起来才把窗口两端同时钉死。
+    """
     inc, _ = library_query.compile_filters({"year_from": 1900, "year_to": 2026},
                                            "MyInstitution")
-    cds = [e for e in inc if e.startswith("creationdate")]
-    assert "creationdate,exact,2026" in cds
-    assert "creationdate,exact,1900" not in cds
-    assert len(cds) == 30
+    years = _cd_years(inc)
+    assert years == list(range(1997, 2027))
+    assert years[0] == 1997 and years[-1] == 2026
 
 
 def test_year_span_cap_is_silent_and_does_not_rewrite_parsed():
@@ -453,19 +615,34 @@ def test_year_span_cap_is_silent_and_does_not_rewrite_parsed():
     截断只发生在**编译出的过滤集**上 —— `parsed.year_from` 照旧是用户原值，
     所以这次收窄是静默的（回显写着 1900–2026，实际只过滤 1997–2026）。
     钉住「选定的行为」：保留靠今年的一端、只收窄过滤集、`_YEAR_SPAN_CAP` 不动。
+
+    ⚠️ **这个上限如今只剩下害处**：它原本的理由是「别生成 127 个 qInclude 参数」，
+    而区间形式**永远只发 1 条**，那条理由已被本次修复消除。实测 `[1900 TO 2026]`
+    两个 scope 都正常返回（本馆 34,018 / PC 2,078,579），所以收窄已无必要。
+    本次**不动它**（改窗口语义属于另一件事），但它是一条**已登记的**静默收窄，
+    见 `_YEAR_SPAN_CAP` 处注释。改掉它时这条用例要一起改。
     """
     parsed = {"year_from": 1900, "year_to": 2026}
     inc, _ = library_query.compile_filters(parsed, "MyInstitution")
-    cds = [e for e in inc if e.startswith("creationdate")]
-    assert cds == [f"creationdate,exact,{y}" for y in range(1997, 2027)]   # 恰好 30 条
+    assert inc == ["facet_creationdate,exact,[1997 TO 2026]"]              # 恰好 30 年
     assert parsed["year_from"] == 1900      # 用户输入不被改写 —— 这正是「静默」之处
 
 
 # ---------- 修复轮：缺省 year_to 的上界必须是**今年**（真缺陷） ----------
 
 def _cd_years(inc: list[str]) -> list[int]:
-    """从 qInclude 列表里取出 creationdate 的年份，顺序原样保留。"""
-    return [int(e.rsplit(",", 1)[1]) for e in inc if e.startswith("creationdate")]
+    """从 qInclude 列表里取出 creationdate 过滤覆盖的年份，展开成逐年列表（升序）。
+
+    期望形式是**唯一一条闭区间** `facet_creationdate,exact,[<start> TO <end>]`。
+    找不到区间返回 `[]`；**多于一条也返回 `[]`**（调用方断言的是完整年份列表，
+    多条时长度必然对不上 ⇒ 弄红；这里不静默取第一条）。
+    """
+    ranges = [e for e in inc if e.startswith("facet_creationdate,exact,[")]
+    if len(ranges) != 1:
+        return []
+    body = ranges[0][len("facet_creationdate,exact,["):-1]
+    start, _, end = body.partition(" TO ")
+    return list(range(int(start), int(end) + 1))
 
 
 def test_compile_filters_open_ended_year_from_keeps_the_recent_end():

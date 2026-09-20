@@ -55,43 +55,74 @@ def test_build_params_omits_empty_filter_keys():
     assert "qInclude" not in p and "qExclude" not in p
 
 
-def test_build_params_lists_filters_as_repeated_params():
+def test_build_params_joins_filters_into_one_qInclude_value():
+    """多个过滤表达式必须拼成**一个** `qInclude` 值，用 `|,|` 连接。
+
+    **根因（2026-09-20 实测，全部走真实 API）**：写成**重复的同名参数**时，
+    Primo **只认第一个，后面的静默丢弃** —— 不报错、不 0 命中，只是过滤没生效；
+    于是「勾了同行评审 + 2020 年以后」拿回来的是一份没过滤的结果。实测
+    （`q = any,contains,machine learning`）：
+
+      · `facet_rtype,exact,books` + `facet_creationdate,exact,[1900 TO 1901]`
+          - 重复参数        → 本馆 **25,490**（= 只要 books，日期被丢）
+          - 互换顺序        → 本馆 **1**（= 只要日期，books 被丢）
+          - 同一个值 `|,|` 连接 → 本馆 **1**（两个都生效）
+      · PC 侧：`facet_rtype,exact,articles` + 同期
+          - 重复参数 → **1,280,371**（articles 单独的值）
+          - 连接后   → **2**
+      · 三个不同 facet 连接后 PC = **715,116**（articles ∧ 日期 ∧ 同行评审 都生效）
+
+    厂商 UI 就是发一个值：`bundle.js` 里
+    `qInclude: …map(facetToString).join("|,|")`（`qExclude` 同）。
+    `facetToString` 的 range 形态 `facet_<name>,<precision>,[<a> TO <b>]`
+    也正是本仓 `compile_filters` 现在发的形态。
+    """
     p = library_client.build_params(
         "CentralIndex", "q",
         q_include=["rtype,exact,articles", "tlevel,exact,peer_reviewed"],
         q_exclude=["attribute,exact,retracted_publication"])
-    assert p["qInclude"] == ["rtype,exact,articles", "tlevel,exact,peer_reviewed"]
-    assert p["qExclude"] == ["attribute,exact,retracted_publication"]
+    assert p["qInclude"] == "rtype,exact,articles|,|tlevel,exact,peer_reviewed"
+    assert p["qExclude"] == "attribute,exact,retracted_publication"
 
 
-def test_build_params_encodes_two_values_of_one_category_as_repeated_params():
-    """**同一类别（这里是 `rtype`）的两个值**编码后长什么样 —— 断言**编码后的 URL**。
+def test_build_params_single_filter_has_no_separator():
+    """只有一条过滤时**不能**凭空多出 `|,|` —— 发出去的就是那一条本身。"""
+    p = library_client.build_params(
+        "MyInstitution", "q", q_include=["facet_creationdate,exact,[2020 TO 2026]"])
+    assert p["qInclude"] == "facet_creationdate,exact,[2020 TO 2026]"
 
-    上面那条用例用的是 `rtype` + `tlevel` **两个不同类别**，结构上盖不到「同类别多值」
-    这个问题（而 §11.3 那个未决问题问的正是后者）；本用例补的就是它。
+
+def test_build_params_sends_exactly_one_qInclude_param_on_the_wire():
+    """钉**真实发出去的字节**：URL 里 `qInclude` 只出现**一次**。
+
     这里刻意不读 `build_params` 的返回值，而是走 `requests` 的
-    `Request.prepare()` 再 `parse_qs` —— 要钉的是**真实发出去的字节**，不是中间字典。
+    `Request.prepare()` 再 `parse_qs` —— 中间字典对了不等于线上编码对了。
 
-    ⚠️ **本用例钉住的是「当前实现」的编码形态，不是「正确」的形态。**
-    `qInclude` 传同类别多个值时的语义（OR 还是 AND）**未经验证**（规格 §11.3），
-    且官方文档描述的是 `|,|` 连接与 `multiFacets`，**与本仓的重复参数写法不同**
-    （final review 的文档调研结论：官方 WADL 说 `qInclude` 在**facet 之间**是 AND，
-    想要「同类别内 OR」要用 `multiFacets`）。
-    所以：**本用例通过 ≠ 过滤生效**，一次绿色**不是**「多值过滤是对的」的证据。
-    它唯一的用途是「谁动了这个编码，这里会红」，逼改动者去看 §11.3 那个未决问题。
+    `|,|` 会以 `%7C%2C%7C` 出现在 query 里（`parse_qs` 会解回来），所以断言
+    解出来的**唯一**那个值即可；同时断言参数个数是 1 —— 这是本用例的重点：
+    重复参数那种写法在这里会解出 2 个，而**第 2 个是被 Primo 忽略的**。
+
+    **规格 §11.3 的现状（已实测，别再当未决问题）**：
+      · `qInclude` **facet 之间**是 AND —— 连接后三条都生效（PC 715,116）。
+      · 「**同一 facet 内多值 OR**」**在本端点找不到表达方式**：试过重复参数、
+        `|,|` 连接（名字写一次 / 写两次）、`multiFacets` 三种形态（重复参数 /
+        值域合并 / `rtype:` 前缀分组）、`include` 精度、`include,...,1` 后缀、
+        `blendFacetsSeparately=true` —— 9 种写法**全是 AND 或空转**：
+        两条 rtype 一律 **0**，两个 domain 一律 **7**（MEDLINE ∩ arXiv.org）。
+      所以 `compile_filters` 反过来保证**同一 facet 只发一个值**（见该函数与
+      `_first_per_facet`），把「多值」这件事挡在编码之前，而不是指望这里能 OR。
     """
     p = library_client.build_params(
         "CentralIndex", "q",
-        q_include=["rtype,exact,articles", "rtype,exact,databases"])
+        q_include=["facet_rtype,exact,articles", "facet_tlevel,exact,peer_reviewed"])
     req = requests.Request(
         "GET", library_client.PRIMO_BASE + library_client.SEARCH_PATH,
         params=p).prepare()
     qs = parse_qs(urlparse(req.url).query, keep_blank_values=True)
 
-    # 当前实现：requests 对 list 值编码成**重复的同名参数**（不是 `|,|` 连接）。
-    assert qs["qInclude"] == ["rtype,exact,articles", "rtype,exact,databases"]
-    assert len(qs["qInclude"]) == 2          # 两个值都真的发出去了，没被吞成一个
-    assert all("|" not in v for v in qs["qInclude"])
+    assert qs["qInclude"] == [
+        "facet_rtype,exact,articles|,|facet_tlevel,exact,peer_reviewed"]
+    assert len(qs["qInclude"]) == 1          # 不是两个同名参数 —— 那样只有第一个生效
 
 
 # ---------- normalize_doc：实测字段形状全是怪胎 ----------

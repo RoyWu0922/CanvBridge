@@ -1344,17 +1344,61 @@ def test_library_search_normalizes_client_supplied_parsed(monkeypatch):
     assert body["ok"] is True
     include = seen["CentralIndex"].get("q_include") or []
     # 正向：归一化后**确实产出了**这些过滤器（清空 q_include 的实现会在这里红）
-    assert "rtype,exact,articles" in include
+    assert "facet_rtype,exact,articles" in include
     assert "domain,exact,MEDLINE" in include
-    assert "tlevel,exact,peer_reviewed" in include
+    assert "facet_tlevel,exact,peer_reviewed" in include
     # 负向：坏值被剔
     assert not any("bogus_type" in f for f in include)          # 未知 rtype 被剔
     assert not any("NotInTheCatalog" in f for f in include)     # 词表外的库名被剔
-    assert not any(f.startswith("creationdate") for f in include)   # 1800 年前的年份被剔
+    # ⚠️ 前缀必须是 `facet_creationdate`：写成 `creationdate` 时，本次加上 `facet_`
+    # 前缀之后这条**恒真**（任何 f 都不再以 `creationdate` 开头），等于把
+    # 「1800 年前的年份被剔」这条守则悄悄废掉。年份改成区间表达式后同理。
+    assert not any(f.startswith("facet_creationdate") for f in include)
+
+
+def test_library_search_warns_when_an_llm_facet_choice_is_narrowed(monkeypatch):
+    """被窄化掉的第二个值必须出现在 `warnings` 里（**码**，不是句子）。
+
+    这里刻意**不**打桩 `compile_filters` / `narrowing_warnings` —— 要钉的正是
+    端点有没有把它们接上（`_patch_library` 只换掉 `parse_natural`/`search`/
+    `list_domains`/`load_areas`，编译链是真题）。回显的 `parsed.rtype` 仍是
+    两个值（`validate_parsed` 不动它），所以光看回显用户会以为两个都筛了
+    —— `warnings` 是唯一的补偿通道，接不上就等于静默窄化。
+
+    这里刻意选 `["books", "dissertations"]` —— 两个值**同时**在两份词表的交集里
+    （交集只有 books / dissertations / conference_proceedings 三个），所以**两个
+    scope 都会算出同一个码**，`assert == ["rtype_narrowed"]` 于是同时钉住了
+    「接上了」和「**按码去重了**」。若换成 `["articles", "books"]`，本馆求交后只剩
+    `books` 一个（不报），去重那条就测不到了 —— 变异验证里「端点警告不去重」
+    当时正是**零杀伤**，就是因为用例选错了值。
+    """
+    _patch_library(monkeypatch)
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "page": 2,
+        "parsed": {"keywords": ["ml"], "rtype": ["books", "dissertations"]}}).json()
+    assert body["ok"] is True
+    assert body["warnings"] == ["rtype_narrowed"]              # 恰好一个 ⇒ 去过重
+    assert body["parsed"]["rtype"] == ["books", "dissertations"]   # 回显照旧，不回填
+
+
+def test_library_search_does_not_warn_for_a_single_llm_facet_choice(monkeypatch):
+    """反向：单个值不该报 —— 否则每次检索都挂一条警告，警告就被训练成噪声。"""
+    _patch_library(monkeypatch)
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "page": 2,
+        "parsed": {"keywords": ["ml"], "rtype": ["books"]}}).json()
+    assert body["ok"] is True
+    assert body["warnings"] == []
 
 
 def test_library_search_compiles_two_different_param_sets(monkeypatch):
-    """两个 scope 的过滤参数**不是同一套**（spec §6）。"""
+    """两个 scope 的过滤参数**不是同一套**（spec §6）。
+
+    差异点是 **`domain` 与 `attribute`（PC 独有）**，**不是 `tlevel`** ——
+    spec §6 把 tlevel 也算进「PC 独有」，实测为假（本馆有 tlevel 且过滤生效：
+    34,105 → 45），所以 tlevel 现在两侧都发。这里补正向断言把它钉住，
+    免得日后有人照规格把 tlevel 又挪回 `is_pc` 门控里。
+    """
     _patch_library(monkeypatch)
     seen = {}
     from backend import library_client
@@ -1366,9 +1410,21 @@ def test_library_search_compiles_two_different_param_sets(monkeypatch):
     monkeypatch.setattr(library_client, "search", spy)
     client.post("/api/library/search", json={
         "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
-        "text": "x", "parsed": {"keywords": ["x"], "peer_reviewed_only": True}})
-    assert "tlevel,exact,peer_reviewed" in (seen["CentralIndex"].get("q_include") or [])
-    assert "tlevel,exact,peer_reviewed" not in (seen["MyInstitution"].get("q_include") or [])
+        "text": "x", "parsed": {"keywords": ["x"], "peer_reviewed_only": True,
+                                "exclude_retracted": True, "domains": ["MEDLINE"]}})
+    pc_inc = seen["CentralIndex"].get("q_include") or []
+    local_inc = seen["MyInstitution"].get("q_include") or []
+    # 两侧**都**发 tlevel（实测推翻 spec §6 的「PC 独有」）
+    assert "facet_tlevel,exact,peer_reviewed" in pc_inc
+    assert "facet_tlevel,exact,peer_reviewed" in local_inc
+    # 真正只属于 PC 的两个 facet
+    assert "domain,exact,MEDLINE" in pc_inc
+    assert "domain,exact,MEDLINE" not in local_inc
+    assert "facet_attribute,exact,retracted_publication" in (
+        seen["CentralIndex"].get("q_exclude") or [])
+    assert (seen["MyInstitution"].get("q_exclude") or []) == []
+    # 结论：两套参数确实不同
+    assert pc_inc != local_inc
 
 
 # ---------- F-3：两个 scope 并发 + 查询级节流 ----------

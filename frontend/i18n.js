@@ -396,6 +396,8 @@ const I18N = {
     "library.no_link": "（无链接）",
     "library.warn.llm_degraded": "AI 解析失败，已按原文关键词检索",
     "library.warn.domains_dropped": "AI 选的来源库不在可选列表里，已忽略",
+    "library.warn.rtype_narrowed": "AI 选了多个文献类型，只采用了第一个（图书馆接口无法在同类内取并集）",
+    "library.warn.domains_narrowed": "AI 选了多个来源库，只采用了第一个（图书馆接口无法在同类内取并集）",
   },
   en: {
     "app.title": "Canvas Course Assistant",
@@ -794,6 +796,8 @@ const I18N = {
     "library.no_link": "(no link)",
     "library.warn.llm_degraded": "AI parsing failed — searched using your raw keywords",
     "library.warn.domains_dropped": "AI picked source databases that aren't available — ignored",
+    "library.warn.rtype_narrowed": "AI picked several item types — only the first was used (the library API can't union values within one category)",
+    "library.warn.domains_narrowed": "AI picked several source databases — only the first was used (the library API can't union values within one category)",
   },
 };
 

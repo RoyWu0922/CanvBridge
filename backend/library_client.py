@@ -30,6 +30,11 @@ SCOPE_EXTERNAL = "CentralIndex"    # Primo Central 中央索引（文章级）
 PAGE_SIZE = 20
 MAX_PAGES = 5
 
+# 多个过滤表达式在**一个** `qInclude` 值里的连接符。厂商 UI 用的就是这个
+# （`bundle.js`：`qInclude: …map(facetToString).join("|,|")`），**实测必须是它**：
+# 写成重复的同名参数时 Primo 只认第一个、其余静默丢弃（见 `build_params`）。
+_FILTER_JOIN = "|,|"
+
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; CanvBridge/1.0)",
             "Accept": "application/json"}
 
@@ -133,8 +138,19 @@ def build_params(scope: str, q: str, *, q_include: list[str] | None = None,
     - **不生成 `inst` 键**（传了 → 0 命中）
     - `scope` 必填（漏掉 → HTTP 400 + 空 body，不是 JSON 错误页）
 
-    `q_include` / `q_exclude` 是**完整过滤表达式**列表（如 `"rtype,exact,articles"`），
-    这里只负责拼成**重复的同名参数**（requests 对 list 值就是这么编码的）。
+    `q_include` / `q_exclude` 是**完整过滤表达式**列表（如
+    `"facet_rtype,exact,articles"`），这里把它们拼成**一个**值，用 `|,|` 连接。
+
+    ⚠️ **不能写成重复的同名参数**（那是旧实现，2026-09-20 实测推翻）：
+    重复时 Primo **只认第一个，其余静默丢弃** —— 不报错、不 0 命中，
+    只是过滤没生效（`facet_rtype,exact,books` + `[1900 TO 1901]`：
+    重复参数 → 25,490 = books 单独的值；`|,|` 连接 → 1，两个都生效）。
+    厂商 UI 也正是发一个值：`bundle.js` 里 `…map(facetToString).join("|,|")`。
+
+    **连接后 facet 之间是 AND**（实测三条不同 facet → PC 715,116，都生效），
+    **同一 facet 之间也是 AND**（`articles|,|books` → **0**）—— 所以调用方
+    （`library_query.compile_filters`）保证**同一 facet 只给一个值**，
+    `|,|` 在这里只用于「不同 facet 之间」。详见该函数。
     """
     params = {
         "vid": PRIMO_VID,
@@ -152,9 +168,9 @@ def build_params(scope: str, q: str, *, q_include: list[str] | None = None,
         "offset": str((page - 1) * PAGE_SIZE),
     }
     if q_include:
-        params["qInclude"] = list(q_include)
+        params["qInclude"] = _FILTER_JOIN.join(q_include)
     if q_exclude:
-        params["qExclude"] = list(q_exclude)
+        params["qExclude"] = _FILTER_JOIN.join(q_exclude)
     return params
 
 
