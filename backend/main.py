@@ -922,7 +922,8 @@ def library_search(req: LibrarySearchRequest):
             for scope, key in ((library_client.SCOPE_LOCAL, "local"),
                                (library_client.SCOPE_EXTERNAL, "external")):
                 include, exclude = library_query.compile_filters(parsed, scope)
-                # 窄化警告：同一 facet 只能发一个值（端点本没有「同 facet OR」），
+                # 窄化警告：**互斥**取值在同一 facet 里只能发一个（端点本没有
+                # 「同 facet OR」；可叠加的取值不受此限，见 `compile_filters`），
                 # 被丢掉的那个值必须**说出来** —— 回显里 `parsed.rtype` 仍是两个，
                 # 不说用户就会以为两个都筛了。两个 scope 各调一次会报出同一个码，
                 # 按码去重（前端也是按码查 `library.warn.<code>`）。

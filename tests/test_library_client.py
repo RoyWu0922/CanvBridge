@@ -60,8 +60,14 @@ def test_build_params_joins_filters_into_one_qInclude_value():
 
     **根因（2026-09-20 实测，全部走真实 API）**：写成**重复的同名参数**时，
     Primo **只认第一个，后面的静默丢弃** —— 不报错、不 0 命中，只是过滤没生效；
-    于是「勾了同行评审 + 2020 年以后」拿回来的是一份没过滤的结果。实测
-    （`q = any,contains,machine learning`）：
+    于是「勾了同行评审 + 2020 年以后」拿回来的是一份没过滤的结果。
+
+    ⚠️ 上面这句的实测证据**只覆盖异 facet**（下面 4 组数字全是 rtype × creationdate）。
+    **别把它推广成「重复同名参数一律只认第一个」**：同 facet 且取值**可叠加**时
+    重复发是**取交集**而非只认第一个（tlevel 实测 21 / 533,967，见
+    `test_library_query.test_compile_filters_emits_both_tlevel_values_because_they_intersect`）。
+    两种行为并存、**成因未查明**，本层只登记实测、不据此做假设。
+    实测（`q = any,contains,machine learning`）：
 
       · `facet_rtype,exact,books` + `facet_creationdate,exact,[1900 TO 1901]`
           - 重复参数        → 本馆 **25,490**（= 只要 books，日期被丢）

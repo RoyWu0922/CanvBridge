@@ -415,7 +415,7 @@ def test_compile_filters_drops_rtype_the_scope_does_not_have():
 
 
 def test_compile_filters_keeps_only_one_value_per_facet():
-    """**同一个 facet 只发一个值**（先按 scope 词表求交，**再**取第一个）。
+    """**互斥**取值在同一个 facet 里只发一个（先按 scope 词表求交，**再**取第一个）。
 
     PC 上 `["articles", "journals", "books"]` 求交后是 `[articles, books]`，
     取 `articles`；本馆求交后是 `[journals, books]`，取 `journals`。
@@ -423,13 +423,19 @@ def test_compile_filters_keeps_only_one_value_per_facet():
     （= 变宽），而用户以为自己在按类型筛。
 
     ⚠️ **为什么不把两个都发出去**（2026-09-20 实测，真实 API）：
-    同一 facet 的多个值在本端点**要么被静默丢弃、要么把结果变成 0**：
+    对**互斥**的备选取值，发两个的实测结果是**0 命中** ——
+    `facet_rtype,exact,articles|,|facet_rtype,exact,books` PC = **0**；
+    两个 domain = **7**（MEDLINE ∩ arXiv.org，这是两个来源库的交集）。
+    另有一条**异 facet** 的实测说明重复同名参数只认第一个：
+    `facet_rtype,exact,books` 与 `facet_creationdate,…` 重复发 → 本馆 25,490
+    （= books 单独的值，日期被丢）。
 
-      · 重复同名参数（旧写法）→ Primo **只认第一个**，其余静默丢弃
-        （`facet_rtype,exact,books` + 日期 → 25,490 = books 单独的值）
-      · `|,|` 连接（修法）→ facet **之间**是 AND，同 facet 之间**也是 AND**：
-        `facet_rtype,exact,articles|,|facet_rtype,exact,books` PC = **0**；
-        两个 domain = **7**（MEDLINE ∩ arXiv.org）
+    ⚠️ **但「同一 facet 只发一个值」不是绝对律，别把本用例读成那个保证。**
+    成立范围仅限**互斥**取值。反例就在本文件：
+    `test_compile_filters_emits_both_tlevel_values_because_they_intersect` ——
+    tlevel 的两个标志**可以同时成立**，两条都发换来的是**非空交集**
+    （本馆 45 ∩ 250 = **21**、PC 896,913 ∩ 953,408 = **533,967**）。
+    判据是「这几个取值互斥还是可叠加」，**不是**「是不是同一个 facet」。
 
     试过的 9 种「同 facet OR」写法全部无效（重复参数 / `|,|` 两种拼法 /
     `multiFacets` 三种形态 / `include` 精度 / `include,...,1` /
@@ -831,12 +837,16 @@ def test_narrowing_warnings_reports_a_clamped_year_window():
 I18N_JS = Path(__file__).resolve().parents[1] / "frontend" / "i18n.js"
 
 
-def _i18n_language_blocks() -> dict[str, set[str]]:
-    """从 `frontend/i18n.js` 取出两种语言各自的键集合。
+def _i18n_language_blocks() -> dict[str, dict[str, str]]:
+    """从 `frontend/i18n.js` 取出两种语言各自的**键 → 值**映射。
 
     用正则切块而不是求值 JS：那个文件的两种语言是两个**形状固定**的字面量对象
     （`  zh: {` / `\n  en: {` 起、`\n};` 收）。切不出块或切出的键太少就直接 raise
     —— 守卫**绝不能在文件改版后静默退化成空集**、从此永远通过。
+
+    取值时**必须认转义**：文件里有 `"… click \\"Load courses\\"."` 这种值（8 处），
+    用 `"([^"]*)"` 会在转义引号处截断。截断虽不会把空值变成非空，但会让
+    「值是什么」这件事从守卫的视野里消失 —— 而这里正是要查值的。
     """
     src = I18N_JS.read_text()
     if "  zh: {" not in src or "\n  en: {" not in src:
@@ -845,10 +855,10 @@ def _i18n_language_blocks() -> dict[str, set[str]]:
     en_block = src.split("\n  en: {", 1)[1].split("\n};", 1)[0]
     blocks = {}
     for lang, block in (("zh", zh_block), ("en", en_block)):
-        keys = set(re.findall(r'"([^"]+)":', block))
-        if len(keys) < 100:
-            raise AssertionError(f"{lang} 只切出 {len(keys)} 个键，切块逻辑错了")
-        blocks[lang] = keys
+        pairs = re.findall(r'"([^"]+)":\s*"((?:[^"\\]|\\.)*)"', block)
+        if len(pairs) < 100:
+            raise AssertionError(f"{lang} 只切出 {len(pairs)} 个键值对，切块逻辑错了")
+        blocks[lang] = dict(pairs)
     return blocks
 
 
@@ -856,15 +866,23 @@ def test_every_warning_code_has_a_translation_in_both_languages():
     """警告码是**跨语言契约**：后端发一个 i18n.js 里没有的码，`t()` 的兜底链
     （`?? I18N.zh[key] ?? key`）会把**键名本身**当文案显示给用户；
     只有中文有、英文没有时，英文界面会冒中文。两种语言都必须有，且非空。
+
+    **「非空」不是凑数的话**（2026-09-20 复审 NEW-1）：`t()` 返回空串时
+    `app.js` 的 `renderLibraryWarnings` 仍会把 `#libraryWarnings` 置为可见，
+    于是警告变成一行空白 —— 用户界面上什么也没有。若那是本次唯一的警告，
+    症状与「后端根本没发码」**完全一样**，而这正是本仓列为头号大罪的静默错误。
+    所以空串必须红，否则这条守卫拦不住它唯一该拦的东西。
     """
     blocks = _i18n_language_blocks()
-    missing = []
+    bad = []
     for code in library_query.WARNING_CODES:
         key = f"library.warn.{code}"
         for lang in ("zh", "en"):
             if key not in blocks[lang]:
-                missing.append(f"{lang}:{key}")
-    assert not missing, f"这些警告码没有译文：{missing}"
+                bad.append(f"{lang}:{key} 缺键")
+            elif not blocks[lang][key].strip():
+                bad.append(f"{lang}:{key} 译文是空白")
+    assert not bad, f"这些警告码的译文不可用：{bad}"
 
 
 def test_i18n_has_the_same_keys_in_both_languages():
@@ -872,9 +890,10 @@ def test_i18n_has_the_same_keys_in_both_languages():
     于是英文界面上出现中文 —— 而这种缺陷**没有任何运行时报错**。
     """
     blocks = _i18n_language_blocks()
-    assert blocks["zh"] == blocks["en"], {
-        "only_zh": sorted(blocks["zh"] - blocks["en"]),
-        "only_en": sorted(blocks["en"] - blocks["zh"]),
+    zh_keys, en_keys = set(blocks["zh"]), set(blocks["en"])
+    assert zh_keys == en_keys, {
+        "only_zh": sorted(zh_keys - en_keys),
+        "only_en": sorted(en_keys - zh_keys),
     }
 
 

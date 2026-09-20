@@ -32,7 +32,8 @@ MAX_PAGES = 5
 
 # 多个过滤表达式在**一个** `qInclude` 值里的连接符。厂商 UI 用的就是这个
 # （`bundle.js`：`qInclude: …map(facetToString).join("|,|")`），**实测必须是它**：
-# 写成重复的同名参数时 Primo 只认第一个、其余静默丢弃（见 `build_params`）。
+# **异 facet** 写成重复的同名参数时 Primo 只认第一个、其余静默丢弃（见 `build_params`；
+# 同 facet 且取值可叠加时是取交集，机制未查明，别把前者推广成一律）。
 _FILTER_JOIN = "|,|"
 
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; CanvBridge/1.0)",
