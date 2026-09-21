@@ -215,15 +215,27 @@ $("btnClearAims").onclick = async () => {
 };
 
 /* 学校邮箱（Gmail）凭据：应用专用密码存本机钥匙串，后端**永不**回传密码 ——
-   status 只回「有没有」与地址，故密码框只能靠用户每次现填，绝不用服务器响应回填。 */
+   status 只回「有没有」与地址，故密码框只能靠用户每次现填，绝不用服务器响应回填。
+   这个函数有**三态**：有凭据 / 没凭据 / **读失败**。第三态必须是个看得见的错误，
+   不能退化成第二态 —— 见下面 fail 分支的注释。 */
 async function refreshGmailUi(){
   const el = $("gmailSavedHint"); if(!el) return;
   const r = await api("mail/gmail/credentials/status", undefined, "GET");
-  const has = r.ok === true && r.has_credentials === true;
+  const fail = r.ok !== true;
+  const has  = !fail && r.has_credentials === true;
   $("gmailAddress").value = has ? (r.address || "") : "";
   $("gmailAppPassword").value = "";   // 与 AIMS 同款：刷新即清空，不给密码留在 DOM 里的机会
   $("btnClearGmail").hidden = !has;
-  el.textContent = has ? t("status.gmail_saved_hint") : "";
+  el.textContent = has  ? t("status.gmail_saved_hint")
+                 : fail ? t("status.gmail_status_fail") + (r.error||"")
+                 : "";
+  /* 读失败 ≠ 没保存过。`api()` 在传输层失败或响应不是 JSON 时**不抛错**，只回 {ok:false}，
+     所以这里必须自己判 r.ok；否则一次读失败会渲染成「从没配置过」：地址框空着、清除按钮
+     藏着、提示空着 —— 与全新安装**逐字相同**。用户分不清「凭据没了」与「没问出来」，
+     还会把已经存好的应用专用密码再填一遍（同一个密码存两处是真实风险）。
+     提示行是 muted 的、不够显眼，故同时亮横幅：与兄弟处理器同款
+     `t(...) + (r.error||"") + "err"`（见 btnSaveGmail / btnClearGmail）。 */
+  if(fail) setStatus(t("status.gmail_status_fail") + (r.error||""), "err");
 }
 $("btnSaveGmail").onclick = async () => {
   const address = $("gmailAddress").value.trim();
