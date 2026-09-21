@@ -752,7 +752,7 @@ def test_received_dt_none_when_no_date():
 # --- INTERNALDATE：Date 头缺失时的退路（spec §5.3）---
 
 def test_parse_internaldate_reads_imap_format():
-    """IMAP 的 INTERNALDATE 是日月年短横线，RFC 2822 的解析器吃不下。"""
+    """IMAP 的 INTERNALDATE 是日月年短横线、带偏移，须换算成 UTC。"""
     dt = mail_client.parse_internaldate("17-Sep-2026 16:31:00 +0800")
     assert mail_client._iso(dt) == "2026-09-17T08:31:00+00:00"
 
@@ -958,8 +958,10 @@ def received_dt(msg) -> datetime | None:
 def parse_internaldate(raw: str | None) -> datetime | None:
     """解析 IMAP 的 INTERNALDATE（如 17-Sep-2026 08:31:00 +0000）。
 
-    格式是 IMAP 专有的（日月年用短横线、无星期），RFC 2822 的解析器吃不下，
-    所以单独 strptime 一次。解析不出返回 None。
+    格式是 IMAP 专有的（日月年用短横线、无星期），用 strptime 把它钉死；
+    带偏移的返回 UTC aware，解析不出（含不带偏移的串）返回 None。
+    注：`parsedate_to_datetime` 同样吃得下这个格式（spec §10.8 有实测），
+    保留手写版本是为了格式显式，不是因为标准库解析不了。
     """
     if not isinstance(raw, str) or not raw:
         return None
@@ -1080,7 +1082,9 @@ def select_scope(items: list[dict], now: datetime,
 | `header_item` 加回 `"is_read": False` | `test_header_item_shape_exactly_four_keys` |
 | `header_item` 去掉 `or internaldate` 回退 | `test_header_item_falls_back_to_internaldate` |
 | `header_item` 改成 `_iso(internaldate or received_dt(msg))`（顺序反了） | `test_header_item_prefers_date_header_over_internaldate` |
-| `parse_internaldate` 改用 `parsedate_to_datetime` | `test_parse_internaldate_reads_imap_format` |
+| `parse_internaldate` 去掉 `.astimezone(timezone.utc)` | `test_parse_internaldate_reads_imap_format` |
+
+> 最后一行原写作「改用 `parsedate_to_datetime`」—— 2026-09-21 实测：两者对同一输入产出**逐字相同**的 ISO 串（`parsedate_to_datetime` 本就吃得下 INTERNALDATE），用例照绿，**是退化变异**，故换成去掉 `astimezone` 这一刀（产出 `2026-09-17T16:31:00+08:00`，必红）。
 
 - [ ] **Step 6: 提交**
 
