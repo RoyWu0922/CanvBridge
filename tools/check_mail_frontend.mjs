@@ -594,5 +594,44 @@ ok(!iLog().includes("/api/banweb/open_login"),
    `I9 整段探针期间没有任何 banweb/open_login（实得 ${JSON.stringify(iLog())}）`);
 sandbox.fetch = realFetch;
 
+/* J：主题格在 subject 为空时回退到哪条文案（终审 M-4 的常驻门禁）。
+   缺陷形态是**标签与它标注的值不符**：主题格原先回退到 `mail.no_body`（「（无正文）」）
+   —— 正文的回退文案被贴在**主题**格上。两处槽位（平铺列表的 mailRowHtml、分组列表的
+   mailItemHtml）**逐字同错**，故两处都钉：只钉一处的话，另一处改回旧文案不会被任何
+   断言发现 —— 「同一处错有两份，改一处不等于改一类」正是这一轮要防的形态。
+
+   判据**正负成对**，缺一不可：
+     · 正半：新文案必须在场。**这是承重的一半** —— 把槽位改回 `t("mail.no_body")`
+       （或改回旧文案字面量）时，红的就是它；
+     · 负半：旧文案必须不在场。正半只证明新文案出现，**不排除旧文案同时出现**
+       （两处文案拼进同一格、或有人把旧键的值重新加回字典再用上）。
+   旧文案只能写**字面量**：`mail.no_body` 已随「失去全部消费者」一并从字典删除
+   （改回旧键会渲染成裸键名，那种退化由 tools/check_i18n_keys.mjs 的悬空引用检查另管）。
+
+   本段在 `sandbox.fetch` 已还原之后跑，只驱动渲染、不发任何请求（仍是零出网）。 */
+const J_SUBJECT = "（无主题）";    // = mail.no_subject 的 zh 值，由下面 J0 钉住
+const J_BODY    = "（无正文）";    // = 已删除的 mail.no_body 的 zh 值（旧文案，见上）
+run(`
+  globalThis.__jT = t("mail.no_subject");
+  mailState.loading = false; mailState.error = "";
+  mailState.mails = [{ index: 0, subject: "", sender: "s0@example.invalid",
+                       received: "2026-09-01T00:00:00Z" }];
+  mailState.groups = [];                       // groups 空 → 平铺列表（mailRowHtml 那条槽位）
+  renderMail();
+  globalThis.__jRow = document.getElementById("mailList").innerHTML;
+  mailState.groups = [{ course: "SYNTH-COURSE-J", types: [
+    { type: "SYNTH-TYPE-J", items: [{ mail_index: 0, summary: "SYNTH-SUM-J" }] }] }];
+  renderMail();                                // groups 非空 → 分组列表（mailItemHtml 那条槽位）
+  globalThis.__jItem = document.getElementById("mailList").innerHTML;
+`);
+/* 前提：字典里 `t("mail.no_subject")` 必须就是下面那个字面量。少了它，键值被改过之后
+   下面两条会以「字面量过期」的形态莫名其妙地红（键被删掉时 t() 原样返回键名，也会红）。 */
+ok(sandbox.__jT === J_SUBJECT,
+   `J0 前提：t("mail.no_subject") == ${JSON.stringify(J_SUBJECT)}（实得 ${JSON.stringify(sandbox.__jT)}）`);
+ok(sandbox.__jRow.includes(J_SUBJECT) && !sandbox.__jRow.includes(J_BODY),
+   `J1 平铺列表（mailRowHtml）：subject 为空时主题格是「${J_SUBJECT}」、且不含「${J_BODY}」（实得 ${JSON.stringify(sandbox.__jRow)}）`);
+ok(sandbox.__jItem.includes(J_SUBJECT) && !sandbox.__jItem.includes(J_BODY),
+   `J2 分组列表（mailItemHtml）：subject 为空时主题格是「${J_SUBJECT}」、且不含「${J_BODY}」（实得 ${JSON.stringify(sandbox.__jItem)}）`);
+
 console.log(fails ? `\n✗ ${fails} 条未通过（共 ${total} 条断言）` : `\n✓ 全部通过（共 ${total} 条断言）`);
 process.exit(fails ? 1 : 0);
