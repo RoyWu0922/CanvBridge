@@ -1,4 +1,5 @@
 """AIMS 凭据钥匙串存储的单元测试（mock security CLI，不碰真实钥匙串）。"""
+import subprocess
 import sys
 from pathlib import Path
 
@@ -234,3 +235,51 @@ def test_aims_save_still_uses_aims_service(monkeypatch):
     credentials.save_credentials("sc123456", "s3cret")
     add = _add_call(calls)
     assert add[add.index("-s") + 1] == credentials.SERVICE
+
+
+# --- 凭据绝不回传前端（超时路径）---
+
+def test_save_gmail_timeout_does_not_leak_password(monkeypatch):
+    """钥匙串命令超时时，CredentialsError 消息里绝不能出现明文密码。
+
+    机制（这条用例钉的就是它）：`_save` 的 argv 自带明文密码
+    （`add-generic-password … -w <password>`），而 `subprocess.TimeoutExpired.__str__`
+    会把**整个 argv** 渲染进消息 —— 实测形态是
+    `Command '[…, '-w', '<password>', …]' timed out after 10 seconds`。
+    钥匙串被锁 / 弹不出授权框时 `security` 会一直阻塞到 10s 超时，于是
+    `_run` 的 except 分支若写 `{exc}`，密码就顺着 CredentialsError 上行；而端点是
+    `return {"ok": False, "error": str(exc)}`（main.py 的 AIMS 与 Gmail 两处），
+    密码最终回传到浏览器 —— 违反 spec 「凭据绝不回传前端」。
+
+    **这里替身的是 `subprocess.run` 本身**（不是 `_run`），走的才是真实的那条 except。
+    假 run 按子命令分流：查账号那步返回「没找到」，**add 那步才抛 TimeoutExpired**
+    —— 否则超时会在不含密码的 find argv 上先炸，用例会在错误的分支上变绿。
+    """
+    leaked = "abcd efgh ijkl mnop"          # 合成值：Google 应用专用密码的显示形态
+    seen: list[list[str]] = []
+
+    def fake_run(args, **kw):
+        seen.append(list(args))
+        if args[1] == "add-generic-password":
+            # 与真 subprocess 同形：cmd 是完整 argv，__str__ 会把它整个渲染出来
+            raise subprocess.TimeoutExpired(cmd=list(args), timeout=10)
+        # 查账号：未存过（security 找不到项时返回 44）
+        return _R(44, stderr="SecKeychainSearchCopyNext: not found\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(credentials.CredentialsError) as ei:
+        credentials.save_gmail("me@gmail.com", leaked)
+
+    msg = str(ei.value)
+    assert leaked not in msg, f"密码泄漏进异常消息：{msg}"
+    assert "TimeoutExpired" in msg, f"没走超时分支（消息里无类型名）：{msg}"
+
+    # 反空转：证明「被检对象」确实是被那个超时抛出的，而不是别的错误路径满足了上面两条。
+    assert isinstance(ei.value.__cause__, subprocess.TimeoutExpired)   # from exc 链在
+    add_args = next(a for a in seen if a[1] == "add-generic-password")
+    assert leaked in add_args          # 那次超时的 argv 里**真的**带着密码
+    # 威胁不是假想：被丢弃的那个字符串里，密码本来就是存在的 —— 即修复前
+    # `{exc}` 一定会泄漏。少了这一条，上面那个 not in 可能只是在守一个空气球
+    # （比如 Python 哪天不再把 argv 渲染进 __str__，用例就该重新审视而不是继续装绿）。
+    assert leaked in str(ei.value.__cause__)

@@ -34,7 +34,16 @@ def _run(args: list[str]) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(args, capture_output=True, text=True, timeout=10)
     except Exception as exc:
-        raise CredentialsError(f"钥匙串命令执行失败：{exc}") from exc
+        # 只报异常**类型名**，绝不插入 str(exc)：
+        #   · 本函数的部分调用方 argv 里带着明文密码
+        #     （`add-generic-password … -w <password>`），
+        #   · 而 subprocess.TimeoutExpired.__str__ 会把**整个 argv** 渲染进消息
+        #     （`Command '[… , '-w', '<password>', …]' timed out after 10 seconds`）。
+        # 两者相接 ⇒ 钥匙串卡住超时时，密码会随 CredentialsError 上行；而端点是
+        # `return {"ok": False, "error": str(exc)}`，密码就回传到了浏览器。
+        # 类型名足以区分「超时」与「命令不存在」，诊断价值不丢。
+        # `from exc` 保留原因链，调试器/日志仍能拿到原始异常。
+        raise CredentialsError(f"钥匙串命令执行失败：{type(exc).__name__}") from exc
 
 
 def _parse_acct(r) -> str:
