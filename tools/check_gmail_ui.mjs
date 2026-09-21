@@ -193,7 +193,7 @@ const mutate = (src, anchor, repl, label) => {
      （多行替换打 JSON 转义版，绝不截断成一行配多行插入）。
      判别用 charCodeAt 而不是正则字符类：字符类里要写控制字符的**字面量**或转义序列，
      前者会让本文件真的含 NUL 等裸字节（grep 当场把它当二进制文件，半个字都不输出），
-     `[ -…]` 这种转义在生成/复制这段源码时又极易被解成控制字符本身 —— 两者都踩过。 */
+     `[\x00-…]` 这种转义在生成/复制这段源码时又极易被解成控制字符本身 —— 两者都踩过。 */
   const hasCtrl = s => { for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if (c < 32 || c === 127) return true; } return false; };
   const witness = hasCtrl(repl) ? JSON.stringify(repl) : repl;
   console.log(`[mutate] ${label} → ${witness}`);
