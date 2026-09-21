@@ -80,6 +80,9 @@ _pw_thread: int | None = None           # 创建/持有 _pw 驱动的线程 id�
 _ctx = None
 _page = None
 _browser_headless: bool | None = None   # 当前浏览器是否无头（None=附着到外部实例）
+# 无头自动登录失败过（钥匙串没凭据 / 需要 MFA）→ 可见窗口是唯一进得去的路，
+# 此后不再把它收回无头。置位与复位见 _fetch_page / _login_with。
+_manual_login_required = False
 _browser_executor: concurrent.futures.ThreadPoolExecutor | None = None
 _recovery_lock = threading.Lock()       # 中毒恢复互斥：并发请求只重建一次
 
@@ -616,7 +619,9 @@ def _is_embedded_login(page) -> bool:
 
 def _require_logged_in(page) -> None:
     if _is_login_page(page.url) or _is_embedded_login(page):
-        raise BanwebError("尚未登录 AIMS：请在新打开的浏览器窗口登录后再试")
+        raise BanwebError(
+            "尚未登录 AIMS：请点「重新登录」"
+            "（保存了账号密码会自动登录，否则会打开窗口让你手动登录）")
 
 
 def _term_ready(page) -> bool:
@@ -876,6 +881,9 @@ def _ensure_browser(launch: bool = True, headless: bool = True):
     launch=True 供主动操作（自动登录/抓课表/手动登录）用：确保浏览器真的打开。
     headless=False 供手动登录用：若当前是无头浏览器，先关掉换有头窗口，
     让用户能看见登录页。
+    headless=True（默认）供抓取用：若当前是**我们自己开的有头**窗口（手动登录
+    兜底留下的），先关掉换无头 —— 否则那个可见窗口会被此后**每一次**抓取复用，
+    再也回不到无头。两个方向共用同一套拆除，判据见下方。
     """
     global _pw, _pw_thread, _ctx, _page, _browser_headless
     with _lock:
@@ -886,15 +894,21 @@ def _ensure_browser(launch: bool = True, headless: bool = True):
                 # 真存活探测：做一次 CDP 往返。is_closed() 对已断开的连接可能仍返回
                 # False，导致拿旧对象当活窗口用（open_login 因此"成功"却没开窗）。
                 _page.evaluate("1")
-                if headless or _browser_headless is not True:
-                    # 请求无头（默认）或当前已是有头窗口 → 直接用
+                # `_browser_headless` 记的是「当前浏览器**由我们**以什么模式启动」：
+                #   True/False = 我们自己开的无头／有头窗口
+                #   None       = 附着在**外部**实例上 —— 那个 Chrome 不是我们启动的
+                #                （可能是用户自己开的），**两个方向都不动它**。
+                # 模式相同、或不是我们启动的 → 直接用现成的页。
+                if _browser_headless is None or _browser_headless == headless:
                     return _page
-                # 请求有头但当前是无头 → 真关掉无头 Chrome，走下方重建有头窗口。
-                # 只 _reset_browser() 不够：无头 Chrome 还活着，connect_over_cdp 会
-                # 连回它复用，手动窗口永远不会出现（老 bug：报「已打开」却无窗）。
+                # 方向相反 → 拆掉重建成要的那种。两个方向共用这一套：
+                #   · 请求有头、当前无头（手动登录）→ 开可见窗口
+                #   · 请求无头、当前是我们开的有头窗口（抓取）→ 收回无头
+                # 只 _reset_browser() 不够：Chrome 还活着时 connect_over_cdp 会连回
+                # 它复用，窗口永远换不掉（老 bug：报「已打开」却无窗）。
                 _reset_browser()
                 _browser_headless = None
-                _kill_zombie_chrome()   # 杀残留并等端口释放，确保下方连回失败 → 开真窗口
+                _kill_zombie_chrome()   # 杀残留并等端口释放，确保下方连回失败 → 真的重建
             except Exception:
                 _reset_browser()
         if _pw is None:
@@ -1100,7 +1114,24 @@ def auto_login(username: str, password: str) -> str:
     全程无头、不 bring_to_front。已是登录态直接返回；成功返回 'logged_in'；
     失败抛 BanwebError（带 Okta 错误信息）。
     """
-    def _run() -> str:
+    return _on_browser_thread(
+        lambda: _retry_once(lambda: _login_with(username, password)))
+
+
+def _login_with(username: str, password: str) -> str:
+    """`auto_login` 的正文，**跑在调用它的线程上**（自己不做线程调度）。
+
+    拆出来是给 `_fetch_page` 用的：它已经在浏览器线程的 worker 里，那里需要补一次
+    登录，而 `_on_browser_thread` 是**单 worker 的提交即等待** —— 从 worker 里再调
+    它会等自己等到超时，接着被看门狗判为「浏览器中毒」而**整体重建**（把好好的
+    浏览器当故障拆掉）。所以这里只留干活的部分，调度交给各自的调用方。
+
+    ⚠️ 调用方必须已经持有 `_lock`（本函数不再上锁）。成功返回 'logged_in'，
+    失败抛 BanwebError；成功时复位 `_manual_login_required`（自动登录又能用了）。
+    """
+    global _manual_login_required
+
+    def _do() -> str:
         with _lock:
             page = _ensure_browser(launch=True, headless=True)
             try:
@@ -1146,15 +1177,25 @@ def auto_login(username: str, password: str) -> str:
                 raise BanwebError("AIMS 登录成功但学期页未就绪：" + str(exc)[:120]) from exc
             _require_logged_in(page)
             return "logged_in"
-    return _on_browser_thread(lambda: _retry_once(_run))
+
+    status = _do()          # 抛错 = 登录失败；能返回就是成功
+    # 只在这**唯一**的出口复位（两条成功路径共用）：「自动登录又能用了」→
+    # 撤掉 `_fetch_page` 的手动登录态，可见窗口下次抓取就收得回去。
+    _manual_login_required = False
+    return status
+
+
+def _stored_credentials() -> tuple[str, str]:
+    """从钥匙串读 (username, password)；没保存过则抛 BanwebError。"""
+    creds = credentials.get_credentials()
+    if not creds:
+        raise BanwebError("尚未保存 AIMS 账号密码，请先在设置中填写")
+    return creds
 
 
 def auto_login_from_stored() -> str:
     """从钥匙串读账号密码并自动登录。返回状态串；无凭据时抛 BanwebError。"""
-    creds = credentials.get_credentials()
-    if not creds:
-        raise BanwebError("尚未保存 AIMS 账号密码，请先在设置中填写")
-    username, password = creds
+    username, password = _stored_credentials()
     return auto_login(username, password)
 
 
@@ -1166,10 +1207,61 @@ def _goto_term_page(page) -> None:
     _require_logged_in(page)
 
 
+def _fetch_page():
+    """抓取前取一个页面；若刚把可见窗口收回无头，顺手把会话补回来。
+
+    「有头 → 无头」的切换会**重建浏览器**（见 `_ensure_browser`），重建会丢会话
+    —— spec §3.2：重启后要重登、不需要 MFA（设备信任 cookie 留在 profile 里）。
+    不补这一步，用户每次抓取都会撞上 needs_login，等于把「收回可见窗口」变成
+    「请再登一次」—— 而当初正是自动登录失败才被迫开的有头窗口，用户会觉得
+    点一下抓取就掉线。
+
+    补登录用钥匙串里的凭据、全程无头不开窗（约一秒）；`_login_with` 在已是登录态
+    时原地返回，所以重复调用是幂等的。
+
+    自动登录**失败**（没凭据 / 需要 MFA / 密码改了）时只试这一次：那种情况下可见
+    窗口是唯一进得去的路，每次抓取都关掉它只会让用户无止境地重登。置位
+    `_manual_login_required` 后不再尝试切换，直到某次无头登录真的成功
+    （由 `_login_with` 复位 —— 用户补了凭据、或当初勾了「信任此设备」）。
+
+    ⚠️ 只能在 `_run` 内部（= 浏览器线程上、且已持有 `_lock`）调用：它直接调
+    `_login_with` 而不经 `_on_browser_thread`，理由见该函数的 docstring。
+    """
+    global _manual_login_required
+    if _manual_login_required:
+        # 自动登录已证明不可用 → 只求「别动」：按当前已有的模式请求，绝不触发拆除
+        # （`_ensure_browser` 的拆除发生在它内部，先调它再判就晚了 —— 窗口已经没了）。
+        # 有头窗口是用户唯一进得去的路，拆掉它只会让人反复重登。
+        # （_browser_headless 为 None = 外部实例，_ensure_browser 会原样返回。）
+        return _ensure_browser(headless=(_browser_headless is not False))
+    # 「刚才是有头」就是判据，不必再看切换后的 `_browser_headless`：
+    # `_ensure_browser(headless=True)` 里唯一的提前返回要求当前模式**等于** True，
+    # 所以只要进来时是有头，那一刀必砍（探测失败走 except 也是按无头重建），
+    # 会话都在风险里。切换后 `_browser_headless` 是 True 还是 None，取决于
+    # `_kill_zombie_chrome` 有没有真的把残留 Chrome 杀掉、还是又连回去复用了它 ——
+    # 两种情况下补登都对（后者会话还在，`_login_with` 会原地返回）。
+    was_headed = _browser_headless is False
+    page = _ensure_browser()
+    if not was_headed:
+        return page
+    try:
+        username, password = _stored_credentials()
+        _login_with(username, password)
+    except Exception:
+        _manual_login_required = True
+        raise
+    return _ensure_browser()
+
+
 def list_terms() -> list[dict]:
     """登录后返回 [{value, label}] 学期列表。"""
     def _run() -> list[dict]:
         with _lock:
+            # 刻意用 `_ensure_browser()` 而不是 `_fetch_page()`：本函数是**登录一完成
+            # 就自动触发**的（前端轮询到 logged_in 立刻拉学期列表）。此刻若把用户刚
+            # 登录的那个可见窗口收走，他会在什么都没点的情况下被要求再登一次。
+            # 收回无头留给真正的抓取（get_schedule / get_exams）—— 用户点了抓取，
+            # 才有理由动那个窗口。
             page = _ensure_browser()
             _goto_term_page(page)
             opts = page.eval_on_selector_all(
@@ -1188,7 +1280,7 @@ def get_schedule(term: str) -> list[dict]:
     """
     def _run() -> list[dict]:
         with _lock:
-            page = _ensure_browser()
+            page = _fetch_page()
             _goto_term_page(page)
             try:
                 page.select_option("select[name=term_in]", term)
@@ -1220,7 +1312,7 @@ def get_exams() -> tuple[str, list[dict]]:
     """
     def _run() -> tuple[str, list[dict]]:
         with _lock:
-            page = _ensure_browser()
+            page = _fetch_page()
             try:
                 page.goto(EXAM_PAGE, timeout=60000, wait_until="domcontentloaded")
                 page.wait_for_load_state("load", timeout=30000)
