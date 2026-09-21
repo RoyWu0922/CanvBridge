@@ -28,6 +28,17 @@
 
 **数值（spec §5.1，逐字）**：`IMAP_HOST="imap.gmail.com"`、`IMAP_PORT=993`、`MAILBOX="INBOX"`、`TIMEOUT=30`、`DEFAULT_DAYS=7`、`BODY_BATCH=5`、`_THROTTLE=0.5`、`MAX_BODY_CHARS=200_000`。
 
+## 变异验证的执行纪律（本计划约定，**每个任务都适用**）
+
+每张变异表都要按这个来跑。2026-09-21（Task 4 修复轮 1）实测的事故：驱动器在同一秒内对源文件做**等长度**替换，而 Python 的 `.pyc` 失效判据是 `(mtime, size)` ⇒ 下一次 `import` 复用**上一轮**编译的字节码，跑的其实是**上一个变异**的代码。
+
+- **跑每行前先清掉** `backend/__pycache__` 与 `tests/__pycache__`。`-B`（或 `PYTHONDONTWRITEBYTECODE`）**只防「写」新缓存，不防「读」已存在的旧缓存** —— 单独用它等于没防。更稳的写法：每行给一个独立的 `PYTHONPYCACHEPREFIX`。
+- **任何非红（绿 / 未红）的行，必须手工复现一次**再写进报告，不许直接当成「变异退化」。
+- **报「红」也要说清怎么红的** —— 缓存假象同样能让红**张冠李戴**（报的是第 N 行的位置、跑的是第 N−1 行的代码），所以「红了」还不足以断言该行被判別住。判据是：红在**预期的那条用例**上、且**红的原因**正是该变异。
+- 触发形状在变异表里很常见：等长重排、常量对调、格式串互换。
+- **驱动器「写回 pristine」这一步也要防**：它必须还原到**本轮开始时的**工作区内容。2026-09-21 Task 4 修复轮 2 实测过一次事故：驱动器结尾写回的是**上一轮**留的备份，把本轮的改动**静默回滚**了（`git status` 不显示该文件，因为回滚后与 HEAD 一致 —— 反而更不容易发现）。做法：跑前把 `pristine` 备份的 sha256 与**当前工作区**的 sha256 对一次，不等就停下重取；跑完再对一次。
+- **锚点命中数必须是 1**：命中 2 次说明这是个会改错地方的锚点（`days: int = DEFAULT_DAYS` 就同时出现在 `select_scope` 与 `list_mail` 上）。要么加足上下文，要么判 SKIP 报回，**不要挑第一个替换** —— 改错地方的变异红起来原因不同，等于换了道题。
+
 ---
 
 ## 文件结构
@@ -732,8 +743,11 @@ def test_iso_keeps_timezone_offset():
 
 
 def test_parse_ts_rejects_naive():
-    """缺时区的返回 None：naive 与 aware 的 cutoff 比较会抛 TypeError，
-    那是唯一一条 fail-closed 路径，单封坏邮件能炸穿整个 select_scope。"""
+    """缺时区的返回 None：naive 不带时区，无从判断它是哪一刻，宁可为空也不要当 UTC 往下传。
+
+    （`received` 只作展示；窗口的取舍与 fail-open 守卫都在 `select_scope` 自己手里，
+    比的是 `_internaldate`（INTERNALDATE），与本函数无关 —— 修复轮 1 更正。）
+    """
     assert mail_client._parse_ts("17 Sep 2026 08:31:00") is None
 
 
@@ -847,6 +861,28 @@ def test_select_scope_has_no_unread_branch():
     assert mail_client.select_scope(items, now, 7) == []
 
 
+def test_select_scope_boundary_is_inclusive():
+    """正好 `days` 天前算「最近 days 天」内 —— 边界收进来比漏掉安全。
+
+    （**从 OWA 时代的用例搬来的，修复轮 2**：原版喂的是旧义的 `received` + `is_read`，
+    新实现不看那两个键 ⇒ 它变成恒真的绿。Task 5 会整体删掉 OWA 块，
+    这条性质若只留在旧块里就会**无声消失**。搬过来时改成 `_internaldate` 形状。）
+    """
+    now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+    items = [{"_internaldate": now - timedelta(days=7)},      # 正好 7 天前：在内
+             {"_internaldate": now - timedelta(days=8)}]      # 超一天：在外
+    assert mail_client.select_scope(items, now, 7) == [items[0]]
+
+
+def test_select_scope_defaults_to_default_days():
+    """不传 `days` 时走 `DEFAULT_DAYS` —— spec 钉的 7。（同样是从 OWA 块搬来的。）"""
+    now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+    items = [{"_internaldate": now - timedelta(days=7)},
+             {"_internaldate": now - timedelta(days=8)}]
+    assert mail_client.select_scope(items, now) == [items[0]]
+    assert mail_client.DEFAULT_DAYS == 7
+
+
 # --- 正文抽取：MIME + charset + HTML ---
 
 def test_message_body_plain():
@@ -875,11 +911,17 @@ def test_message_body_falls_back_to_html_as_text():
 
 
 def test_message_body_skips_attachments():
-    """附件内容绝不能混进正文。"""
+    """附件内容绝不能混进正文。
+
+    附件刻意用 **text/plain**：application/octet-stream 那种形状光靠 ctype 过滤
+    （既非 text/plain 也非 text/html）就被排除了，**disposition 守卫在它身上不可达** ——
+    实测删掉守卫用例照样绿（覆盖缺口，修复轮 1 更正）。text/plain 附件才是唯一
+    能走到守卫那一步的形状。
+    """
     m = EmailMessage()
     m.set_content("正文", subtype="plain", charset="utf-8")
-    m.add_attachment(b"ATTACHMENT-BYTES", maintype="application",
-                     subtype="octet-stream", filename="a.bin")
+    m.add_attachment(b"ATTACHMENT-BYTES", maintype="text",
+                     subtype="plain", filename="a.txt")
     body = mail_client.message_body(m)
     assert "正文" in body
     assert "ATTACHMENT-BYTES" not in body
@@ -955,8 +997,13 @@ def _parse_ts(raw: str | None) -> datetime | None:
     """解析 RFC 2822 Date 头（如 Thu, 17 Sep 2026 08:31:00 +0800）。
 
     解析不出、或缺时区（naive）都返回 None。naive 返回 None 是刻意的：
-    它与 aware 的 cutoff 比较会抛 TypeError，而那是本文件唯一一条 fail-closed
-    路径 —— 单封坏邮件就能炸穿整个 select_scope。归到 None 即走「保留」分支。
+    naive 不带时区，无从判断它是哪一刻，宁可为空也不要把坏值当 UTC 往下传。
+
+    本函数的唯一生产调用点是 `received_dt`（`Date:` 头 → 展示 / 喂给模型）；
+    **窗口的取舍不看这里** —— `select_scope` 比的是 `_internaldate`（INTERNALDATE），
+    fail-open 守卫在 `select_scope` 自己手里。（修复轮 1 更正：原句称本函数是
+    「唯一一条 fail-closed 路径、单封坏邮件能炸穿整个 select_scope」，那条因果
+    在裁定 D 之后就不存在了 —— 归到 None 既不决定保留，也炸不穿任何东西。）
 
     （旧版解析的是 OWA 的 ISO 时间戳；语义已改，函数名保留。）
     """
@@ -1008,7 +1055,11 @@ def header_item(uid: str, msg, internaldate: datetime | None = None) -> dict:
 
     时间取 Date 头（原始发信时间）；**解不出时退回 INTERNALDATE**（邮件落进 Gmail
     的时刻），绝不返回空串 —— 空串会让前端 new Date("") 得到 Invalid Date，
-    那是静默的坏值。两个都没有才给空串，此时 select_scope 会 fail-open 保留它。
+    那是静默的坏值。两个都没有才给空串 —— **这只影响显示**：保留与否不看这个键，
+    `select_scope` 比的是 `_internaldate`（INTERNALDATE），见裁定 D。
+    （修复轮 1 更正：原句写「此时 select_scope 会 fail-open 保留它」，把保留
+    归因到了本函数的产物上；结论碰巧一致（该情形下 `_internaldate` 也是 None，
+    同样 fail-open），但因果是错的，照着它接线会错。）
     """
     return {
         "id": uid,
@@ -1096,7 +1147,16 @@ def select_scope(items: list[dict], now: datetime,
 .venv/bin/python -m pytest tests/test_mail_client.py -q
 ```
 
-预期：**新用例全绿**；OWA 的旧用例此时应仍绿（OWA 层还没删）。若有旧用例因为 `_parse_ts` / `select_scope` 语义改变而红 —— 那是预期的，把它们记下来，Task 5 会连同 OWA 层一起删掉。
+预期：**新用例全绿**；OWA 层的旧用例此时应仍绿（OWA 层还没删）。
+
+**例外 —— 模块顶部「范围筛选」一节里的 `select_scope` 旧用例，本任务就删掉**（连同只服务它们的 `_mk` 助手；`NOW` 别删，OWA 的 `collect_items` 用例还在用）。理由是它们测的是**保留下来的函数** `select_scope`，所以既不属于「OWA 层」也不属于「Task 5 的活」，但喂的是旧义的 `received` + `is_read`：
+- `test_select_scope_keeps_recent_read_and_all_unread` —— 断言的是**已删除的「未读」语义**（新行为由 `test_select_scope_has_no_unread_branch` 钉）；
+- `test_select_scope_boundary_is_inclusive`、`test_select_scope_defaults_to_default_days` —— 性质仍然有效，**已按 `_internaldate` 形状搬到本任务的用例里**（同名），旧形状那份删掉；
+- `test_select_scope_unparsable_date_is_kept`、`test_select_scope_no_offset_date_is_kept_and_does_not_raise` —— 新实现不看 `received` ⇒ 它们**恒真地绿**（fail-open 让断言必然通过），是「绿着的用例其实什么都没测」。性质由 `test_select_scope_keeps_missing_naive_or_bad_fail_open` 接手。
+
+> 为什么不留给 Task 5：`select_scope` 的语义是**本任务**改的，它的旧测试面就属于本任务；留着的代价不是多几条用例，而是**绿着的用例在说假话**（读它的契约会以为窗口比的是 `received`），以及几条恒红用例把「红」变成噪音 —— 真正的破坏会藏在里面。
+
+**本任务结束时应当只剩一条红，且是已知的那条**：`test_list_mail_returns_scoped_items`（OWA 层，猴补 `_post_json` + 冻结 `datetime`）。它红是因为 OWA 路径给不出 `_internaldate` ⇒ 新实现 fail-open 全留，与它期望的 `{"近读", "旧未读"}` 不符；而它期望里那个 `旧未读` 本身**就是已删除的「未读」语义** ⇒ 这条用例断言的是一条**走不通的路 + 一个不存在的特性**。它归 Task 5 连同 OWA 层一起删（计划已点名）。**除它以外还有红 ⇒ 停下来查，不要当成「预期内」放过。**
 
 - [ ] **Step 5: 变异验证**
 
@@ -1111,6 +1171,8 @@ def select_scope(items: list[dict], now: datetime,
 | `select_scope` 的 `ts.tzinfo is None` 守卫去掉（把 naive 也拿去比） | `test_select_scope_keeps_missing_naive_or_bad_fail_open` |
 | `select_scope` 改回丢弃坏日期（`continue`，而非保留） | `test_select_scope_keeps_missing_naive_or_bad_fail_open` |
 | `select_scope` 加回 `if not it.get("is_read"):` 分支 | `test_select_scope_has_no_unread_branch` |
+| `select_scope` 的 `ts >= cutoff` → `ts > cutoff`（边界由「含」变「不含」） | `test_select_scope_boundary_is_inclusive` |
+| `select_scope` 的 `days: int = DEFAULT_DAYS` → `days: int = 30`（默认值不再是 7）。**锚点要带上下文**：裸串 `days: int = DEFAULT_DAYS` 在文件里命中 **2 次**（`select_scope` 与 `list_mail`），拿裸串当锚点会改错地方 —— 而「改了 `list_mail` 的默认值」是**另一个变异**，红的原因也不同（张冠李戴的入口）。用 `def select_scope(...)` 两行上下文定位 | `test_select_scope_defaults_to_default_days` |
 | `message_body` 里把 `plains` 与 `htmls` 优先级对调 | `test_message_body_prefers_plain_in_alternative` |
 | `message_body` 删掉 attachment 跳过 | `test_message_body_skips_attachments` |
 | `header_item` 加回 `"is_read": False` | `test_header_item_shape_exactly_four_keys` |
@@ -1170,6 +1232,10 @@ git commit -m "feat(mail): IMAP 取信层的纯函数（RFC 2047 解码 / MIME �
 - [ ] **Step 1: 写失败的测试**
 
 **整体替换** `tests/test_mail_client.py` 的 OWA 部分（保留 Task 4 加的纯函数用例）。文件头的 import 与假连接：
+
+> ⚠️ **「范围筛选」一节的 `select_scope` 旧用例已在 Task 4 删掉了**（连同 `_mk`），`NOW` 还在、留给本任务其余的 OWA 用例。本任务替换 OWA 块时**顺手确认它们确实不在**：若还在（例如某人回滚了 Task 4），它们喂的是旧义的 `received` + `is_read`，新实现两个键都不看 ⇒ **恒真地绿**，谁照着它读契约就会以为窗口比的是 `received`。留着 `NOW` 是因为 OWA 的 `collect_items` 用例还在用它，别一起删。
+
+> 另有一条**红着的** OWA 用例归本任务删：`test_list_mail_returns_scoped_items`（猴补 `_post_json` + 冻结 `datetime`，期望集合 `{"近读", "旧未读"}` 里那个 `旧未读` **就是已删除的「未读」语义**；而 OWA 路径给不出 `_internaldate` ⇒ 新实现 fail-open 全留）。它断言的是一条**走不通的路 + 一个不存在的特性**，是 Task 4 结束态**唯一允许存在的红**；删掉它，这条红线才算清。
 
 ```python
 """Gmail IMAP 取信层测试（纯函数 + I/O）。全程合成 fixture，不出网。"""
@@ -1381,10 +1447,15 @@ def test_list_mail_prefers_date_header_over_internaldate(monkeypatch):
 
 
 def test_do_list_applies_select_scope(monkeypatch):
-    """_do_list 真的调用了 select_scope，参数正确，并原样返回它的结果。
+    """_do_list 真的调用了 select_scope，参数正确，并**剥掉内部键后**原样返回它的结果。
 
     （其余 I/O 用例把 select_scope 换成了恒等函数，所以这一条是唯一
     「接线没断」的证据 —— 删掉 `return select_scope(...)` 只有它会红。）
+
+    spy **原样返回收到的条目**（带着 `_internaldate`），于是这条同时钉住
+    `_do_list` 的剥离：忘了剥 ⇒ 末两条断言红。`test_header_item_shape_exactly_four_keys`
+    只看 `header_item` 的产出，够不到 `_do_list` 的返回（**覆盖缺口，修复轮 1 补上**；
+    补之前用 `[{"id": "sentinel"}]` 那种不带内部键的返回值，剥与不剥都绿。）
     """
     seen = {}
 
@@ -1393,16 +1464,19 @@ def test_do_list_applies_select_scope(monkeypatch):
         seen["days"] = days
         seen["now_aware"] = now.tzinfo is not None
         seen["intd"] = [it.get("_internaldate") for it in items]
-        return [{"id": "sentinel"}]
+        return items
 
     _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr(), b"2": _hdr()}), scope=spy)
     out = mail_client.list_mail(3)
-    assert out == [{"id": "sentinel"}]
     assert seen["ids"] == ["1", "2"]
     assert seen["days"] == 3
     assert seen["now_aware"], "now 必须是 aware，否则与 cutoff 比较会抛 TypeError"
     assert all(isinstance(x, datetime) and x.tzinfo is not None for x in seen["intd"]), \
         "交给 select_scope 的 _internaldate 必须是 aware datetime —— 串会被 fail-open 静默放过，窗口就死了"
+    assert [set(it) for it in out] == [{"id", "subject", "sender", "received"}] * 2, \
+        "对外契约恰好四个键 —— _internaldate 是内部键，_do_list 返回前必须剥掉"
+    assert all("_internaldate" not in it for it in out)
+    assert [it["id"] for it in out] == ["1", "2"]
 
 
 def test_list_mail_returns_empty_without_fetching(monkeypatch):
@@ -1662,6 +1736,8 @@ def list_mail(days: int = DEFAULT_DAYS) -> list[dict]:
 | `_fetch_headers` 的 FETCH 命令去掉 `INTERNALDATE` | `test_list_mail_fetches_internaldate` 与 `..._uses_internaldate_when_date_header_missing` |
 | `_do_list` 删掉 `return select_scope(...)`（改成 `return items`） | `test_do_list_applies_select_scope` |
 | `_do_list` 里 `select_scope(items, now, days)` 的 `days` 写死成 `DEFAULT_DAYS` | `test_do_list_applies_select_scope` |
+| `_do_list` **不剥** `_internaldate`（返回时原样带着内部键） | `test_do_list_applies_select_scope`（末两条断言：键集合恰好四个、`_internaldate` 不在） |
+| `_fetch_headers` **不往条目里放** `_internaldate`（只放 `received`） | `test_do_list_applies_select_scope`（`seen["intd"]` 断言：交给 `select_scope` 的必须是 aware datetime） |
 
 - [ ] **Step 6: 提交**
 
