@@ -1229,6 +1229,21 @@ git commit -m "feat(mail): IMAP 取信层的纯函数（RFC 2047 解码 / MIME �
 
 > **Task 5 与 Task 6 必须连续执行，中间不交付。** 本任务删掉 OWA 层后 `fetch_bodies` 会失去依赖；把 `fetch_bodies` 与 `_do_bodies` 一并删掉、由 Task 6 立刻补上新的，**不要**留一个半死的实现。
 
+> ⚠️ **本任务结束时「全量 pytest」是红的，而且必须让它红着 —— 这不是缺陷，是设计。** 已核实（控制器，2026-09-21）：
+> - `tests/test_main.py` 里有 **7 条** `test_mail_summarize_*` 用例会 **ERROR**（不是失败）：`test_mail_summarize_joins_bodies_and_groups`(:1859) / `test_mail_summarize_indexes_are_contiguous`(:1894) / `test_mail_summarize_returns_mails_too`(:1925) / `test_mail_summarize_fetch_bodies_failure_reports_mail_phase`(:1950) / `test_mail_summarize_llm_failure_reports_llm_phase`(:1968) / `test_mail_summarize_no_mail_skips_llm`(:1983) / `test_mail_summarize_missing_body_falls_back_to_empty`(:1996)。
+> - **机制**：它们都 `monkeypatch.setattr(mail_client, "fetch_bodies", …)`，而 `monkeypatch.setattr` 默认 `raising=True`，属性不存在时抛 `AttributeError`（已用最小探针在 pytest 9.1.1 上实测复现：`AttributeError: <module …> has no attribute 'gone'`）。
+> - `backend/main.py:1029` 的 `mail_client.fetch_bodies(mails)` 也会在**运行时**炸（只有走到 AI 总结的取正文那段才会触发，单测抓不到）。
+> - **Task 6 会把它治好**：新 `fetch_bodies` 与旧**同名同签名**（`(items: list[dict]) -> dict`）—— 外部契约不变正是本计划的前提，那 7 条用例是猴补公开名，会自动恢复。
+>
+> 因此本任务的验收口径是：**`pytest tests/test_mail_client.py -q` 全绿**；全量 `pytest -q` 预期**恰好这 7 条 ERROR**。**除这 7 条以外还有红 ⇒ 停下来查。** 三条禁令：**不要**为了让全量变绿而留一个 stub `fetch_bodies`（那会把真断线伪装成绿）；**不要**改 `tests/test_main.py`（Task 9 才碰它）；**不要把 `fetch_bodies` 改成 `raising=False` 能修的东西**——病根是被调用的符号没了，不是猴补写得不对。报告里要把这 7 条**如实列为预期红**，不得写成「全绿」。
+
+> ⚠️ **还有一个更早的中间态：Task 4 交付态到本任务完成之间，`list_mail` 返回的是「整个收件箱」（Task 4 复审发现，控制器 2026-09-21 裁定）。**
+> - **机制**：Task 4 把 `select_scope` 改成比 `_internaldate`；而**此刻仍然在线**的 OWA 路径产出的条目**没有这个键**（`backend/mail_client.py:134` 给的是 `DateTimeReceived`）⇒ 新 `select_scope` 一律 **fail-open 全留** ⇒ `collect_items` 的翻页循环（`:416-427`）把 FindItem 的整个收件箱原样返回。
+> - 窗口此前**只由 `select_scope` 一家承担**——`:418` 的注释自己写着「inbox 无服务端日期过滤」。所以这不是「多留了几封」，是**筛选整个消失了**。
+> - **裁定：接受这个中间态，不加临时防线。** 理由三条：① Task 5/6 连续执行、中间不交付；② 失败方向是**多给**（不是丢件、不是静默错误值）；③ 只读路径，不置已读、不落盘、不泄凭据。代价是多花 LLM token（`trim_bodies` 的下限机制会让总额随 n 线性增长）。
+> - **为什么不加「无 `_internaldate` 时退回旧口径」那种临时防线**：那是一段只活一个任务的代码，要写、要测、还要**记得删** —— 忘了就是永久的第二套筛选语义，比多花的 token 贵得多。且它会让 Task 5 的删除面变得不干净。
+> - **操作后果（必须遵守）**：**本任务完成之前，不要启动 App、不要做端到端手工验证**（Task 9 收尾清单里「点刷新邮件能看到真实邮件」那条属于 Task 9 之后）。中间态要跑就只跑单测。
+
 - [ ] **Step 1: 写失败的测试**
 
 **整体替换** `tests/test_mail_client.py` 的 OWA 部分（保留 Task 4 加的纯函数用例）。文件头的 import 与假连接：
@@ -1986,11 +2001,26 @@ git commit -m "feat(mail): IMAP 取正文（BODY.PEEK 批量 + 节流 + UIDVALID
 grep -rn "_find_mail_page\|_ensure_mail_page" backend/ tests/ tools/ frontend/
 ```
 
-预期：除 `backend/banweb.py` 的定义处外**无输出**（Task 5/6 已把 `tests/test_mail_client.py` 里的 monkeypatch 删掉）。若还有别的调用点，**停下**，先弄清它为什么还在用。
+预期：命中只剩两处，且**都归本任务处理**（控制器 2026-09-21 实测，勿按「无输出」判）：
 
-- [ ] **Step 2: 删函数**
+- `backend/banweb.py` 的**定义处** —— Step 2 删掉。
+- `tests/test_banweb.py` 里 **4 条用例** —— **本任务一并删掉**（见 Step 2 第二段）。它们是：
+  `test_find_mail_page_reuses_existing_tab`（`:722-726`）/ `test_find_mail_page_opens_one_when_absent`（`:729-732`）/
+  `test_ensure_mail_page_returns_mail_tab_not_aims_tab`（`:735-743`）/ `test_ensure_mail_page_raises_when_browser_never_came_up`（`:746-759`）。
+
+（`tests/test_mail_client.py` 里的 monkeypatch 已由 Task 5/6 删掉，这里**不应**再看到它们。）**若还有别的调用点，停下**，先弄清它为什么还在用。
+
+- [ ] **Step 2: 删函数 + 删它们那 4 条用例**
 
 删掉 `backend/banweb.py` 里的 `_find_mail_page` 与 `_ensure_mail_page` 两个函数**及其 docstring**。
+
+**同时删掉 `tests/test_banweb.py` 里那 4 条用例**（文件头的 `Test:` 行写的就是「只删，不新增」）。
+**为什么必须删而不是留着**：函数没了，它们会对 `banweb._find_mail_page` 取属性 ⇒ `AttributeError` ⇒
+用例 **ERROR**，Step 4 的「全绿」就不可能成立。
+**别删错邻居**：`:693-711` 那三条（`test_find_page_never_returns_a_mail_login_relay_tab` /
+`test_find_page_prefers_aims_page_over_mail_tab` / `test_find_page_never_returns_a_mail_tab`）与
+`:797-810` 的 `test_poll_with_only_mail_tab_must_not_close_browser` 覆盖的是**`_find_page` 的邮件域排除**，
+是本任务**要保住**的东西（见上方 ⚠️），它们引用的名字里带 `mail` 但**不引用**这两个被删的函数。
 
 - [ ] **Step 3: 确认 `_find_page` 的邮件域排除**还在
 
@@ -2006,7 +2036,7 @@ sed -n '/^def _find_page/,/^def /p' backend/banweb.py | grep -c "_is_mail_url"
 .venv/bin/python -m pytest tests/test_banweb.py -q
 ```
 
-预期：全绿。**特别注意这 4 条必须仍然绿**，它们是邮件域排除的守卫：
+预期：全绿（那 4 条引用已删函数的用例在 Step 2 一并删掉了；**若还在 ⇒ 它们 ERROR，全绿不可能成立**）。**特别注意这 4 条必须仍然绿**，它们是邮件域排除的守卫：
 
 - `test_find_page_never_returns_a_mail_tab`
 - `test_find_page_never_returns_a_mail_login_relay_tab`
@@ -2022,7 +2052,7 @@ sed -n '/^def _find_page/,/^def /p' backend/banweb.py | grep -c "_is_mail_url"
 - [ ] **Step 6: 提交**
 
 ```bash
-git add backend/banweb.py
+git add backend/banweb.py tests/test_banweb.py
 git commit -m "chore(banweb): 删掉只服务邮件的两个浏览器入口
 
 保留 MAIL_HOSTS / _is_mail_url 与 _find_page 的邮件域排除 —— 用户自己的
@@ -2225,7 +2255,16 @@ git commit -m "feat(mail): 设置页 Gmail 凭据一组；去掉 is_read 渲染�
     assert all(set(m) == {"id", "subject", "sender", "received", "index", "body"}
 ```
 
-同时把该用例上方 `:1813` 的注释里的「id/subject/sender/received/is_read 五个键」改成「id/subject/sender/received 四个键（`is_read` 已随转发方案删除，见 spec §4.1）」。
+**同时重写该用例上方那一整段注释（`tests/test_main.py:1811-1819`）** —— 控制器 2026-09-21 核过，它**通篇是跨引用**，Task 5 之后大半失效，只改一句不够：
+
+| 它现在写的 | 为什么失效 |
+|---|---|
+| `# mail dict 由 backend/mail_client.py:126-130 构造` | Task 5 重写该文件，这个行号**一定**不准了 |
+| `id/subject/sender/received/is_read 五个键` | `is_read` 已删，是**四个**键（见 spec §4.1） |
+| 字段级钉子见 `tests/test_mail_client.py:63 的 test_parse_find_items_maps_fields` | 那是 **OWA 用例**，Task 5 已整体删除；行号也全变了 |
+| `bearer token 是 _capture_token 的局部值，经入参传给 collect_items/_post_json` | 三个符号**全部随 OWA 层消失** |
+
+**改法**：保留这段话的**用意**（它讲的是「为什么原先那句 `assert "token" not in json.dumps(body)` 是真空断言」，这条教训与实现无关、仍然成立），把机制部分改写成新实现的事实 —— 新取信层里**根本不存在 bearer token**（Gmail 只读三件套，凭据在钥匙串、只在 `credentials.get_gmail` 里取用），响应里能出现的只有 `id/subject/sender/received` 四个键加 `index`/`body`。**别再写行号**：行号会随每次改动漂移，写函数名/用例名。若找不到对应的字段级用例，就指到 `test_header_item_shape_exactly_four_keys`（Task 4 新增）。
 
 - [ ] **Step 2: 清掉 test_main.py 里其余 `is_read`**
 
@@ -2238,16 +2277,52 @@ grep -n "is_read" tests/test_main.py
 - [ ] **Step 3: 全仓确认无残留**
 
 ```bash
-grep -rn "is_read" backend/ frontend/ tests/ tools/
+grep -rnE '\bis_read\b' backend/ frontend/ tests/ tools/
 ```
 
-预期：**无输出**。
+**预期不是「无输出」** —— 控制器 2026-09-21 实测过，照原样写「无输出」会**删掉正确的用例**。三条口径：
+
+1. **必须加 `\b`**：不加时 `tests/test_credentials.py` 里的 `test_gmail_address_is_read_from_gmail_service` 会因 `is_read` 是 `is_read_from` 的**子串**而误报（实测：不加 25 处，加 `\b` 24 处）。**别去改那条用例的名字** —— 它与邮件无关。
+2. **`backend/` 与 `frontend/` 必须为 0**。任何命中都是真残留（`backend/mail_client.py` 那处随 Task 5 消失；前端那半 Task 8 已清）。
+3. **`tests/test_mail_client.py` 里预期还剩约 4 处，且都是 Task 4 故意留的探针，必须原样保留**：`test_header_item_shape_exactly_four_keys` 的 docstring（「`is_read` 已删除，多一个少一个都要红」）、以及那条**刻意**往老邮件里塞 `"is_read": False` 来证明它不再被保留的 `select_scope` 用例。**判据不是行号**（Task 5 重写过这个文件，行号已全变），而是「**这一处能不能说出它为什么必须留**」—— 说不出就是残留，说得出就别动。
+4. `tools/check_i18n_keys.mjs` 里那条讲本次变更的历史注记（1 处）**保留**。
 
 ```bash
 grep -rn "_capture_token\|extract_bearer\|_ensure_mail_page\|_find_mail_page\|MarkAsRead" backend/ tests/ tools/
 ```
 
-预期：**无输出**（OWA 层与邮件浏览器入口已删干净）。
+预期：**无输出**（OWA 层与邮件浏览器入口已删干净）。**注意这条 grep 必须包含 `tests/`**：Step 1 之前，`tests/test_main.py` 那段注释里还有一处 `_capture_token` —— 如果你在 Step 1 之后还看到它，说明那段注释没重写完。若倒过来、这里的命中来自 `backend/banweb.py` 或 `tests/test_banweb.py`，说明 **Task 7 没做干净**（它的 Step 2 要求删掉那 4 条用例）⇒ 报回，别在这里补删。
+
+**还有一处「删掉的特性」的残留是 `is_read` 抓不到的**（Task 4 复审发现，控制器 2026-09-21 补）：
+
+> ⚠️ **别全仓 grep `未读`。** 控制器实测（2026-09-21）：`未读` 在 `backend/ frontend/ tests/ tools/` 下命中 **11 个文件约 30 行**，其中**绝大多数与邮件无关** —— `frontend/i18n.js`（`unread.announce` 等）、`frontend/app.js`（公告/讨论的未读徽标）、`backend/canvas_client.py`（`unread_count`）、`tests/test_canvas_client.py`、`tools/check_i18n_keys.mjs` 都是 **Canvas 公告与讨论**那条线的，另一个子系统，**本任务一处都不许碰**。
+> 更危险的是：命中里有两处是 **Task 4 刚写的、正确的、承重的** 说明 —— `backend/mail_client.py:314`（`select_scope` 的「没有『未读』分支：转发过来的邮件在 Gmail 里恒为未读，而只读访问永不改变它」）与 `tests/test_mail_client.py:562`（「未读不再影响结果：老邮件只要超出窗口就丢弃，不管它读没读」）。**它们必须原样留着** —— 删了就是把「本设计刻意不做未读过滤」这个要点从代码里抹掉。
+> 所以只 grep 这条线的四个文件：
+
+```bash
+grep -rn "未读" backend/llm_client.py backend/main.py backend/mail_client.py tests/test_mail_client.py
+```
+
+**逐处处置（控制器已核过的清单，按它办，不要自由发挥）**：
+
+| 命中 | 处置 |
+|---|---|
+| `backend/llm_client.py:258` | **改** —— 本步骤的对象 |
+| `backend/main.py:1003`（endpoint docstring「列出『未读 ∪ 最近 N 天』的学校邮箱邮件」） | **改** —— Task 5 不重写 `main.py`，这行会活下来，而新实现**没有未读过滤**了。改成「列出最近 N 天的学校邮箱邮件」 |
+| `backend/mail_client.py:314` | **不要动** —— Task 4 新写的正确说明 |
+| `tests/test_mail_client.py:562` | **不要动** —— Task 4 新写的正确说明 |
+| `backend/mail_client.py:11` / `:413` / `:437`、`tests/test_mail_client.py:216` / `:225` | **不应出现** —— 它们随 OWA 层在 Task 5 被删。若这里还看得到，说明 Task 5 没删干净 ⇒ **如实报回，不要顺手补删**（本任务不动 `mail_client.py`） |
+
+`backend/llm_client.py:256-260`（`trim_bodies` 的 docstring）里有一句：取信路径
+`list_mail` / `select_scope` 都不限条数，「只由**邮箱里未读邮件的多少**兜着」。**「未读」这个量在本计划里已经不存在了**
+（它随 OWA 层的 `is_read` 一起删掉）。**而且它不只是措辞陈旧 —— 它描述的界在新设计下更松**：
+旧设计里 `n` 由「未读数」兜着，新设计里 `n` 是「最近 `DEFAULT_DAYS`（7）天内的**全部**邮件数」，
+通常大一个数量级 ⇒ 这段 docstring 赖以成立的「线性无上界」结论**依然成立，但触发得更容易**。
+
+改法（**只改这一句机制叙述，数字与结论都不动**）：把「只由邮箱里未读邮件的多少兜着」改成
+「只由最近 `DEFAULT_DAYS` 天内的全部邮件数兜着（旧实现的未读过滤已随 OWA 层删除，界比那时更松）」。
+**别顺手改「10×」那类数字** —— 它们是对的，见 [[test-specs-need-positive-assertions]] 的「改一处 ≠ 改一类」。
+这条 grep 的中文命中数**预期恰好 1 处**；多于 1 处 ⇒ 把每一处都看过再决定。
 
 - [ ] **Step 4: 全量测试**
 
@@ -2290,6 +2365,7 @@ git commit -m "test(mail): 收紧字段断言为集合相等；清掉 is_read �
 - [ ] 确认学校邮箱里的邮件**仍未读**（只读三件套真的生效了）
 - [ ] 确认用户自己的 Chrome 里开着的 Outlook 标签页没有被导航走
 - [ ] 列表里每封邮件的 `received` 都**非空**且能正常本地化显示（INTERNALDATE 回退在真实数据上生效 —— 单测钉的是形状，这里是真实转发件）
+- [ ] **在真实数据上确认窗口真的在筛**（Task 4 复审发现的一条潜伏项要求补这一条）：让用户找一个**7 天以前**收到的转发件（转发不回溯，所以这需要等或临时把 `DEFAULT_DAYS` 调小来验），确认它**不**出现在列表里。**为什么必须单列这一条**：如果 `parse_internaldate` 因为进程 locale 而解析失败（`%b` 依赖 locale，IMAP 的月份缩写却是协议固定的英文），它会对**每一封**返回 `None` ⇒ `select_scope` 全部 fail-open ⇒ 窗口静默消失，而**上一条检查照样通过**（`received` 回退到 `Date:` 头，仍然非空）。单测钉的是形状，抓不到这种「整体静默失效」。
 - [ ] 设置页提示语含「转发不回溯」说明（spec §11 的对应项）
 - [ ] 用户知道**转发中断的症状是「邮件不再更新」而非报错**（spec §11）：靠列表里最近一封的时间自查，本轮不新增后台检测
 - [ ] `tools/probe_gmail_imap.py` 已删除（Task 1 Step 5）
