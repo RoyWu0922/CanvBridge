@@ -259,8 +259,9 @@ $("btnSaveGmail").onclick = async () => {
     /* 重读那一步自己失败时，refreshGmailUi 会亮 err 横幅 —— setStatus 是「后写的赢」，
        它会把上面刚亮的「已保存」当场盖掉：凭据明明已经写进钥匙串了，用户看见的却是一片红，
        于是把已经存好的应用专用密码又填一遍（同一个密码存两处，正是本轮要防的事）。
-       所以刷完再断言一次**本次操作自己的**结果：读失败照样由提示行与横幅报出来
-       （见 refreshGmailUi 的 fail 分支；上面那次 setStatus 保留，不清算），
+       所以刷完再断言一次**本次操作自己的**结果：读失败由提示行报出来（见 refreshGmailUi
+       的 fail 分支）；横幅按「后写的赢」归上面那次成功提示 —— K1 钉住成功信号仍在，
+       K2 钉住失败文案仍在提示行。上面那次 setStatus 保留，不清算，
        但「你这一步成功了」不因为回读失败而消失。 */
     setStatus(t("status.gmail_saved_ok"), "ok", 4000);
   });
@@ -273,7 +274,8 @@ $("btnClearGmail").onclick = async () => {
     setStatus(t("status.gmail_cleared"), "ok");   // 先亮一次：重读要等一次网络往返
     await refreshGmailUi();
     /* 与保存同款：回读失败不能把「已清除」这个**本次操作自己的**结果盖成红色读失败
-       —— 凭据确实删掉了，用户却以为没删掉，会再点一次。读失败仍由提示行与横幅报出。 */
+       —— 凭据确实删掉了，用户却以为没删掉，会再点一次。读失败由提示行报出；
+       横幅同上，归「已清除」（L1 钉住成功信号仍在，L2 钉住失败文案仍在提示行）。 */
     setStatus(t("status.gmail_cleared"), "ok");
   });
 };
@@ -3132,7 +3134,7 @@ function renderMail(){
    与用户是否处理过无关 —— 一律显示未读是假信息。 */
 function mailRowHtml(m){
   return `<div class="card mail-row">
-    <div class="mail-row-head"><span class="mail-subject">${esc(m.subject || t("mail.no_body"))}</span></div>
+    <div class="mail-row-head"><span class="mail-subject">${esc(m.subject || t("mail.no_subject"))}</span></div>
     <div class="mail-row-sub">${esc(m.sender || "")} · ${esc(fmtLocal(m.received))}</div>
   </div>`;
 }
@@ -3191,7 +3193,7 @@ async function mailSummarize(){
       llm_base_url: s.llm_base_url, llm_api_key: s.llm_api_key, llm_model: s.llm_model,
       days: 7, language: LANG() });
     if(r.ok !== true){
-      failReason = r.reason || "llm";        // 老后端不带 reason：当 AI 阶段，绝不误发登录问询
+      failReason = r.reason || "llm";        // 老后端不带 reason：当 AI 阶段（下一行据此选显示哪段文案）
       failMsg = r.error || "";
       setStatus((failReason === "mail" ? t("mail.load_failed") : t("mail.ai_failed")) + failMsg, "err");
       return;
@@ -3265,7 +3267,7 @@ function mailItemHtml(it, m, gi, ti, ii){
     ? `<div class="mail-ddls"><div class="mail-ddl-label">${esc(t("mail.ddl"))}</div>${evs}${rms}</div>`
     : "";
   return `<div class="mail-item">
-    <div class="mail-item-subject">${esc(m.subject || t("mail.no_body"))}</div>
+    <div class="mail-item-subject">${esc(m.subject || t("mail.no_subject"))}</div>
     <div class="mail-item-sum">${esc(it.summary || "")}</div>${ddl}</div>`;
 }
 

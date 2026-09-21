@@ -1972,7 +1972,7 @@ def test_mail_summarize_fetch_bodies_failure_reports_mail_phase(monkeypatch):
 
 
 def test_mail_summarize_llm_failure_reports_llm_phase(monkeypatch):
-    """AI 阶段炸了 → reason == "llm"：**不许**发手动登录问询（那是 API key 的问题）。"""
+    """AI 阶段炸了 → reason == "llm"：前端据此显示「AI 总结失败」，而不是「加载失败」。"""
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
         {"id": "A", "subject": "作业", "sender": "", "received": ""}])
     monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "b"})

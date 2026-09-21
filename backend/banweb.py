@@ -808,13 +808,22 @@ def _restart_driver() -> None:
 
 
 def _kill_zombie_chrome() -> None:
-    """清掉占住 CDP 端口的僵死 Chrome，为重新开窗腾地方。
+    """清掉占住 CDP 端口的 Chrome，为重新开窗腾地方。
 
     macOS 上用户关掉登录窗口后，Chrome 主进程可能仍常驻（还占着 9339），且
     命令行里不一定带 profile 路径，按路径 pkill 会漏。双管齐下：
     1) 按端口 lsof 拿 PID 强杀（不依赖命令行匹配）；
     2) 再按 profile 路径 pkill -9 兜底（清理只占 profile 锁、没占端口的进程）。
-    只在该端口已连不上（connect_over_cdp 失败）时才会走到这里，不会误杀活窗口。
+    **调用方的前置条件各不相同，本函数对此不作任何判断**：
+    · `_ensure_browser` 步骤 2（端口上可能残留的僵死 Chrome）—— 「僵死」那一档；
+    · `_recover_browser_subprocess` 的看门狗恢复分支 —— worker 卡死超时**不等于**浏览器
+      已经死了，此时浏览器**可能仍活着**，照拆不误；
+    · `_ensure_browser` 的无头/有头方向切换 —— 此时 CDP 明明通着，**会主动拆掉我们
+      自己开的活窗口**（这是把模式换过去的正确做法，不是误杀）。
+    本函数只按端口与 profile 路径动手，**无法区分**「我们开的窗口」与「附着到的外部
+    实例」。「不碰附着的外部实例」是 `_ensure_browser` 的提前返回给的
+    （`_browser_headless is None` → 原样返回现成的页），它只挡在「方向切换」那条路径
+    前面 —— 不是本函数的性质，也不是三个调用点共有的保证。
     """
     # subprocess.run 都带 timeout：卡死的 lsof/pkill 不应拖住调用方（尤其在看门狗
     # 恢复路径里，调用方正持有 _recovery_lock）

@@ -115,6 +115,11 @@ def test_get_credentials_parses_username_and_password(monkeypatch):
     assert credentials.get_credentials() == ("sc123456", "s3cret")
     pw_call = next(a for a in calls if "-w" in a)
     assert pw_call[pw_call.index("-a") + 1] == "sc123456"   # -a 与账号一致
+    # 与 Gmail 读路径同款：假 `_run` 只按子命令分流、从不看 `-s`，不钉住 service 就
+    # 拦不住「AIMS 那条读去查了别的 service」的回归。查账号那次是唯一不带 -w 的 find。
+    find = next(a for a in calls
+                if a[1] == "find-generic-password" and "-w" not in a)
+    assert find[find.index("-s") + 1] == credentials.SERVICE
 
 
 def test_get_credentials_parses_acct_from_stdout(monkeypatch):
@@ -128,6 +133,11 @@ def test_get_username_from_stdout(monkeypatch):
     """get_username 同样兼容 stdout 属性。"""
     calls = _patch(monkeypatch, acct="sc123456", acct_stream="stdout")
     assert credentials.get_username() == "sc123456"
+    # 回显路径同样要钉 service：它是设置页地址框上一次看到的值的唯一来源，
+    # 查错 service 会回显成另一套凭据的账号，而假 `_run` 从不看 `-s`、拦不住。
+    find = next(a for a in calls
+                if a[1] == "find-generic-password" and "-w" not in a)
+    assert find[find.index("-s") + 1] == credentials.SERVICE
 
 
 def test_get_credentials_none_when_password_missing(monkeypatch):
@@ -193,8 +203,16 @@ def test_save_gmail_replaces_old_address(monkeypatch):
 
 
 def test_get_gmail_returns_pair(monkeypatch):
-    _patch(monkeypatch, acct="me@gmail.com", pw="app-pw-16")
+    calls = _patch(monkeypatch, acct="me@gmail.com", pw="app-pw-16")
     assert credentials.get_gmail() == ("me@gmail.com", "app-pw-16")
+    # service 必须钉住。`_patch` 的假 `_run` 只按 security 的子命令分流、**从不看 `-s`**
+    # ⇒ 把 `get_gmail` 里的 `_load(GMAIL_SERVICE)` 误写成 `_load(SERVICE)`（拿 **AIMS**
+    # 那条钥匙串记录去登 Gmail：学校账号密码会作为 LOGIN 参数发给 imap.gmail.com，
+    # 再被翻成「请检查地址与应用专用密码」把用户引向错误因由）时，上面那行断言照样绿。
+    # 查账号那次是**唯一**不带 `-w` 的 find，用 `"-w" not in a` 唯一定位它。
+    find = next(a for a in calls
+                if a[1] == "find-generic-password" and "-w" not in a)
+    assert find[find.index("-s") + 1] == credentials.GMAIL_SERVICE
 
 
 def test_get_gmail_strips_whitespace_in_app_password(monkeypatch):

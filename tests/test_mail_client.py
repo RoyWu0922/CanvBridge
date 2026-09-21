@@ -699,7 +699,7 @@ def test_fetch_bodies_uses_body_peek(monkeypatch):
     蕴含**（`any` 为真 ⇒ 列表必然非空）。实测：删掉它、再把 `_do_bodies` 改成早退
     `return {}`，本用例**照样 `1 failed`**（红行前移到 `any(...)`）。
     留它的价值在**空列表**：那时它先炸、消息直白（`any(...)` 那条 f-string 会打出
-    「header FETCH 把列表填满了：[]」—— 空列表不可能被填满）。
+    「正文一条 FETCH 都没发（header FETCH 把列表填满了）：[]」—— 空列表不可能被填满）。
     少了 `any(...)`，本用例自己 `list_mail(7)` 发出的 header FETCH
     （`BODY.PEEK[HEADER.FIELDS …]`）就会把 `fetches` 填满、并通过上面那句 `all(...)`
     ——「正文一条都没取」于是全绿（把 `_do_bodies` 改成早退 `return {}` 照绿）。
