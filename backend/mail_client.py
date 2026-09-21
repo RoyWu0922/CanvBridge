@@ -182,8 +182,13 @@ def _parse_ts(raw: str | None) -> datetime | None:
     """解析 RFC 2822 Date 头（如 Thu, 17 Sep 2026 08:31:00 +0800）。
 
     解析不出、或缺时区（naive）都返回 None。naive 返回 None 是刻意的：
-    它与 aware 的 cutoff 比较会抛 TypeError，而那是本文件唯一一条 fail-closed
-    路径 —— 单封坏邮件就能炸穿整个 select_scope。归到 None 即走「保留」分支。
+    naive 不带时区，无从判断它是哪一刻，宁可为空也不要把坏值当 UTC 往下传。
+
+    本函数的唯一生产调用点是 `received_dt`（`Date:` 头 → 展示 / 喂给模型）；
+    **窗口的取舍不看这里** —— `select_scope` 比的是 `_internaldate`（INTERNALDATE），
+    fail-open 守卫在 `select_scope` 自己手里。（修复轮 1 更正：原句称本函数是
+    「唯一一条 fail-closed 路径、单封坏邮件能炸穿整个 select_scope」，那条因果
+    在裁定 D 之后就不存在了 —— 归到 None 既不决定保留，也炸不穿任何东西。）
 
     （旧版解析的是 OWA 的 ISO 时间戳；语义已改，函数名保留。）
     """
@@ -208,7 +213,8 @@ def parse_internaldate(raw: str | None) -> datetime | None:
 
     格式是 IMAP 专有的（日月年用短横线、无星期），用 strptime 把它钉死；
     带偏移的返回 UTC aware，解析不出（含不带偏移的串）返回 None。
-    注：`parsedate_to_datetime` 同样吃得下这个格式（spec §10.8 有实测），
+    注：`parsedate_to_datetime` 同样吃得下这个格式（spec §10.8 的**离线复验**，
+    不是对着真实邮箱量的「实测」，两级不可混称），
     保留手写版本是为了格式显式，不是因为标准库解析不了。
     """
     if not isinstance(raw, str) or not raw:
@@ -234,7 +240,11 @@ def header_item(uid: str, msg, internaldate: datetime | None = None) -> dict:
 
     时间取 Date 头（原始发信时间）；**解不出时退回 INTERNALDATE**（邮件落进 Gmail
     的时刻），绝不返回空串 —— 空串会让前端 new Date("") 得到 Invalid Date，
-    那是静默的坏值。两个都没有才给空串，此时 select_scope 会 fail-open 保留它。
+    那是静默的坏值。两个都没有才给空串 —— **这只影响显示**：保留与否不看这个键，
+    `select_scope` 比的是 `_internaldate`（INTERNALDATE），见裁定 D。
+    （修复轮 1 更正：原句写「此时 select_scope 会 fail-open 保留它」，把保留
+    归因到了本函数的产物上；结论碰巧一致（该情形下 `_internaldate` 也是 None，
+    同样 fail-open），但因果是错的，照着它接线会错。）
     """
     return {
         "id": uid,

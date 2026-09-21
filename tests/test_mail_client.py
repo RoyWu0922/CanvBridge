@@ -106,47 +106,6 @@ def test_parse_get_bodies_non_string_body_becomes_empty():
 NOW = datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc)
 
 
-def _mk(iid, days_ago, is_read):
-    recv = (NOW - timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return {"id": iid, "subject": iid, "sender": "", "received": recv, "is_read": is_read}
-
-
-def test_select_scope_keeps_recent_read_and_all_unread():
-    items = [_mk("近读", 1, True), _mk("旧读", 30, True),
-             _mk("旧未读", 40, False), _mk("近未读", 0, False)]
-    assert {x["id"] for x in mail_client.select_scope(items, NOW, 7)} == \
-        {"近读", "旧未读", "近未读"}
-
-
-def test_select_scope_boundary_is_inclusive():
-    """正好 7 天前算「最近 7 天」内 —— 边界收进来比漏掉安全。"""
-    items = [_mk("边界", 7, True), _mk("超一天", 8, True)]
-    assert {x["id"] for x in mail_client.select_scope(items, NOW, 7)} == {"边界"}
-
-
-def test_select_scope_unparsable_date_is_kept():
-    """时间读不出来宁可多给一封，也不能静默丢件。"""
-    items = [{"id": "坏", "subject": "", "sender": "", "received": "???", "is_read": True}]
-    assert [x["id"] for x in mail_client.select_scope(items, NOW, 7)] == ["坏"]
-
-
-def test_select_scope_no_offset_date_is_kept_and_does_not_raise():
-    """缺时区偏移的时间戳（naive）必须和「读不出来」同路：保留，不抛。
-
-    它曾被解析成 naive datetime，再与 aware 的 cutoff 比较 → TypeError 炸穿整个
-    select_scope —— 单封坏邮件就能让整次取信失败，且是本文件唯一一条 fail-closed 路径。
-    """
-    items = [{"id": "无偏移", "subject": "", "sender": "",
-              "received": "2026-09-17T08:31:00", "is_read": True}]
-    assert [x["id"] for x in mail_client.select_scope(items, NOW, 7)] == ["无偏移"]
-
-
-def test_select_scope_defaults_to_default_days():
-    """不传 days 时走 DEFAULT_DAYS —— spec 钉的 7。"""
-    items = [_mk("边界", 7, True), _mk("超一天", 8, True)]
-    assert {x["id"] for x in mail_client.select_scope(items, NOW)} == {"边界"}
-
-
 # --- bearer / JWT ---
 
 def test_extract_bearer_is_case_insensitive():
@@ -492,8 +451,11 @@ def test_iso_keeps_timezone_offset():
 
 
 def test_parse_ts_rejects_naive():
-    """缺时区的返回 None：naive 与 aware 的 cutoff 比较会抛 TypeError，
-    那是唯一一条 fail-closed 路径，单封坏邮件能炸穿整个 select_scope。"""
+    """缺时区的返回 None：naive 不带时区，无从判断它是哪一刻，宁可为空也不要当 UTC 往下传。
+
+    （`received` 只作展示；窗口的取舍与 fail-open 守卫都在 `select_scope` 自己手里，
+    比的是 `_internaldate`（INTERNALDATE），与本函数无关 —— 修复轮 1 更正。）
+    """
     assert mail_client._parse_ts("17 Sep 2026 08:31:00") is None
 
 
@@ -605,6 +567,28 @@ def test_select_scope_has_no_unread_branch():
     items = [{"_internaldate": datetime(2026, 1, 1, tzinfo=timezone.utc),
               "is_read": False}]
     assert mail_client.select_scope(items, now, 7) == []
+
+
+def test_select_scope_boundary_is_inclusive():
+    """正好 `days` 天前算「最近 days 天」内 —— 边界收进来比漏掉安全。
+
+    （**从 OWA 时代的用例搬来的，修复轮 2**：原版喂的是旧义的 `received` + `is_read`，
+    新实现不看那两个键 ⇒ 它变成恒真的绿。Task 5 会整体删掉 OWA 块，
+    这条性质若只留在旧块里就会**无声消失**。搬过来时改成 `_internaldate` 形状。）
+    """
+    now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+    items = [{"_internaldate": now - timedelta(days=7)},      # 正好 7 天前：在内
+             {"_internaldate": now - timedelta(days=8)}]      # 超一天：在外
+    assert mail_client.select_scope(items, now, 7) == [items[0]]
+
+
+def test_select_scope_defaults_to_default_days():
+    """不传 `days` 时走 `DEFAULT_DAYS` —— spec 钉的 7。（同样是从 OWA 块搬来的。）"""
+    now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+    items = [{"_internaldate": now - timedelta(days=7)},
+             {"_internaldate": now - timedelta(days=8)}]
+    assert mail_client.select_scope(items, now) == [items[0]]
+    assert mail_client.DEFAULT_DAYS == 7
 
 
 # --- 正文抽取：MIME + charset + HTML ---
