@@ -1,21 +1,32 @@
-"""学校邮箱（OWA / Microsoft 365）取信层。
+"""学校邮箱取信层（Gmail IMAP + 应用专用密码）。
 
 分两层：
-  - 纯函数层（本文件上半）：payload 构造、响应解析、范围筛选、JWT 过期解析。
+  - 纯函数层（本文件上半）：头部解码、日期解析、MIME 正文抽取、范围筛选。
     全部可用合成 fixture 单测，不触网、不开浏览器。
-  - I/O 层（本文件下半）：token 截获与 REST 调用。
+  - I/O 层（本文件下半）：连接、只读取件、登出。
 
-为什么走 REST 而不是点 DOM：实测邮件行点击会被 React portal 浮层拦截
-（重试 13 次仍失败），且现代 OWA 的 Reading Pane 已无「标记为已读」开关。
-REST 路线另有一个决定性好处：FindItem / GetItem 是纯读的，不会把邮件标成
-已读（实测 IsRead 读完仍为 False），所以「读完还原未读」不需要实现。
-详见 docs/superpowers/specs/2026-09-18-school-mail-design.md §3。
+**为什么是 IMAP，而不是继续截获 OWA 的 bearer token**：浏览器那条路把取信绑在
+一个活着的 AIMS/Okta 会话上 —— 会话一过期就取不到信，而邮件本可以独立于 AIMS
+存在。学校邮箱转发到 Gmail 后，用应用专用密码走 IMAP：取信链路里**不再有浏览器**，
+没有 tab、没有 token 截获、没有看门狗恢复，也**不**使用 `_on_browser_thread`
+（它不可重入）与 `_retry_once`。旧 OWA 路线的实测记录（行点击被 React portal
+浮层拦截、`FindItem` / `GetItem` 是纯读的因而 `IsRead` 保持 `False`）见
+docs/superpowers/specs/2026-09-18-school-mail-design.md §3。
+
+**只读三件套**（spec §5.2，本设计的要害）：
+  1. `select(MAILBOX, readonly=True)` —— 发的是 EXAMINE，服务端层面禁止改动；
+  2. 所有取件一律 `BODY.PEEK[...]` —— `BODY[...]` / `RFC822` 会置 `\\Seen`；
+  3. 永不发 `STORE` / `COPY` / `MOVE` / `EXPUNGE`。
+用户在 Gmail 里的未读状态必须原样保留 —— 我们只是看一眼，不是替他处理邮件。
+
+凭据只从钥匙串读（`credentials.get_gmail`），绝不落盘、绝不回传前端、绝不出现在
+日志或报告里。认证失败即停、绝不重试（spec §5.8）；没有后台轮询 —— 只在用户点
+刷新时连一次，连完即断。
 """
 from __future__ import annotations
 
-import base64
-import binascii
-import json
+import imaplib
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from email import message_from_bytes
@@ -24,134 +35,26 @@ from email.utils import parseaddr, parsedate_to_datetime
 
 from backend.canvas_client import strip_html
 
-from . import banweb
+from . import credentials
 
-SVC_URL = "https://outlook.cloud.microsoft/owa/service.svc"
-TIMEOUT = 30          # 单个 REST 请求超时（秒）
-DEFAULT_DAYS = 7      # 「最近 N 天」的 N
-PAGE_SIZE = 50        # FindItem 每页条数
-BODY_BATCH = 10       # 一次 GetItem 带几个 ItemId（spec §11 待验证项的保守取值）
-_THROTTLE = 0.5       # 批量 GetItem 之间的间隔（秒），见 spec §9「请求节流」
+IMAP_HOST = "imap.gmail.com"
+IMAP_PORT = 993
+MAILBOX = "INBOX"
+TIMEOUT = 30
+DEFAULT_DAYS = 7
+HEADER_BATCH = 50          # 一次 UID FETCH 取几封的头
+BODY_BATCH = 5             # 一次 UID FETCH 取几封的整封（比旧值保守：见 spec §5.4）
+_THROTTLE = 0.5            # 批次间隔（秒），旧 spec §9「请求节流」
+MAX_BODY_CHARS = 200_000   # 单封正文上限，纯防病态巨型邮件
 
-_HDR = {"__type": "JsonRequestHeaders:#Exchange",
-        "RequestServerVersion": "Exchange2013"}
+#: 最近一次 list_mail 记下的 INBOX UIDVALIDITY；fetch_bodies 靠它判断邮箱是否被重建。
+#: 模块级全局是**有意**的：同一请求内 list_mail → fetch_bodies 顺序调用，值必然相同；
+#: 并发请求读到的是同一个 INBOX 的同一个值，不会误报。真发生重建时报错才是对的。
+_uidvalidity: str = ""
 
 
 class MailError(Exception):
-    """取信层失败。文案直接面向用户，不含 token 等敏感内容。"""
-
-
-def _prop(field_uri: str) -> dict:
-    return {"__type": "PropertyUri:#Exchange", "FieldURI": field_uri}
-
-
-def find_item_payload(offset: int = 0, max_entries: int = PAGE_SIZE) -> dict:
-    """FindItem 请求体。结构为实测通过（spec §5.3），不要凭记忆改写。"""
-    return {
-        "__type": "FindItemJsonRequest:#Exchange",
-        "Header": dict(_HDR),
-        "Body": {
-            "__type": "FindItemRequest:#Exchange",
-            "ItemShape": {
-                "__type": "ItemResponseShape:#Exchange",
-                "BaseShape": "IdOnly",
-                "AdditionalProperties": [
-                    _prop("item:Subject"),
-                    _prop("message:From"),
-                    _prop("item:DateTimeReceived"),
-                    _prop("message:IsRead"),
-                ],
-            },
-            "ParentFolderIds": [
-                {"__type": "DistinguishedFolderId:#Exchange", "Id": "inbox"}],
-            "Traversal": "Shallow",
-            "Paging": {"__type": "IndexedPageView:#Exchange",
-                       "BasePoint": "Beginning",
-                       "Offset": offset,
-                       "MaxEntriesReturned": max_entries},
-        },
-    }
-
-
-def get_item_payload(item_ids: list[str]) -> dict:
-    """GetItem 请求体。结构为实测通过（spec §5.3）。"""
-    return {
-        "__type": "GetItemJsonRequest:#Exchange",
-        "Header": dict(_HDR),
-        "Body": {
-            "__type": "GetItemRequest:#Exchange",
-            "ItemShape": {"__type": "ItemResponseShape:#Exchange",
-                          "BaseShape": "Default",
-                          "BodyType": "Text",
-                          "AdditionalProperties": [_prop("item:Body")]},
-            "ItemIds": [{"__type": "ItemId:#Exchange", "Id": i} for i in item_ids],
-        },
-    }
-
-
-def _response_items(resp) -> list:
-    """两层响应共用的入口：Body.ResponseMessages.Items。取不到就给空表。"""
-    if not isinstance(resp, dict):
-        return []
-    body = resp.get("Body")
-    if not isinstance(body, dict):
-        return []
-    msgs = body.get("ResponseMessages")
-    if not isinstance(msgs, dict):
-        return []
-    items = msgs.get("Items")
-    return items if isinstance(items, list) else []
-
-
-def _sender_name(raw) -> str:
-    """From 是结构化对象；取不到就返回空串，绝不编造。"""
-    if not isinstance(raw, dict):
-        return ""
-    mb = raw.get("Mailbox")
-    if isinstance(mb, dict):
-        return mb.get("Name") or mb.get("Address") or ""
-    return ""
-
-
-def parse_find_items(resp: dict) -> list[dict]:
-    """从 FindItem 响应抽出邮件列表（不含正文）。"""
-    out = []
-    for m in _response_items(resp):
-        if not isinstance(m, dict):
-            continue
-        root = m.get("RootFolder")
-        rows = root.get("Items") if isinstance(root, dict) else None
-        for it in (rows or []):
-            if not isinstance(it, dict):
-                continue
-            iid = (it.get("ItemId") or {}).get("Id")
-            if not iid:
-                continue          # 没有 Id 就无法回取正文 → 丢弃，不带 None 下去
-            out.append({
-                "id": iid,
-                "subject": it.get("Subject") or "",
-                "sender": _sender_name(it.get("From")),
-                "received": it.get("DateTimeReceived") or "",
-                "is_read": bool(it.get("IsRead")),
-            })
-    return out
-
-
-def parse_get_bodies(resp: dict) -> list[dict]:
-    """从 GetItem 响应抽出 [{id, body}]。批量返回顺序不保证，靠 id 对应。"""
-    out = []
-    for m in _response_items(resp):
-        if not isinstance(m, dict):
-            continue
-        for it in (m.get("Items") or []):
-            if not isinstance(it, dict):
-                continue
-            iid = (it.get("ItemId") or {}).get("Id")
-            if not iid:
-                continue
-            val = (it.get("Body") or {}).get("Value")
-            out.append({"id": iid, "body": val if isinstance(val, str) else ""})
-    return out
+    """取信层失败。文案直接面向用户，不含凭据等敏感内容。"""
 
 
 # ---------- 头部解码（spec §5.7）----------
@@ -239,12 +142,17 @@ def header_item(uid: str, msg, internaldate: datetime | None = None) -> dict:
     """把一封邮件的头组装成对外契约的条目（键集合：id/subject/sender/received）。
 
     时间取 Date 头（原始发信时间）；**解不出时退回 INTERNALDATE**（邮件落进 Gmail
-    的时刻），绝不返回空串 —— 空串会让前端 new Date("") 得到 Invalid Date，
-    那是静默的坏值。两个都没有才给空串 —— **这只影响显示**：保留与否不看这个键，
+    的时刻），有可退的日期时绝不返回空串 —— 空串会让前端日期栏**静默留白**、
+    并让提示词里出现空的时间字段（`fmtLocal` 的 `!iso` 分支直接返回空串，根本走不到
+    `new Date()`；`llm_client` 那边是 f-string 直插），那是静默的坏值。
+    两个都没有才给空串 —— **这只影响显示**：保留与否不看这个键，
     `select_scope` 比的是 `_internaldate`（INTERNALDATE），见裁定 D。
     （修复轮 1 更正：原句写「此时 select_scope 会 fail-open 保留它」，把保留
     归因到了本函数的产物上；结论碰巧一致（该情形下 `_internaldate` 也是 None，
-    同样 fail-open），但因果是错的，照着它接线会错。）
+    同样 fail-open），但因果是错的，照着它接线会错。
+    修复轮 3 更正：原句写「空串会让前端 new Date("") 得到 Invalid Date，那是静默
+    的坏值」—— 机制是假的且方向相反：前端根本到不了 `new Date()`，真实后果是
+    静默留白，不是「会很吵」。一句错的因果会让人省掉本该有的守卫。）
     """
     return {
         "id": uid,
@@ -323,172 +231,152 @@ def select_scope(items: list[dict], now: datetime,
     return out
 
 
-def jwt_exp(token: str) -> datetime | None:
-    """解 JWT payload 取 exp（不验签，只读过期时间）。失败返回 None。"""
-    try:
-        payload = token.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        data = json.loads(base64.urlsafe_b64decode(payload))
-        exp = data.get("exp")
-        return datetime.fromtimestamp(int(exp), tz=timezone.utc) if exp else None
-    except (AttributeError, IndexError, ValueError, TypeError, binascii.Error):
-        return None
-
-
-def extract_bearer(headers: dict) -> str | None:
-    """从请求头里取 Bearer token。头名大小写不敏感。"""
-    for k, v in (headers or {}).items():
-        if str(k).lower() == "authorization" and isinstance(v, str) \
-                and v.lower().startswith("bearer "):
-            return v.split(" ", 1)[1].strip()
-    return None
-
-
 # ---------------------------------------------------------------------------
 # I/O 层
 # ---------------------------------------------------------------------------
 
-MAIL_URL = "https://outlook.cloud.microsoft/mail/"
-_TOKEN_WAIT_TICKS = 40        # 截获 token 的轮询次数
-_TOKEN_WAIT_MS = 500          # 每次间隔 → 上限 20s
+def _chunks(seq, n):
+    return [seq[i:i + n] for i in range(0, len(seq), n)]
 
 
-def _post_json(action: str, payload: dict, token: str) -> dict:
-    """调用 service.svc。独立成函数，便于测试替身接管（本仓测试禁止真实出网）。"""
-    import requests
+def _auth_msg(exc: Exception) -> str:
+    """把 imaplib 的英文错误转成指得动用户的中文。"""
+    text = str(exc)
+    if "AUTHENTICATIONFAILED" in text.upper() or "Invalid credentials" in text:
+        return ("Gmail 认证失败：请到设置页检查 Gmail 地址与应用专用密码。"
+                "（应用专用密码需要该账号已开启两步验证；改过 Google 密码后旧密码会作废，"
+                "需要重新生成一个。）")
+    return f"Gmail 操作失败：{text}"
+
+
+def _logout_quietly(conn) -> None:
+    """登出，异常吞掉 —— 不能让它盖住真正的错。"""
+    if conn is None:
+        return
     try:
-        r = requests.post(
-            SVC_URL,
-            params={"action": action, "app": "Mail"},
-            json=payload,
-            timeout=TIMEOUT,
-            headers={"Authorization": f"Bearer {token}",
-                     "Action": action,
-                     "Content-Type": "application/json; charset=utf-8",
-                     "X-OWA-Timezone": "China Standard Time"},
-        )
-    except Exception as exc:
-        raise MailError(f"OWA {action} 请求失败：{exc}") from exc
-    if not r.ok:
-        raise MailError(f"OWA {action} 失败：HTTP {r.status_code}")
+        conn.logout()
+    except Exception:
+        pass
+
+
+def _uidvalidity_from_status(conn) -> str:
+    """退路：用 STATUS 再问一次 UIDVALIDITY（多一个往返）。"""
     try:
-        return r.json()
-    except ValueError as exc:
-        raise MailError(f"OWA {action} 返回的不是 JSON") from exc
+        typ, data = conn.status(MAILBOX, "(UIDVALIDITY)")
+    except Exception:
+        return ""
+    if typ != "OK" or not data:
+        return ""
+    raw = data[0] if isinstance(data[0], bytes) else str(data[0]).encode()
+    m = re.search(rb"UIDVALIDITY\s+(\d+)", raw)
+    return m.group(1).decode() if m else ""
 
 
-def _capture_token(page) -> str:
-    """让邮件页加载一次，从它自己打出的 service.svc 请求里截获 bearer token。
+def _uidvalidity_of(conn) -> str:
+    """读 INBOX 的 UIDVALIDITY。
 
-    token 只在本函数返回值里存活，调用方用完即弃 —— 绝不落盘、绝不返回前端。
+    优先从 select() 自己的 untagged 响应里取（省一个往返），取不到再 STATUS 问一次。
+    **两者的真实形状由 spec §10.9 实测确定** —— 见 Task 1 Step 3 写回的结果。
     """
-    box: dict = {}
+    for raw in conn.untagged_responses.get("UIDVALIDITY", []):
+        val = raw.decode() if isinstance(raw, bytes) else str(raw)
+        if val.strip().isdigit():
+            return val.strip()
+    return _uidvalidity_from_status(conn)
 
-    def _on_req(req):
-        if "service.svc" in req.url and "token" not in box:
-            t = extract_bearer(req.headers)
-            if t:
-                box["token"] = t
 
-    page.on("request", _on_req)
+def _connect():
+    """连上 Gmail 并 EXAMINE INBOX。返回 (conn, uidvalidity)。
+
+    只读由构造保证：readonly=True 发的是 EXAMINE，服务端层面禁止改动。
+    """
+    creds = credentials.get_gmail()
+    if not creds:
+        raise MailError("尚未设置学校邮箱：请到设置页填写 Gmail 地址与应用专用密码")
+    address, app_password = creds
+    conn = None
     try:
-        page.goto(MAIL_URL, wait_until="domcontentloaded", timeout=60000)
-        for _ in range(_TOKEN_WAIT_TICKS):
-            if "token" in box:
-                break
-            page.wait_for_timeout(_TOKEN_WAIT_MS)
-    finally:
-        try:
-            page.remove_listener("request", _on_req)
-        except Exception:
-            pass
-    token = box.get("token")
-    if not token:
-        # 多半是 Okta 会话已失效 → 页面停在登录页。文案里绝不带 token 相关内容。
-        raise MailError("邮箱会话已失效，未能截获访问令牌。请先在 AIMS 页重新登录后再试。")
-    return token
-
-
-def collect_items(token: str, days: int, now: datetime) -> list[dict]:
-    """FindItem 翻页取列表 → 筛出「未读 ∪ 最近 days 天」。不含正文。"""
-    items: list[dict] = []
-    offset = 0
-    while True:
-        if offset:
-            time.sleep(_THROTTLE)     # spec §9 请求节流：inbox 无服务端日期过滤，
-                                      # 大邮箱会被整仓扫一遍，不能连发
-        resp = _post_json("FindItem", find_item_payload(offset), token)
-        batch = parse_find_items(resp)
-        if not batch:
-            break
-        items += batch
-        if len(batch) < PAGE_SIZE:
-            break
-        offset += PAGE_SIZE
-    return select_scope(items, now, days)
-
-
-def _do_list(days: int) -> list[dict]:
-    page = banweb._ensure_mail_page()      # 邮件 tab，绝不是 AIMS 页
-    return collect_items(_capture_token(page), days, datetime.now(timezone.utc))
-
-
-def list_mail(days: int = DEFAULT_DAYS) -> list[dict]:
-    """拉取「未读 ∪ 最近 days 天」的邮件（不含正文）。"""
-    try:
-        return banweb._on_browser_thread(lambda: banweb._retry_once(lambda: _do_list(days)))
-    except (MailError, banweb.BanwebError):
+        conn = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=TIMEOUT)
+        conn.login(address, app_password)
+        typ, data = conn.select(MAILBOX, readonly=True)      # EXAMINE
+        if typ != "OK":
+            raise MailError(f"打开邮箱 {MAILBOX} 失败：{data}")
+        uidvalidity = _uidvalidity_of(conn)
+        if not uidvalidity:
+            raise MailError(
+                "读不到邮箱的 UIDVALIDITY —— 邮件与编号的对应关系无法确认。"
+                "这是协议层面的意外，已停止取信以免取错邮件。")
+        return conn, uidvalidity
+    except MailError:
+        _logout_quietly(conn)
         raise
+    except imaplib.IMAP4.error as exc:
+        _logout_quietly(conn)
+        raise MailError(_auth_msg(exc)) from exc
     except Exception as exc:
-        # Playwright 的原始异常（如 goto 的 60s 超时）在这里归一成 MailError，
-        # 否则公开入口会漏出英文的 Playwright 文案 + 未处理的 500，Task 4 就认不出
-        # 「会话失效」这条 #loginPrompt 路径。归一放在最外层边界**本身就对**：上面的
-        # except (MailError, BanwebError): raise 让已成型的实例原样穿过，且与 banweb
-        # 自己的边界归一惯例一致（banweb.py:1146 / :1200 / :1230 都在公开入口转换）。
-        #
-        # **不是**因为「做进 _retry_once 包着的那层会毁掉重试」—— 那样并不会：实测把
-        # 归一搬进去，四条公开入口用例仍全绿，重试照跑。
-        #
-        # 「目标已关闭」的重试（spec §5.1 约束 2）与文案无关，靠的是位置：
-        # _retry_once 包着的是 _do_list 本身，它在归一化**之前**就拿到了 Playwright
-        # 的原始异常，_target_closed（banweb.py:778-784）的 str(exc) 子串匹配判的是
-        # 原文，不是这条消息；重试耗尽之后才轮到本转换兜底。所以措辞是自由的 ——
-        # 去掉 {exc} 实测 30 条全绿，不会有别的用例变红。
-        #
-        # 这份自由随转换位置而来：**一旦有人把归一搬进 _retry_once 包着的那层**，
-        # _retry_once 看到的就是 MailError，_target_closed 便只剩一条命中路径 ——
-        # f"…{exc}" 逐字回显的原始文本。搬家者必须连同 {exc} 的回显一起保留（哪怕
-        # 只是为了给用户更干净的中文也不能删），否则 spec §5.1 约束 2 的恢复路径
-        # （邮件 tab 被看门狗清掉 → _reset_browser() → 整体重发）会静默失效，且全仓
-        # 只有 test_list_mail_keeps_target_closed_retry 会红（实测：搬进去且去掉）。
-        raise MailError(f"读取邮件列表失败：{exc}") from exc
+        _logout_quietly(conn)
+        raise MailError(f"连接 Gmail 失败：{exc}") from exc
 
 
-def _do_bodies(items: list[dict]) -> dict:
-    ids = [it["id"] for it in items]
-    page = banweb._ensure_mail_page()      # 邮件 tab，绝不是 AIMS 页
-    token = _capture_token(page)
-    out: dict = {}
-    chunks = [ids[i:i + BODY_BATCH] for i in range(0, len(ids), BODY_BATCH)]
-    for n, chunk in enumerate(chunks):
-        if n:
-            time.sleep(_THROTTLE)     # spec §9 请求节流
-        for row in parse_get_bodies(_post_json("GetItem", get_item_payload(chunk), token)):
-            out[row["id"]] = row["body"]
+def _fetch_headers(conn, uids: list[bytes]) -> list[dict]:
+    """批量取邮件头。**BODY.PEEK** —— 绝不置已读。
+
+    顺带取 INTERNALDATE：它是 Date 头解不出时的退路（spec §5.3）。INTERNALDATE
+    是 FETCH 的**数据项**（不是信封字段），所以和 BODY.PEEK[…] 并列写在同一条命令里，
+    不额外多一个往返。
+    """
+    typ, data = conn.uid(
+        "FETCH", b",".join(uids),
+        "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)] INTERNALDATE)")
+    if typ != "OK":
+        raise MailError(f"读取邮件头失败：{data}")
+    out = []
+    for entry in data:
+        if not isinstance(entry, tuple) or len(entry) < 2:
+            continue
+        meta, raw = entry[0], entry[1]
+        blob = meta if isinstance(meta, bytes) else str(meta).encode()
+        m = re.search(rb"UID\s+(\d+)", blob)
+        if not m:
+            continue
+        intd = re.search(rb'INTERNALDATE "([^"]+)"', blob)
+        internaldate = parse_internaldate(intd.group(1).decode()) if intd else None
+        msg = message_from_bytes(raw if isinstance(raw, bytes) else b"")
+        item = header_item(m.group(1).decode(), msg, internaldate)
+        # 窗口比的是收到时刻（spec §5.3），对外契约却只有四个键 ——
+        # 收到时刻放内部键，`_do_list` 在返回前剥掉（形状断言盯着这件事）。
+        item["_internaldate"] = internaldate
+        out.append(item)
     return out
 
 
-def fetch_bodies(items: list[dict]) -> dict:
-    """批量取正文，返回 {item_id: body}。
-
-    空输入直接返回 —— 绝不为了「取零封邮件的正文」去开浏览器。
-    全程纯读：不调 MarkAsRead，不改用户已读状态。
-    """
-    if not items:
-        return {}
+def _do_list(days: int) -> list[dict]:
+    global _uidvalidity
+    conn, uidvalidity = _connect()
     try:
-        return banweb._on_browser_thread(lambda: banweb._retry_once(lambda: _do_bodies(items)))
-    except (MailError, banweb.BanwebError):
-        raise
-    except Exception as exc:
-        raise MailError(f"读取邮件正文失败：{exc}") from exc
+        _uidvalidity = uidvalidity
+        # SINCE 按日粒度且按服务端时区，放宽一天再由 select_scope 精确过滤（spec §5.3）
+        since = (datetime.now(timezone.utc)
+                 - timedelta(days=days + 1)).strftime("%d-%b-%Y")
+        typ, data = conn.uid("SEARCH", None, "SINCE", since)
+        if typ != "OK":
+            raise MailError(f"搜索邮件失败：{data}")
+        uids = (data[0] or b"").split()
+        if not uids:
+            return []
+        items: list[dict] = []
+        for chunk in _chunks(uids, HEADER_BATCH):
+            items.extend(_fetch_headers(conn, chunk))
+        kept = select_scope(items, datetime.now(timezone.utc), days)
+        # 剥掉内部键 `_internaldate`：对外契约恰好四个键（spec §4）
+        return [{k: v for k, v in it.items() if k != "_internaldate"} for it in kept]
+    finally:
+        _logout_quietly(conn)
+
+
+def list_mail(days: int = DEFAULT_DAYS) -> list[dict]:
+    """拉取「最近 days 天」的邮件（不含正文）。全程只读，不改已读状态。
+
+    **不**走 banweb 的浏览器线程，也**不**重试：认证失败即停（spec §5.8）。
+    """
+    return _do_list(days)

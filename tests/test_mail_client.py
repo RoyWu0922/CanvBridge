@@ -1,370 +1,284 @@
-"""OWA 取信层测试（纯函数 + I/O）。全程合成 fixture，不出网。"""
+"""Gmail IMAP 取信层测试（纯函数 + I/O）。全程合成 fixture，不出网。"""
 import email
+import imaplib
+import re
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 
 import pytest
 
-from backend import banweb, mail_client
+from backend import credentials, mail_client
 
 
-def _item(iid, subject="S", sender="老師", recv="2026-09-17T08:31:00Z", is_read=False):
-    return {"ItemId": {"Id": iid}, "Subject": subject,
-            "From": {"Mailbox": {"Name": sender}},
-            "DateTimeReceived": recv, "IsRead": is_read}
+#: 替身给每封邮件回的 INTERNALDATE。刻意与 _hdr() 默认的 Date 头
+#: （16:31 +0800 = 08:31Z）**不同**，这样「Date 头优先」才可判。
+_INTERNALDATE = b"17-Sep-2026 20:00:00 +0000"
 
 
-def _find_resp(items):
-    return {"Body": {"ResponseMessages": {"Items": [{"RootFolder": {"Items": items}}]}}}
+class _FakeIMAP:
+    """替身，记录**发出的每一条命令**。绝不真连网（netguard 兜底）。"""
+
+    def __init__(self, *, uidvalidity=b"7", headers=None, login_err=None,
+                 untagged=None):
+        self.uidvalidity = uidvalidity
+        self.headers = headers or {}     # {uid_bytes: raw_header_bytes}
+        self.login_err = login_err
+        self.sent = []
+        if untagged is not None:
+            self.untagged_responses = untagged
+        elif uidvalidity:
+            self.untagged_responses = {"UIDVALIDITY": [uidvalidity]}
+        else:
+            self.untagged_responses = {}
+
+    # --- 被 mail_client 调到的四个方法 ---
+    def login(self, user, pw):
+        self.sent.append(("login", user))
+        if self.login_err:
+            raise self.login_err
+        return ("OK", [b"logged in"])
+
+    def select(self, mailbox, readonly=False):
+        self.sent.append(("select", mailbox, readonly))
+        return ("OK", [b"1"])
+
+    def uid(self, cmd, *args):
+        self.sent.append(("uid", cmd) + tuple(args))
+        if cmd == "SEARCH":
+            return ("OK", [b" ".join(self.headers) if self.headers else b""])
+        if cmd == "FETCH":
+            uids = args[0] if isinstance(args[0], bytes) else str(args[0]).encode()
+            out = []
+            for u in uids.split(b","):
+                if u in self.headers:
+                    out.append((b'1 (UID %s INTERNALDATE "%s" '
+                                b'BODY[HEADER.FIELDS (...)] {%d}'
+                                % (u, _INTERNALDATE, len(self.headers[u])),
+                                self.headers[u]))
+            return ("OK", out)
+        return ("OK", [b""])
+
+    def logout(self):
+        self.sent.append(("logout",))
+        return ("BYE", [b"bye"])
 
 
-def _get_resp(rows):
-    return {"Body": {"ResponseMessages": {"Items": [
-        {"Items": [{"ItemId": {"Id": i}, "Body": {"Value": b}} for i, b in rows]}]}}}
+def _install(monkeypatch, fake, *, creds=("me@gmail.com", "app-pw-16"), scope=None):
+    """把 IMAP 连接与凭据都换成替身。
 
+    `select_scope` 默认换成**恒等函数**：本节的 I/O 用例关心的是「发了什么命令、
+    拿到了什么」，而日期窗口由 Task 4 的纯函数用例**完整**覆盖（窗口、fail-open、
+    无未读分支三条都有）。
 
-# --- payload 构造：钉住 spec §5.3 的实测结构，改坏即红 ---
-
-def test_find_item_payload_shape():
-    p = mail_client.find_item_payload(offset=20, max_entries=50)
-    assert p["__type"] == "FindItemJsonRequest:#Exchange"
-    assert p["Header"] == {"__type": "JsonRequestHeaders:#Exchange",
-                           "RequestServerVersion": "Exchange2013"}
-    body = p["Body"]
-    assert body["__type"] == "FindItemRequest:#Exchange"
-    assert body["ParentFolderIds"] == [
-        {"__type": "DistinguishedFolderId:#Exchange", "Id": "inbox"}]
-    assert body["Traversal"] == "Shallow"
-    assert body["Paging"] == {"__type": "IndexedPageView:#Exchange",
-                              "BasePoint": "Beginning", "Offset": 20,
-                              "MaxEntriesReturned": 50}
-    uris = [x["FieldURI"] for x in body["ItemShape"]["AdditionalProperties"]]
-    assert uris == ["item:Subject", "message:From",
-                    "item:DateTimeReceived", "message:IsRead"]
-    assert p["Body"]["ItemShape"]["BaseShape"] == "IdOnly"
-
-
-def test_find_item_payload_defaults_to_page_size():
-    """不传参时 MaxEntriesReturned 必须是 PAGE_SIZE —— spec 钉的 50。"""
-    assert mail_client.find_item_payload()["Body"]["Paging"]["MaxEntriesReturned"] == 50
-
-
-def test_get_item_payload_shape():
-    p = mail_client.get_item_payload(["A", "B"])
-    assert p["__type"] == "GetItemJsonRequest:#Exchange"
-    assert p["Body"]["__type"] == "GetItemRequest:#Exchange"
-    assert p["Body"]["ItemShape"]["BodyType"] == "Text"
-    assert p["Body"]["ItemShape"]["BaseShape"] == "Default"
-    assert p["Body"]["ItemIds"] == [
-        {"__type": "ItemId:#Exchange", "Id": "A"},
-        {"__type": "ItemId:#Exchange", "Id": "B"}]
-
-
-# --- 列表解析 ---
-
-def test_parse_find_items_maps_fields():
-    got = mail_client.parse_find_items(_find_resp([_item("A", "作业1", "李老師")]))
-    assert got == [{"id": "A", "subject": "作业1", "sender": "李老師",
-                    "received": "2026-09-17T08:31:00Z", "is_read": False}]
-
-
-def test_parse_find_items_drops_entries_without_id():
-    """没有 ItemId 的条目无法回取正文 → 必须丢弃，不能带个 None 下去。"""
-    got = mail_client.parse_find_items(
-        _find_resp([{"Subject": "无 id"}, _item("B")]))
-    assert [x["id"] for x in got] == ["B"]
-
-
-def test_parse_find_items_sender_falls_back_to_address():
-    resp = _find_resp([{"ItemId": {"Id": "A"},
-                        "From": {"Mailbox": {"Address": "x@my.cityu.edu.hk"}},
-                        "DateTimeReceived": "", "IsRead": True}])
-    assert mail_client.parse_find_items(resp)[0]["sender"] == "x@my.cityu.edu.hk"
-
-
-def test_parse_find_items_tolerates_garbage():
-    """响应缺层 / 类型不对 → 返回空表，不抛。"""
-    assert mail_client.parse_find_items({}) == []
-    assert mail_client.parse_find_items(
-        {"Body": {"ResponseMessages": {"Items": None}}}) == []
-
-
-# --- 正文解析 ---
-
-def test_parse_get_bodies_pairs_id_and_body():
-    got = mail_client.parse_get_bodies(_get_resp([("A", "正文甲"), ("B", "正文乙")]))
-    assert got == [{"id": "A", "body": "正文甲"}, {"id": "B", "body": "正文乙"}]
-
-
-def test_parse_get_bodies_non_string_body_becomes_empty():
-    got = mail_client.parse_get_bodies(_get_resp([("A", None)]))
-    assert got == [{"id": "A", "body": ""}]
-
-
-# --- 范围筛选 ---
-
-NOW = datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc)
-
-
-# --- bearer / JWT ---
-
-def test_extract_bearer_is_case_insensitive():
-    assert mail_client.extract_bearer({"Authorization": "Bearer abc"}) == "abc"
-    assert mail_client.extract_bearer({"authorization": "bearer xyz"}) == "xyz"
-
-
-def test_extract_bearer_rejects_non_bearer():
-    assert mail_client.extract_bearer({"Authorization": "Basic abc"}) is None
-    assert mail_client.extract_bearer({}) is None
-    assert mail_client.extract_bearer(None) is None
-
-
-def _b64(obj):
-    import base64
-    import json as _j
-    raw = _j.dumps(obj).encode()
-    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
-
-
-def test_jwt_exp_reads_exp():
-    tok = f"h.{_b64({'exp': 1790000000})}.s"
-    assert mail_client.jwt_exp(tok) == datetime.fromtimestamp(1790000000, tz=timezone.utc)
-
-
-def test_jwt_exp_returns_none_on_garbage():
-    assert mail_client.jwt_exp("not-a-jwt") is None
-    assert mail_client.jwt_exp("") is None
-    assert mail_client.jwt_exp("h." + _b64({"nope": 1}) + ".s") is None
-
-
-# --- I/O 层：替身接管浏览器与 HTTP，仍不出网 ---
-# 注意 tests/conftest.py 的 netguard：任何真实 socket 尝试都会让用例红。
-
-
-class _FakePage:
-    """只用于占位 —— _capture_token 与 _post_json 在测试里都被替身接管。"""
-    url = mail_client.MAIL_URL
-
-
-@pytest.fixture
-def no_browser(monkeypatch):
-    """把浏览器边界与 REST 边界都换成替身，并让 executor 变成同步直调。"""
-    monkeypatch.setattr(mail_client.banweb, "_on_browser_thread", lambda fn: fn())
-    monkeypatch.setattr(mail_client.banweb, "_retry_once", lambda fn: fn())
-    monkeypatch.setattr(mail_client.banweb, "_ensure_mail_page", lambda: _FakePage())
-    monkeypatch.setattr(mail_client, "_capture_token", lambda page: "TOK")
-
-
-def test_collect_items_paginates_until_short_page(monkeypatch):
-    pages = {
-        0: [_item(f"A{n}") for n in range(mail_client.PAGE_SIZE)],
-        mail_client.PAGE_SIZE: [_item("LAST")],
-    }
-    calls = []
-
-    def fake_post(action, payload, token):
-        assert action == "FindItem"
-        assert token == "TOK"
-        off = payload["Body"]["Paging"]["Offset"]
-        calls.append(off)
-        return _find_resp(pages.get(off, []))
-
-    monkeypatch.setattr(mail_client, "_post_json", fake_post)
-    got = mail_client.collect_items("TOK", 7, NOW)
-    assert calls == [0, mail_client.PAGE_SIZE]      # 第二页不满 → 停，不翻第三页
-    assert len(got) == mail_client.PAGE_SIZE + 1
-
-
-def test_collect_items_stops_on_empty_page(monkeypatch):
-    calls = []
-
-    def fake_post(action, payload, token):
-        calls.append(payload["Body"]["Paging"]["Offset"])
-        return _find_resp([])
-
-    monkeypatch.setattr(mail_client, "_post_json", fake_post)
-    assert mail_client.collect_items("TOK", 7, NOW) == []
-    assert calls == [0]
-
-
-def test_collect_items_throttles_between_pages(monkeypatch):
-    """翻页之间要节流（spec §9）：inbox 无服务端日期过滤，大邮箱会被整仓扫一遍。
-
-    只在**首个请求之后**睡 —— 首个请求前睡是白等。
+    不这么做，这些用例就会把真实时钟引进来：fixture 里的日期一旦写死，
+    过了那个窗口用例就自己变红 —— 时间炸弹。`test_do_list_applies_select_scope`
+    专门负责「select_scope 确实被调用且参数正确」这一条。
     """
-    pages = {0: [_item(f"A{n}") for n in range(mail_client.PAGE_SIZE)],
-             mail_client.PAGE_SIZE: [_item("LAST")]}
-    slept = []
-    monkeypatch.setattr(mail_client.time, "sleep", slept.append)
-    monkeypatch.setattr(mail_client, "_post_json",
-                        lambda a, p, t: _find_resp(pages.get(p["Body"]["Paging"]["Offset"], [])))
-    mail_client.collect_items("TOK", 7, NOW)
-    assert slept == [mail_client._THROTTLE]
+    monkeypatch.setattr(credentials, "get_gmail", lambda: creds)
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", lambda *a, **kw: fake)
+    monkeypatch.setattr(mail_client, "select_scope",
+                        scope or (lambda items, now, days: items))
+    return fake
 
 
-class _FrozenDatetime(datetime):
-    @classmethod
-    def now(cls, tz=None):
-        return NOW
+def _hdr(subject="S", sender="T <t@cityu.edu.hk>",
+         date="Thu, 17 Sep 2026 16:31:00 +0800"):
+    m = EmailMessage()
+    m["Subject"] = subject
+    m["From"] = sender
+    m["Date"] = date
+    return m.as_bytes()
 
 
-def test_list_mail_returns_scoped_items(no_browser, monkeypatch):
-    old = (NOW - timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    new = (NOW - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    rows = [_item("旧读", recv=old, is_read=True),
-            _item("近读", recv=new, is_read=True),
-            _item("旧未读", recv=old, is_read=False)]
-    def fake_post(action, payload, token):
-        # 钉住 _capture_token 的返回值真的被送到了 REST 层（否则这条链可以硬编码任何串）
-        assert token == "TOK"
-        return _find_resp(rows)
+# ============ 只读三件套（spec §5.2，本设计的要害）============
 
-    monkeypatch.setattr(mail_client, "_post_json", fake_post)
-    monkeypatch.setattr(mail_client, "datetime", _FrozenDatetime)
-    got = mail_client.list_mail(7)
-    assert {x["id"] for x in got} == {"近读", "旧未读"}
+def test_select_is_readonly(monkeypatch):
+    """readonly=True 才发 EXAMINE。改成 False 就静默置已读。"""
+    fake = _install(monkeypatch, _FakeIMAP())
+    mail_client.list_mail(7)
+    assert ("select", "INBOX", True) in fake.sent
 
 
-def test_fetch_bodies_batches_and_maps_back_by_id(no_browser, monkeypatch):
-    ids = [f"B{n}" for n in range(mail_client.BODY_BATCH + 3)]
-    batches = []
+def test_all_fetches_use_body_peek(monkeypatch):
+    """**最要害的一条**：所有取件都必须 BODY.PEEK。
 
-    def fake_post(action, payload, token):
-        assert action == "GetItem"
-        assert token == "TOK"       # 同上：_do_bodies 也必须把截到的 token 送下去
-        got = [x["Id"] for x in payload["Body"]["ItemIds"]]
-        batches.append(got)
-        return _get_resp([(i, "正文" + i) for i in got])
-
-    monkeypatch.setattr(mail_client, "_post_json", fake_post)
-    monkeypatch.setattr(mail_client.time, "sleep", lambda s: None)   # 不真睡
-    out = mail_client.fetch_bodies([{"id": i} for i in ids])
-    assert [len(b) for b in batches] == [mail_client.BODY_BATCH, 3]
-    assert set(out) == set(ids)
-    assert out["B0"] == "正文B0"
-
-
-def test_fetch_bodies_empty_input_makes_no_request(no_browser, monkeypatch):
-    """没有邮件时绝不能去开浏览器 —— 用户没点刷新就不该有浏览器动作。"""
-    called = []
-    monkeypatch.setattr(mail_client.banweb, "_ensure_mail_page",
-                        lambda: called.append(1))
-    assert mail_client.fetch_bodies([]) == {}
-    assert called == []
-
-
-def test_capture_token_raises_when_page_never_emits(monkeypatch):
-    """页面没登入 → 截不到 token → 明确报错，不静默返回空串。"""
-    class _P:
-        def on(self, ev, fn): pass
-        def remove_listener(self, ev, fn): pass
-        def goto(self, *a, **k): pass
-        def wait_for_timeout(self, ms): pass
-
-    monkeypatch.setattr(mail_client, "_TOKEN_WAIT_TICKS", 2)
-    with pytest.raises(mail_client.MailError):
-        mail_client._capture_token(_P())
-
-
-def test_capture_token_reads_first_bearer_from_service_svc(monkeypatch):
-    """截 token 的全部接线：认 service.svc、只认第一个、截到即停、必摘监听器。"""
-    class _P:
-        def __init__(self):
-            self.h, self.ticks, self.url = {}, 0, None
-            self.removed = []                        # 摘除记录；见用例末尾的断言
-        def on(self, ev, fn): self.h[ev] = fn
-        def remove_listener(self, ev, fn): self.removed.append((ev, fn))
-        def goto(self, url, **k):
-            self.url = url
-            for u, tok in (("https://x/static/a.js", "WRONG"),
-                           ("https://x/owa/service.svc?action=FindItem", "TOK1"),
-                           ("https://x/owa/service.svc?action=GetItem", "TOK2")):
-                self.h["request"](type("R", (), {"url": u,
-                                                 "headers": {"Authorization": f"Bearer {tok}"}})())
-        def wait_for_timeout(self, ms): self.ticks += 1
-
-    p = _P()
-    assert mail_client._capture_token(p) == "TOK1"   # 只认 service.svc、只认第一个
-    assert p.url == mail_client.MAIL_URL
-    assert p.ticks == 0                              # 截到即 break，不空转满 40 次
-
-    # 摘除必须**真发生**且摘的是 on 注册的同一个对象：断言放在用例里（而不是替身的
-    # remove_listener 内部）—— 放内部时，把 finally 整块删掉就没人调用它，断言根本不跑，
-    # 用例照样绿。每次都漏摘会让这个长寿命 page 对象累积监听器。
-    assert len(p.removed) == 1
-    ev, fn = p.removed[0]
-    assert ev == "request"
-    assert fn is p.h["request"]        # 传 None / 别的函数都必须红
-
-
-# --- 公开入口的错误契约：归一成 MailError，但绝不二次包装 ---
-
-class _RawBrowserBoom(Exception):
-    """冒充 Playwright 抛出的原始异常（如 60s goto 超时）。"""
-
-
-def _boom(*_a, **_k):
-    raise _RawBrowserBoom("Timeout 60000ms exceeded.")
-
-
-def test_list_mail_normalizes_raw_browser_error(no_browser, monkeypatch):
-    """Playwright 原始异常必须变成 MailError，不能从公开入口原样冒出。
-
-    否则 Task 4 的端点认不出「会话失效」，只会回一个 500 + 英文 Playwright 文案，
-    而不是 #loginPrompt。
+    BODY[] / RFC822 会置 \\Seen —— 用户在学校邮箱里的未读状态会被我们改掉。
     """
-    monkeypatch.setattr(mail_client, "_do_list", _boom)
-    with pytest.raises(mail_client.MailError):
+    fake = _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr()}))
+    mail_client.list_mail(7)
+    fetches = [c for c in fake.sent if c[0] == "uid" and c[1] == "FETCH"]
+    assert fetches, "没发出任何 FETCH，用例是空转的"
+    for c in fetches:
+        assert "BODY.PEEK" in c[-1], f"用了非 PEEK 取件：{c}"
+        assert not re.search(r"BODY\[", c[-1]), f"出现裸 BODY[]：{c}"
+
+
+def test_never_issues_mutating_commands(monkeypatch):
+    """STORE / COPY / MOVE / EXPUNGE 一条都不许有。"""
+    fake = _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr()}))
+    mail_client.list_mail(7)
+    bad = [c for c in fake.sent
+           if c[0] == "uid" and str(c[1]).upper() in
+           ("STORE", "COPY", "MOVE", "EXPUNGE")]
+    assert bad == []
+    assert not any(str(x).upper().startswith(("STORE", "EXPUNGE"))
+                   for c in fake.sent for x in c)
+
+
+def test_logs_out_on_success(monkeypatch):
+    fake = _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr()}))
+    mail_client.list_mail(7)
+    assert ("logout",) in fake.sent
+
+
+def test_logs_out_on_failure(monkeypatch):
+    """出错也要登出 —— 连接不能泄漏。"""
+    fake = _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr()}))
+    monkeypatch.setattr(mail_client, "select_scope",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(Exception):
         mail_client.list_mail(7)
+    assert ("logout",) in fake.sent
 
 
-def test_fetch_bodies_normalizes_raw_browser_error(no_browser, monkeypatch):
-    """同上，fetch_bodies 也走公开入口，同样不能漏。"""
-    monkeypatch.setattr(mail_client, "_do_bodies", _boom)
-    with pytest.raises(mail_client.MailError):
-        mail_client.fetch_bodies([{"id": "A"}])
+# ============ 认证失败：即停，不重试（spec §5.8）============
+
+def test_auth_failure_raises_without_retry(monkeypatch):
+    fake = _install(monkeypatch, _FakeIMAP(
+        login_err=imaplib.IMAP4.error("AUTHENTICATIONFAILED Invalid credentials")))
+    with pytest.raises(mail_client.MailError) as ei:
+        mail_client.list_mail(7)
+    assert "设置页" in str(ei.value)
+    assert "两步验证" in str(ei.value)
+    assert len([c for c in fake.sent if c[0] == "login"]) == 1, "登录被重试了"
 
 
-def test_public_entries_pass_own_errors_through_unwrapped(no_browser, monkeypatch):
-    """MailError / BanwebError 必须是**同一个对象**穿过去 —— 文案要原样到用户面前。"""
-    for exc in (mail_client.MailError("邮箱会话已失效"),
-                banweb.BanwebError("AIMS 浏览器无响应")):
-        def _raise(*_a, _exc=exc, **_k):
-            raise _exc
-
-        monkeypatch.setattr(mail_client, "_do_list", _raise)
-        with pytest.raises(type(exc)) as caught:
-            mail_client.list_mail(7)
-        assert caught.value is exc
+def test_no_credentials_points_at_settings(monkeypatch):
+    _install(monkeypatch, _FakeIMAP(), creds=None)
+    with pytest.raises(mail_client.MailError) as ei:
+        mail_client.list_mail(7)
+    assert "设置页" in str(ei.value)
 
 
-def test_list_mail_keeps_target_closed_retry(monkeypatch):
-    """归一化之后，「目标已关闭」的重试仍要照跑一次（spec §5.1 约束 2）。
+# ============ 列表：正例（证明真的做成了事，不只是没做错事）============
 
-    本用例锁的是这条**独立性质**：归一化没有破坏「邮件 tab 被看门狗清掉」的恢复路径。
-    它**不**判别归一写在哪儿 —— 把转换搬进 _retry_once 包着的那层，本用例照样绿
-    （那时 _target_closed 靠归一后的消息逐字回显原始异常文本才命中）。
+def test_list_mail_returns_contract_items(monkeypatch):
+    _install(monkeypatch, _FakeIMAP(
+        headers={b"1": _hdr(subject="作业", sender="老师 <t@cityu.edu.hk>"),
+                 b"2": _hdr(subject="Announcement")}))
+    out = mail_client.list_mail(7)
+    by_id = {x["id"]: x for x in out}
+    assert set(by_id) == {"1", "2"}
+    assert by_id["1"]["subject"] == "作业"
+    assert by_id["1"]["sender"] == "老师"
+    assert by_id["1"]["received"] == "2026-09-17T08:31:00+00:00"
+    assert all(set(x) == {"id", "subject", "sender", "received"} for x in out)
 
-    所以这条恢复路径的存活与**消息文案**无关：只要归一留在 _retry_once 之外，
-    _retry_once 看到的就是**原始**异常，改 MailError(f"...{exc}") 的措辞（例如去掉
-    {exc}）不会影响它。**但一旦有人把归一搬进那层，耦合就出现了** —— 那时本用例
-    是唯一会红的守卫。下面故意**不替身** _retry_once，走真实的它。
+
+def test_list_mail_fetches_internaldate(monkeypatch):
+    """命令里必须带 INTERNALDATE，否则 spec §5.3 的退路无从谈起。"""
+    fake = _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr()}))
+    mail_client.list_mail(7)
+    fetch = next(c for c in fake.sent if c[0] == "uid" and c[1] == "FETCH")
+    assert "INTERNALDATE" in fetch[-1]
+
+
+def test_list_mail_uses_internaldate_when_date_header_missing(monkeypatch):
+    """Date 头缺失时 received 退到 INTERNALDATE，**不是空串**（spec §5.3）。
+
+    空串会让前端日期栏**静默留白**、并让提示词里出现空的时间字段。
     """
-    monkeypatch.setattr(mail_client.banweb, "_on_browser_thread", lambda fn: fn())
-    monkeypatch.setattr(mail_client.banweb, "_ensure_mail_page", lambda: _FakePage())
-    monkeypatch.setattr(mail_client.banweb, "_reset_browser", lambda: None)  # 绝不碰真浏览器
-    monkeypatch.setattr(mail_client, "_post_json", lambda a, p, t: _find_resp([]))
-    calls = []
+    m = EmailMessage()
+    m["Subject"] = "无 Date 头"
+    m["From"] = "t@cityu.edu.hk"
+    _install(monkeypatch, _FakeIMAP(headers={b"1": m.as_bytes()}))
+    out = mail_client.list_mail(7)
+    assert out[0]["received"] == "2026-09-17T20:00:00+00:00"
 
-    def flaky_capture(page):
-        calls.append(1)
-        if len(calls) == 1:
-            raise RuntimeError("Target page, context or browser has been closed")
-        return "TOK"
 
-    monkeypatch.setattr(mail_client, "_capture_token", flaky_capture)
+def test_list_mail_prefers_date_header_over_internaldate(monkeypatch):
+    """两者都在时用 Date 头（16:31+0800 → 08:31Z），不是 INTERNALDATE（20:00Z）。"""
+    _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr()}))
+    out = mail_client.list_mail(7)
+    assert out[0]["received"] == "2026-09-17T08:31:00+00:00"
+
+
+def test_do_list_applies_select_scope(monkeypatch):
+    """_do_list 真的调用了 select_scope，参数正确，并**剥掉内部键后**原样返回它的结果。
+
+    （其余 I/O 用例把 select_scope 换成了恒等函数，所以这一条是唯一
+    「接线没断」的证据 —— 删掉 `return select_scope(...)` 只有它会红。）
+
+    spy **原样返回收到的条目**（带着 `_internaldate`），于是这条同时钉住
+    `_do_list` 的剥离：忘了剥 ⇒ 末两条断言红。`test_header_item_shape_exactly_four_keys`
+    只看 `header_item` 的产出，够不到 `_do_list` 的返回（**覆盖缺口，修复轮 1 补上**；
+    补之前用 `[{"id": "sentinel"}]` 那种不带内部键的返回值，剥与不剥都绿。）
+
+    这里刻意**不**冻结 `mail_client.datetime`：`select_scope` 的类型守卫
+    （`isinstance(ts, datetime)`）读的正是这个模块级名字，冻结成子类后真实例
+    对它 `isinstance` 为 False ⇒ 窗口在测试里静默 fail-open 死掉，而方向是「多给」
+    所以不报错。要看窗口就把 `now` 显式传进 `select_scope`。
+    """
+    seen = {}
+
+    def spy(items, now, days):
+        seen["ids"] = [it["id"] for it in items]
+        seen["days"] = days
+        seen["now_aware"] = now.tzinfo is not None
+        seen["intd"] = [it.get("_internaldate") for it in items]
+        return items
+
+    _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr(), b"2": _hdr()}), scope=spy)
+    out = mail_client.list_mail(3)
+    assert seen["ids"] == ["1", "2"]
+    assert seen["days"] == 3
+    assert seen["now_aware"], "now 必须是 aware，否则与 cutoff 比较会抛 TypeError"
+    assert all(isinstance(x, datetime) and x.tzinfo is not None for x in seen["intd"]), \
+        "交给 select_scope 的 _internaldate 必须是 aware datetime —— 串会被 fail-open 静默放过，窗口就死了"
+    assert [set(it) for it in out] == [{"id", "subject", "sender", "received"}] * 2, \
+        "对外契约恰好四个键 —— _internaldate 是内部键，_do_list 返回前必须剥掉"
+    assert all("_internaldate" not in it for it in out)
+    assert [it["id"] for it in out] == ["1", "2"]
+
+
+def test_list_mail_returns_empty_without_fetching(monkeypatch):
+    """没有邮件时不发 FETCH。"""
+    fake = _install(monkeypatch, _FakeIMAP(headers={}))
     assert mail_client.list_mail(7) == []
-    assert len(calls) == 2      # 第一次被 _retry_once 吞下并整体重跑
+    assert not [c for c in fake.sent if c[0] == "uid" and c[1] == "FETCH"]
+
+
+def test_list_mail_search_since_is_coarsened_by_one_day(monkeypatch):
+    """SINCE 放宽一天：它按日粒度且按服务端时区（spec §5.3）。"""
+    fake = _install(monkeypatch, _FakeIMAP(headers={}))
+    mail_client.list_mail(7)
+    search = next(c for c in fake.sent if c[0] == "uid" and c[1] == "SEARCH")
+    since = datetime.strptime(search[-1], "%d-%b-%Y").replace(tzinfo=timezone.utc)
+    assert since.date() == (datetime.now(timezone.utc) - timedelta(days=8)).date()
+
+
+def test_list_mail_connects_once(monkeypatch):
+    """一次 list_mail 只连一次。"""
+    fake = _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr()}))
+    mail_client.list_mail(7)
+    assert len([c for c in fake.sent if c[0] == "login"]) == 1
+
+
+# ============ UIDVALIDITY（spec §5.5）============
+
+def test_list_mail_records_uidvalidity(monkeypatch):
+    _install(monkeypatch, _FakeIMAP(uidvalidity=b"99", headers={}))
+    mail_client.list_mail(7)
+    assert mail_client._uidvalidity == "99"
+
+
+def test_missing_uidvalidity_raises(monkeypatch):
+    """读不到 UIDVALIDITY 说明协议假设变了 —— 报错，不静默跳过。"""
+    _install(monkeypatch, _FakeIMAP(untagged={}, headers={}))
+    monkeypatch.setattr(mail_client, "_uidvalidity_from_status", lambda conn: "")
+    with pytest.raises(mail_client.MailError) as ei:
+        mail_client.list_mail(7)
+    assert "UIDVALIDITY" in str(ei.value)
 
 
 # ============ Gmail IMAP 取信层：纯函数（spec §4/§5.3/§5.6/§5.7）============
@@ -489,7 +403,9 @@ def test_parse_internaldate_rejects_garbage():
 
 
 def test_header_item_falls_back_to_internaldate():
-    """**Date 头缺失时不能给空串** —— 那会让前端 new Date("") 拿到 Invalid Date。
+    """**Date 头缺失时不能给空串** —— 空串会让前端日期栏静默留白、
+    并让提示词里出现空的时间字段（`fmtLocal` 的 `!iso` 分支直接返回空串，
+    根不到 `new Date()`；`llm_client` 那边是 f-string 直插）。
     退到 INTERNALDATE（spec §5.3）。"""
     m = _msg(subject="无日期头")
     it = mail_client.header_item("9", m,
