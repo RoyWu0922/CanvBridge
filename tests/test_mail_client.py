@@ -122,6 +122,12 @@ def test_never_issues_mutating_commands(monkeypatch):
     """STORE / COPY / MOVE / EXPUNGE 一条都不许有。"""
     fake = _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr()}))
     mail_client.list_mail(7)
+    # 正例锚：两条否定式断言在「一条命令都没发」时同时恒真 ⇒ 先证明这次运行真
+    # 走到了「可能发 STORE/MOVE」的那段路（SEARCH + FETCH 都发过）。
+    assert any(c[0] == "uid" and c[1] == "SEARCH" for c in fake.sent), \
+        "连 SEARCH 都没发，下面的否定式断言是空转的"
+    assert any(c[0] == "uid" and c[1] == "FETCH" for c in fake.sent), \
+        "连 FETCH 都没发，下面的否定式断言是空转的"
     bad = [c for c in fake.sent
            if c[0] == "uid" and str(c[1]).upper() in
            ("STORE", "COPY", "MOVE", "EXPUNGE")]
@@ -250,16 +256,42 @@ def test_list_mail_returns_empty_without_fetching(monkeypatch):
     """没有邮件时不发 FETCH。"""
     fake = _install(monkeypatch, _FakeIMAP(headers={}))
     assert mail_client.list_mail(7) == []
+    # 正例锚：只钉返回值与「没发 FETCH」，在 `_do_list` 于 SEARCH 之前就
+    # `return []` 时同样绿。必须证明它确实发过 SEARCH —— 即站到了 FETCH
+    # 本该出现的位置的前一步。
+    assert any(c[0] == "uid" and c[1] == "SEARCH" for c in fake.sent), \
+        "连 SEARCH 都没发，'不发 FETCH' 是空转的"
     assert not [c for c in fake.sent if c[0] == "uid" and c[1] == "FETCH"]
 
 
+_FIXED_NOW = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
+"""冻结的「现在」：取 UTC 正午 —— 离 UTC 午夜最远；且 HKT（UTC+8）= 当日 20:00，
+   两种时区下同一天，所以期望值不受「代码按哪个时区格式化」影响。"""
+
+
+class _FrozenDateTime(datetime):
+    """只冻结 now()，strptime / 算术 / 比较全部继承 —— 不碰 datetime 模块本身。"""
+
+    @classmethod
+    def now(cls, tz=None):
+        return _FIXED_NOW if tz is None else _FIXED_NOW.astimezone(tz)
+
+
 def test_list_mail_search_since_is_coarsened_by_one_day(monkeypatch):
-    """SINCE 放宽一天：它按日粒度且按服务端时区（spec §5.3）。"""
+    """SINCE 放宽一天：它按日粒度且按服务端时区（spec §5.3）。
+
+    期望值是**字面量**，不是拿 `now` 现算的 —— 现算就又是自证。
+    原先那句 `since.date() == (datetime.now(timezone.utc) - timedelta(days=8)).date()` 是真偶红：
+    左边由 list_mail **调用期间**的时钟决定、右边由**断言执行时**的时钟决定，
+    两者差着整个 list_mail 的耗时 ⇒ 恰好跨 UTC 午夜就差一天。
+    冻住时钟后偶红与偶漏一起消失；`03` 还顺手钉住 `%d` 的零填充（`%-d` 会给 `3`），
+    `Sep` 钉住月份缩写。
+    """
     fake = _install(monkeypatch, _FakeIMAP(headers={}))
+    monkeypatch.setattr(mail_client, "datetime", _FrozenDateTime)
     mail_client.list_mail(7)
     search = next(c for c in fake.sent if c[0] == "uid" and c[1] == "SEARCH")
-    since = datetime.strptime(search[-1], "%d-%b-%Y").replace(tzinfo=timezone.utc)
-    assert since.date() == (datetime.now(timezone.utc) - timedelta(days=8)).date()
+    assert search[-1] == "03-Sep-2026"
 
 
 def test_list_mail_connects_once(monkeypatch):
@@ -443,7 +475,7 @@ def test_parse_internaldate_rejects_garbage():
 def test_header_item_falls_back_to_internaldate():
     """**Date 头缺失时不能给空串** —— 空串会让前端日期栏静默留白、
     并让提示词里出现空的时间字段（`fmtLocal` 的 `!iso` 分支直接返回空串，
-    根不到 `new Date()`；`llm_client` 那边是 f-string 直插）。
+    根本走不到 `new Date()`；`llm_client` 那边是 f-string 直插）。
     退到 INTERNALDATE（spec §5.3）。"""
     m = _msg(subject="无日期头")
     it = mail_client.header_item("9", m,
@@ -658,14 +690,21 @@ def test_fetch_bodies_returns_id_to_body(monkeypatch):
 
 
 def test_fetch_bodies_uses_body_peek(monkeypatch):
+    """取正文整封走 BODY.PEEK[] —— 裸 BODY[] 会置 \\Seen。
+
+    筛选条件只认 `(uid, FETCH)`，断言钉的是**命令内容**，两者不同口径。
+    原先两句是同一个谓词（筛选按 `"BODY.PEEK[]" in c[-1]`，下一句又断言同一个
+    谓词）⇒ 第二句恒真，改成 `BODY[]` 时红的是 `assert fetches` 的空列表，
+    第二句从未真正做过判断。
+    """
     fake = _install(monkeypatch, _BodyIMAP(headers={b"1": _hdr()},
                                            bodies={b"1": _body_msg("x")}))
     mail_client.list_mail(7)
     mail_client.fetch_bodies([{"id": "1"}])
-    fetches = [c for c in fake.sent if c[0] == "uid" and c[1] == "FETCH"
-               and "BODY.PEEK[]" in str(c[-1])]
-    assert fetches
-    assert all("BODY.PEEK[]" in str(c[-1]) for c in fetches)
+    fetches = [c for c in fake.sent if c[0] == "uid" and c[1] == "FETCH"]
+    assert fetches, "没发出任何 FETCH，下面的断言是空转的"
+    assert all("BODY.PEEK" in str(c[-1]) and not re.search(r"BODY\[", str(c[-1]))
+               for c in fetches), f"有 FETCH 不是 PEEK 取件：{fetches}"
 
 
 def test_fetch_bodies_empty_input_does_not_connect(monkeypatch):
@@ -691,12 +730,18 @@ def test_fetch_bodies_batches_and_throttles(monkeypatch):
 
 
 def test_fetch_bodies_truncates_huge_body(monkeypatch):
-    huge = "字" * (mail_client.MAX_BODY_CHARS + 500)
+    """截断留**开头**不留结尾 —— 期望值是字面量，不是拿 `huge[:MAX]` 现算的。
+
+    原先只断长度：把 `body[:MAX_BODY_CHARS]` 写成 `body[-MAX_BODY_CHARS:]` 照绿，
+    而用户拿到的是邮件结尾而不是开头。首尾形状做成可区分（全 A / 全 B），
+    期望串就能同时钉住「长度对」和「留的是哪一头」。
+    """
+    huge = "A" * 199_999 + "B" * 10_000          # 总长 209_999，首尾形状完全不同
     _install(monkeypatch, _BodyIMAP(headers={b"1": _hdr()},
                                     bodies={b"1": _body_msg(huge)}))
     mail_client.list_mail(7)
     out = mail_client.fetch_bodies([{"id": "1"}])
-    assert len(out["1"]) == mail_client.MAX_BODY_CHARS
+    assert out["1"] == "A" * 199_999 + "B"       # 长度 200_000，且钉住"是开头不是结尾"
 
 
 def test_fetch_bodies_raises_on_uidvalidity_change(monkeypatch):

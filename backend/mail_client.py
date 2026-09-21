@@ -413,6 +413,8 @@ def _fetch_bodies_chunk(conn, uids: list[str]) -> list[tuple[str, str]]:
 def _do_bodies(items: list[dict]) -> dict:
     conn, uidvalidity = _connect()
     try:
+        # 前提：同一次刷新里 list_mail 已经先跑过。进程内第一次就直接调 fetch_bodies 时
+        # `_uidvalidity` 还是空串，这里的核对会被跳过（生产路径不会这样调）。
         if _uidvalidity and uidvalidity != _uidvalidity:
             raise MailError(
                 "邮箱自上次刷新后已被重建（UIDVALIDITY 变了），"

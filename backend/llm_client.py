@@ -255,7 +255,8 @@ def trim_bodies(mails: list[dict], budget: int = _MAX_MAIL_TOTAL) -> list[dict]:
 
     **下限优先于总额**：`len(mails) > 50` 时 `budget // n < _MIN_BODY`，`max()` 取到下限，
     于是实际总额是 `n × _MIN_BODY` —— **随 n 线性增长，没有上界**（取信路径
-    `list_mail` / `select_scope` 都不限条数，只由邮箱里未读邮件的多少兜着）：
+    `list_mail` / `select_scope` 都不限条数，只由最近 `DEFAULT_DAYS` 天内的全部邮件数
+    兜着（旧实现的未读过滤已随 OWA 层删除，界比那时更松））：
     n=500 时约 10×（400 × 500 = 20 万），n=1000 时约 20×。**「10×」是 n=500 那一点，
     不是上界。** 这是有意的：宁可超预算，也不把邮件压成 0 字。
     """

@@ -1000,7 +1000,7 @@ def gmail_delete_credentials():
 
 @app.post("/api/mail/list")
 def mail_list(req: MailListRequest = MailListRequest()):
-    """列出「未读 ∪ 最近 N 天」的学校邮箱邮件。只读，不调 LLM、不改已读状态。
+    """列出最近 N 天的学校邮箱邮件。只读，不调 LLM、不改已读状态。
 
     `req` 带默认实例（而非无默认）—— FastAPI 据此把 body 判为**可选**。前端
     `util.js` 的 `api()` 在 `body` 为 `undefined` 时不发 body，若无默认则被
