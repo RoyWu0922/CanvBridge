@@ -42,8 +42,13 @@
  *     --mutate              = 上面**五个一起上**（各自锚点在互不重叠的位置，可以叠加）
  *     --mutate-keepass      刷新不再清空密码框
  *     --mutate-prefill      把服务器响应里的地址回填进密码框
+ *     --mutate-fail-clears  读失败时照旧改写地址框、藏清除按钮（**修复轮 2 前**的写法）
+ *     --mutate-no-reassert  保存/清除成功后不再补断言自己的结果（**修复轮 2 前**的写法）
  *   `--mutate-keepass` 与 `--mutate-prefill` **不在** `--mutate` 里，且两者互斥
  *   （打在**同一行**上：都改「刷新时密码框写什么」这一处），必须各自单独跑。
+ *   同理 `--mutate-fail-clears` 与 `--mutate`/`--mutate-status-fail` 互斥
+ *   （同一段 `if(!fail){…}`），`--mutate-no-reassert` 与 `--mutate-norefresh` 互斥
+ *   （同一处保存/清除那两行）；叠加会以「锚点命中 0 次」直接抛错，不是静默失效。
  *   每个变异锚点必须**恰好命中一次**；没命中、或替换后与原文一字不差（空转探针），
  *   都会直接抛错退出。替换成功时会在 stdout 打一行 `[mutate] …`，自证改到了哪一行。
  *
@@ -157,6 +162,16 @@ const MUTATE_KEEPASS  = process.argv.includes("--mutate-keepass");
 const MUTATE_PREFILL  = process.argv.includes("--mutate-prefill");
 if (MUTATE_KEEPASS && MUTATE_PREFILL)
   throw new Error("--mutate-keepass 与 --mutate-prefill 打在同一个锚点上，互斥，请分开跑");
+/* 修复轮 2 的两处新写法，各有自己的开关。同样不在 `--mutate` 里，且与它互斥：
+   `--mutate-status-fail` 会把 `if(!fail){…}` 整块**连读失败的分支一起去掉**，
+   而 `--mutate-fail-clears` 正是要保留读失败分支、只把那一块改成无条件写入 ——
+   两者落在同一段源码上，叠加时后一个锚点必然命中 0 次。 */
+const MUTATE_NO_REASSERT = process.argv.includes("--mutate-no-reassert");
+const MUTATE_FAILCLEARS  = process.argv.includes("--mutate-fail-clears");
+if (MUTATE_FAILCLEARS && (MUTATE || MUTATE_STATFAIL))
+  throw new Error("--mutate-fail-clears 与 --mutate / --mutate-status-fail 打在 `if(!fail){…}` 同一段上，互斥，请分开跑");
+if (MUTATE_NO_REASSERT && MUTATE_NOREFRESH)
+  throw new Error("--mutate-no-reassert 与 --mutate-norefresh / --mutate 打在保存/清除那两行上，互斥，请分开跑");
 
 const mutate = (src, anchor, repl, label) => {
   const hits = src.split(anchor).length - 1;
@@ -180,10 +195,11 @@ const mutate = (src, anchor, repl, label) => {
 
 /* 变异锚点**只钉在实现的那几行字面上**，不跨注释 —— 锚点一旦把注释也圈进去，
    往实现里补一句说明就会让变异以「锚点命中 0 次」炸掉（那是自检在说谎：它说变了、其实没变）。
-   故 refreshGmailUi 的「修复前」写法拆成三段，各自落在代码行上，中间那段（密码框）留空。 */
+   故 refreshGmailUi 的「修复前」写法拆成三段，各自落在代码行上，中间那段（密码框）留空。
+   修复轮 2 之后 A 段长了一截：地址与清除按钮被包进 `if(!fail){…}`，而「修复前」的写法
+   正是**无条件**写这两个控件，故整块一起换掉才等于修复前的那三行。 */
 const ANCHOR_STATFAIL_A = `  const fail = r.ok !== true;
   const has  = !fail && r.has_credentials === true;
-  $("gmailAddress").value = has ? (r.address || "") : "";
 `;
 const ANCHOR_STATFAIL_B = `  el.textContent = has  ? t("status.gmail_saved_hint")
                  : fail ? t("status.gmail_status_fail") + (r.error||"")
@@ -191,6 +207,25 @@ const ANCHOR_STATFAIL_B = `  el.textContent = has  ? t("status.gmail_saved_hint"
 `;
 const ANCHOR_STATFAIL_C = `  if(fail) setStatus(t("status.gmail_status_fail") + (r.error||""), "err");\n`;
 const ANCHOR_PASSBOX = `  $("gmailAppPassword").value = "";   // 与 AIMS 同款：刷新即清空，不给密码留在 DOM 里的机会`;
+/* 修复轮 2 新增的两处：`if(!fail){…}` 这道守卫，与两个处理器在 `await refreshGmailUi()`
+   **之后**再断言一次自己的结果。各自单独做锚点，理由见上面互斥检查处的注释。
+   守卫这块**必须单独成锚点**：它前面隔着一整段注释，与上面 A 段不连续；
+   把注释圈进锚点会让「往实现里补一句说明」直接把变异炸掉（见本节开头）。 */
+const ANCHOR_FAILGUARD = `  if(!fail){
+    $("gmailAddress").value = has ? (r.address || "") : "";
+    $("btnClearGmail").hidden = !has;
+  }
+`;
+/* 守卫去掉、退回无条件写入 —— `--mutate-status-fail` 与 `--mutate-fail-clears` 共用同一段替换。 */
+const REPL_FAILCLEARS = `  $("gmailAddress").value = has ? (r.address || "") : "";
+  $("btnClearGmail").hidden = !has;
+`;
+const ANCHOR_REASSERT_SAVE = `    setStatus(t("status.gmail_saved_ok"), "ok", 4000);\n`;
+const ANCHOR_REASSERT_CLEAR = `    setStatus(t("status.gmail_cleared"), "ok");\n`;
+const ANCHOR_REFRESH_SAVE = `    setStatus(t("status.gmail_saved_ok"), "ok", 4000);   // 先亮一次：重读要等一次网络往返
+    await refreshGmailUi();`;
+const ANCHOR_REFRESH_CLEAR = `    setStatus(t("status.gmail_cleared"), "ok");   // 先亮一次：重读要等一次网络往返
+    await refreshGmailUi();`;
 
 for (const f of ["i18n.js", "util.js", "app.js", "shell.js"]) {
   let src = fs.readFileSync(join(ROOT, "frontend", f), "utf8");
@@ -201,8 +236,9 @@ for (const f of ["i18n.js", "util.js", "app.js", "shell.js"]) {
          三段合起来正好还原修复前的函数体（中间那行密码框保持原样）。 */
       src = mutate(src, ANCHOR_STATFAIL_A,
         `  const has = r.ok === true && r.has_credentials === true;
-  $("gmailAddress").value = has ? (r.address || "") : "";
 `, "status-fail-a");
+      /* 修复前的地址/清除按钮是**无条件**写的（没有守卫），故这块也一起退回。 */
+      src = mutate(src, ANCHOR_FAILGUARD, REPL_FAILCLEARS, "status-fail-a2");
       src = mutate(src, ANCHOR_STATFAIL_B, `  el.textContent = has ? t("status.gmail_saved_hint") : "";\n`, "status-fail-b");
       src = mutate(src, ANCHOR_STATFAIL_C, "", "status-fail-c");
     }
@@ -227,14 +263,30 @@ for (const f of ["i18n.js", "util.js", "app.js", "shell.js"]) {
         `    // 变异：保存成功后不清空密码框`, "passclear");
     }
     if (MUTATE_NOREFRESH) {
-      src = mutate(src, `    setStatus(t("status.gmail_saved_ok"), "ok", 4000);\n    await refreshGmailUi();`,
-        `    setStatus(t("status.gmail_saved_ok"), "ok", 4000);\n    // 变异：保存成功后不重读状态`, "norefresh-save");
-      src = mutate(src, `    setStatus(t("status.gmail_cleared"), "ok");\n    await refreshGmailUi();`,
-        `    setStatus(t("status.gmail_cleared"), "ok");\n    // 变异：清除后不重读状态`, "norefresh-clear");
+      src = mutate(src, ANCHOR_REFRESH_SAVE,
+        `    setStatus(t("status.gmail_saved_ok"), "ok", 4000);   // 先亮一次：重读要等一次网络往返
+    // 变异：保存成功后不重读状态`, "norefresh-save");
+      src = mutate(src, ANCHOR_REFRESH_CLEAR,
+        `    setStatus(t("status.gmail_cleared"), "ok");   // 先亮一次：重读要等一次网络往返
+    // 变异：清除后不重读状态`, "norefresh-clear");
     }
     if (MUTATE_POSTCLR) {
       src = mutate(src, `    const r = await api("mail/gmail/credentials", undefined, "DELETE");`,
         `    const r = await api("mail/gmail/credentials");   // 变异：清除改回 POST`, "post-clear");
+    }
+    if (MUTATE_FAILCLEARS) {
+      /* 修复轮 2 的守卫去掉，退回「读失败也照写地址/清除按钮」：用户刚存好的地址被抹掉、
+         清除按钮在唯一读不通的时候被藏起来（DELETE 并不依赖那次读）。 */
+      src = mutate(src, ANCHOR_FAILGUARD, REPL_FAILCLEARS, "fail-clears");
+    }
+    if (MUTATE_NO_REASSERT) {
+      /* 修复轮 2 之前的样子：处理器只在重读**之前**亮一次横幅，于是回读自己失败时
+         refreshGmailUi 的 err 横幅会把「已保存 / 已清除」当场盖掉 —— 凭据明明写进去了，
+         用户看见的却是一片红，会把已经存好的应用专用密码再填一遍。 */
+      src = mutate(src, ANCHOR_REASSERT_SAVE,
+        `    // 变异：保存成功后不再断言自己的结果（回读失败会把成功提示盖掉）\n`, "no-reassert-save");
+      src = mutate(src, ANCHOR_REASSERT_CLEAR,
+        `    // 变异：清除成功后不再断言自己的结果（回读失败会把成功提示盖掉）\n`, "no-reassert-clear");
     }
   }
   try {
@@ -316,7 +368,11 @@ ok(nodes["gmailAppPassword"].value === "",
    否则用户分不清「凭据没了」与「没问出来」。
    先把界面摆成「有凭据」的样子：证明失败会把它清掉，而不是留下一屏过期信息。 */
 ledger.length = 0; resetBanner();
-nodes["gmailAddress"].value = ADDR;
+/* 「上一次真的问到过」的样子，**故意摆上**：不摆的话地址本来就是空的、清除按钮本来就
+   藏着（mkNode 的 hidden 默认 true），于是「原样留着」与「被清空」两种结局**长得一模一样**
+   —— 那种断言对着「把字段清空」的实现照样是绿的（空转）。摆上之后两者才可区分。 */
+const STALE_ADDR = "synth-stale@example.invalid";     // 合成夹具，RFC 2606 保留域
+nodes["gmailAddress"].value = STALE_ADDR;
 nodes["btnClearGmail"].hidden = false;
 nodes["gmailSavedHint"].textContent = "SYNTH-STALE-HINT";
 nodes["gmailAppPassword"].value = "SYNTH-PRE-SEED-2";
@@ -332,8 +388,12 @@ ok(banner().text === expectFail && /banner-err/.test(banner().cls),
    `C3 读失败要亮 err 横幅、并带出原因（实得 ${J(banner())}）`);
 ok(nodes["gmailAppPassword"].value === "",
    `C4 读失败绝不让密码框留着值（实得 ${J(nodes["gmailAppPassword"].value)}）`);
-ok(nodes["gmailAddress"].value === "" && nodes["btnClearGmail"].hidden === true,
-   `C5 读失败时不留「有凭据」的样子：地址清空、清除入口藏起（实得 ${J([nodes["gmailAddress"].value, nodes["btnClearGmail"].hidden])}）`);
+/* C5：**读失败不许动用户的东西**（与 AIMS 的 fail 分支同款：那边读失败时也是什么都不动）。
+   三条独立理由：(a) 一次「保存成功但重读失败」会把用户刚存好的地址从他眼前抹掉；
+   (b) 清除入口正好在**读**出问题的时候变得不可达 —— 而 DELETE 根本不依赖这次读；
+   (c) openSettings() 是不 await 地调本函数的，慢响应会把用户正在手打的地址静默清掉。 */
+ok(nodes["gmailAddress"].value === STALE_ADDR && nodes["btnClearGmail"].hidden === false,
+   `C5 读失败时**原样不动**地址与清除入口（上一次问到的值仍在；实得 ${J([nodes["gmailAddress"].value, nodes["btnClearGmail"].hidden])}，摆上的陈旧值是 ${J([STALE_ADDR, false])}）`);
 
 /* ================= D：保存成功 ================= */
 /* 刷新那一发**扣住不落地**：这样才能证明「密码框是**保存处理器**清掉的」，
@@ -432,6 +492,52 @@ ok(calls(GMAIL_STATUS).length === 1 && ledger.indexOf(calls(GMAIL_STATUS)[0]) > 
    `G5 清除成功后**重读**了状态（实得 ${J(ledger.map(e => e.method + " " + e.url))}）`);
 ok(hint() === "" && nodes["btnClearGmail"].hidden === true,
    `G6 重读把界面刷回「未配置」（提示从「已保存」变回空只能由这次重读造成；实得 ${J([hint(), nodes["btnClearGmail"].hidden])}）`);
+
+/* ================= K：保存**成功** + 紧接着的重读**失败** ================= */
+/* 这是把 D 段与 C 段**组合**起来的第三态，也是「成功信号被读失败盖掉」这条缺陷唯一的
+   藏身处：POST 真的把凭据写进了钥匙串，重读却失败了。此时**两个信号都必须在**：
+     · 这件事**成功了** —— 只剩一条红色读错误的话，用户的下一个动作就是重打密码再存一遍，
+       而「同一个密码存两处」正是 修复轮 1 要避免的那件事；
+     · 那次重读**失败了** —— 咽回去就等于把 修复轮 1 白做。
+   `setStatus` 是无条件覆盖的（util.js:20-25），所以「谁最后写」就是「用户看到谁」。 */
+ledger.length = 0; resetBanner();
+route = ({ url }) => {
+  if (url === GMAIL_CRED)   return resp({ ok: true });
+  if (url === GMAIL_STATUS) return apiFail("SYNTH-REREAD-DOWN");
+  throw new Error("意外请求 " + url);
+};
+nodes["gmailAddress"].value = ADDR;
+nodes["gmailAppPassword"].value = APPPASS;
+nodes["gmailSavedHint"].textContent = "";
+nodes["btnClearGmail"].hidden = true;
+await settle(nodes["btnSaveGmail"].onclick());
+ok(banner().text === zh("status.gmail_saved_ok") && /banner-ok/.test(banner().cls),
+   `K1 保存成功而重读失败时，**成功信号仍然在**（凭据确实写进去了；实得 ${J(banner())}）`);
+ok(hint() !== "" && hint().includes(zh("status.gmail_status_fail")) && hint().includes("SYNTH-REREAD-DOWN"),
+   `K2 同一时刻读失败也**没有被咽回去**（提示行仍是失败文案；实得 ${J(hint())}）`);
+ok(nodes["gmailAddress"].value === ADDR,
+   `K3 重读失败不许把用户刚存好的地址抹掉（实得 ${J(nodes["gmailAddress"].value)}）`);
+ok(nodes["gmailAppPassword"].value === "",
+   `K4 走完这一程密码框仍为空（实得 ${J(nodes["gmailAppPassword"].value)}）`);
+
+/* ================= L：清除**成功** + 紧接着的重读**失败** ================= */
+ledger.length = 0; resetBanner();
+route = ({ url }) => {
+  if (url === GMAIL_CRED)   return resp({ ok: true });
+  if (url === GMAIL_STATUS) return apiFail("SYNTH-REREAD-DOWN-CLEAR");
+  throw new Error("意外请求 " + url);
+};
+nodes["gmailAddress"].value = ADDR;
+nodes["btnClearGmail"].hidden = false;
+nodes["gmailAppPassword"].value = APPPASS;
+nodes["gmailSavedHint"].textContent = "";
+await settle(nodes["btnClearGmail"].onclick());
+ok(banner().text === zh("status.gmail_cleared") && /banner-ok/.test(banner().cls),
+   `L1 清除成功而重读失败时，**成功信号仍然在**（实得 ${J(banner())}）`);
+ok(hint() !== "" && hint().includes(zh("status.gmail_status_fail")) && hint().includes("SYNTH-REREAD-DOWN-CLEAR"),
+   `L2 同一时刻读失败也**没有被咽回去**（实得 ${J(hint())}）`);
+ok(nodes["gmailAddress"].value === "" && nodes["gmailAppPassword"].value === "",
+   `L3 清除本身照常落地：地址与密码都空（这是清除处理器自己的动作，与那次读失败无关；实得 ${J([nodes["gmailAddress"].value, nodes["gmailAppPassword"].value])}）`);
 
 /* ================= H：打开设置页会顺手刷新 Gmail 那组 ================= */
 /* app.js 的 openSettings() 里 refreshGmailUi() 与 refreshAimsUi() 并排两行 ——

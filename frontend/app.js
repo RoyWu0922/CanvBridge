@@ -223,9 +223,16 @@ async function refreshGmailUi(){
   const r = await api("mail/gmail/credentials/status", undefined, "GET");
   const fail = r.ok !== true;
   const has  = !fail && r.has_credentials === true;
-  $("gmailAddress").value = has ? (r.address || "") : "";
+  /* 只有真问到答案时才动地址与清除按钮 ——「没问出来」和「没保存过」是两回事（见下）。
+     AIMS 的 fail 分支同样什么都不动，这是本仓的既有写法。读失败时若照旧往下写，
+     三件事同时发生：用户刚存好的地址当场消失；清除按钮被藏起来，而 DELETE 并**不依赖**
+     这次读，等于在唯一读不通的时候把唯一的出路也堵了；openSettings() 是**不 await**
+     地调本函数的，慢响应回来时会把用户正敲到一半的地址抹掉。 */
+  if(!fail){
+    $("gmailAddress").value = has ? (r.address || "") : "";
+    $("btnClearGmail").hidden = !has;
+  }
   $("gmailAppPassword").value = "";   // 与 AIMS 同款：刷新即清空，不给密码留在 DOM 里的机会
-  $("btnClearGmail").hidden = !has;
   el.textContent = has  ? t("status.gmail_saved_hint")
                  : fail ? t("status.gmail_status_fail") + (r.error||"")
                  : "";
@@ -247,8 +254,15 @@ $("btnSaveGmail").onclick = async () => {
     const r = await api("mail/gmail/credentials", { address, app_password });
     if(r.ok !== true){ setStatus(t("status.gmail_save_fail") + (r.error||""), "err"); return; }
     $("gmailAppPassword").value = "";   // 存成功即清空：密码不留在 DOM 里
-    setStatus(t("status.gmail_saved_ok"), "ok", 4000);
+    setStatus(t("status.gmail_saved_ok"), "ok", 4000);   // 先亮一次：重读要等一次网络往返
     await refreshGmailUi();
+    /* 重读那一步自己失败时，refreshGmailUi 会亮 err 横幅 —— setStatus 是「后写的赢」，
+       它会把上面刚亮的「已保存」当场盖掉：凭据明明已经写进钥匙串了，用户看见的却是一片红，
+       于是把已经存好的应用专用密码又填一遍（同一个密码存两处，正是本轮要防的事）。
+       所以刷完再断言一次**本次操作自己的**结果：读失败照样由提示行与横幅报出来
+       （见 refreshGmailUi 的 fail 分支；上面那次 setStatus 保留，不清算），
+       但「你这一步成功了」不因为回读失败而消失。 */
+    setStatus(t("status.gmail_saved_ok"), "ok", 4000);
   });
 };
 $("btnClearGmail").onclick = async () => {
@@ -256,8 +270,11 @@ $("btnClearGmail").onclick = async () => {
     const r = await api("mail/gmail/credentials", undefined, "DELETE");
     if(r.ok !== true){ setStatus(t("status.gmail_clear_fail") + (r.error||""), "err"); return; }
     $("gmailAddress").value=""; $("gmailAppPassword").value="";
-    setStatus(t("status.gmail_cleared"), "ok");
+    setStatus(t("status.gmail_cleared"), "ok");   // 先亮一次：重读要等一次网络往返
     await refreshGmailUi();
+    /* 与保存同款：回读失败不能把「已清除」这个**本次操作自己的**结果盖成红色读失败
+       —— 凭据确实删掉了，用户却以为没删掉，会再点一次。读失败仍由提示行与横幅报出。 */
+    setStatus(t("status.gmail_cleared"), "ok");
   });
 };
 
