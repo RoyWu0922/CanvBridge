@@ -1803,17 +1803,18 @@ def test_library_search_returns_json_when_the_domain_catalog_raises(monkeypatch)
 def test_mail_list_returns_mails(monkeypatch):
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
         {"id": "A", "subject": "作业", "sender": "李老師",
-         "received": "2026-09-17T08:31:00Z", "is_read": False}])
+         "received": "2026-09-17T08:31:00Z"}])
     body = TestClient(main.app).post("/api/mail/list", json={"days": 7}).json()
     assert body["ok"] is True
     assert body["count"] == 1
     assert body["mails"][0]["subject"] == "作业"
     # 响应键白名单。原先这里是 `assert "token" not in json.dumps(body)` ——**真空**：
-    # mail dict 由 backend/mail_client.py:126-130 构造，只有
-    # id/subject/sender/received/is_read 五个键（字段级钉子见
-    # tests/test_mail_client.py:63 的 test_parse_find_items_maps_fields，它用整字典
-    # 相等钉死这五个键）；bearer token 是 _capture_token 的局部值，经入参传给
-    # collect_items/_post_json，从不落进任何 dict。所以那句「响应里没有 token」
+    # mail dict 由 mail_client.header_item 构造，对外契约恰好
+    # id/subject/sender/received 四个键（字段级钉子见
+    # tests/test_mail_client.py 的 test_header_item_shape_exactly_four_keys，它用
+    # 集合相等钉死这四个键）；而新取信层里**根本不存在 bearer token** —— Gmail
+    # 只读三件套走 IMAP，凭据存在钥匙串、只在 credentials.get_gmail 里取用，
+    # 从不落进任何 dict。所以那句「响应里没有 token」
     # 恒真 —— 它看着像在守 spec §9「token 绝不回传前端」，实际守的是个永不出现
     # 的子串，而往响应里加个名字不带 "token" 的凭证字段（如 llm_api_key）仍能全绿。
     # 真正的防护是这里钉死响应键集合，加上 test_mail_client.py 的字段级用例。
@@ -1836,7 +1837,7 @@ def test_mail_list_tolerates_bodyless_request(monkeypatch):
     """无 body 的 POST 也要走通 —— 前端 api() 在 body 为 undefined 时不发 body。"""
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
         {"id": "A", "subject": "作业", "sender": "李老師",
-         "received": "2026-09-17T08:31:00Z", "is_read": False}])
+         "received": "2026-09-17T08:31:00Z"}])
     r = TestClient(main.app).post("/api/mail/list")   # 完全不带 body
     assert r.status_code == 200
     body = r.json()
@@ -1859,7 +1860,7 @@ def test_mail_list_failure_is_200_json(monkeypatch):
 def test_mail_summarize_joins_bodies_and_groups(monkeypatch):
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
         {"id": "A", "subject": "作业", "sender": "李老師",
-         "received": "2026-09-17T08:31:00Z", "is_read": False}])
+         "received": "2026-09-17T08:31:00Z"}])
     monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "交报告"})
     seen = {}
 
@@ -1877,17 +1878,20 @@ def test_mail_summarize_joins_bodies_and_groups(monkeypatch):
     # index 是回指锚，必须从 0 连续编号
     assert [m["index"] for m in seen["mails"]] == [0]
     assert seen["mails"][0]["body"] == "交报告"
-    # 响应键白名单。这里刻意**不**断言「token 不在响应里」：邮箱 bearer token
-    # 只活在 mail_client 的 HTTP 层（header），从来不是 mail dict 的字段，所以
+    # 响应键白名单。这里刻意**不**断言「token 不在响应里」：新取信层里根本不存在
+    # bearer token —— Gmail 只读三件套走 IMAP，凭据在钥匙串、只在
+    # credentials.get_gmail 里取用 —— 所以
     # 那句在 /api/mail/summarize 上恒真 —— 它看着像在守「凭证不回传前端」这条
     # 硬约束，实际守的是个永远不会出现的串，而把 req 的字段（如 llm_api_key）
     # 摊进响应仍能全绿。真正要钉的是「响应只有这四个键」，凭证侧的字段级防护
     # 在 tests/test_mail_client.py。
     assert set(body) == {"ok", "mails", "groups", "warnings"}
     # 逐条邮件的键集合也要钉住：顶层白名单管不到元素，而 `mails` 正是前端的回指表。
-    # 用 `<=` 而不是 `==`：端点允许往后加字段（本轮的失败路径就加过 `reason`），
-    # 这里守的是「不许把 req 的字段（llm_api_key 等）摊进元素里」。
-    assert all(set(m) <= {"id", "subject", "sender", "received", "is_read", "index", "body"}
+    # 用 `==` 而不是 `<=` —— 这是**刻意收紧**，不是笔误：白名单就是要在加字段时
+    # 变红，红了就来这里显式决定「这个字段该不该出现」，而不是让它静默通过。
+    # （原先用 `<=` 是子集断言，正是 Task 5 删掉 is_read 时没有任何用例变红的
+    # 原因 —— 声明强于断言，白名单得是相等而不是包含。）
+    assert all(set(m) == {"id", "subject", "sender", "received", "index", "body"}
                for m in body["mails"])
 
 
@@ -1902,8 +1906,8 @@ def test_mail_summarize_indexes_are_contiguous(monkeypatch):
     index/body 之后、返回之前的唯一观察点。
     """
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
-        {"id": "A", "subject": "甲", "sender": "", "received": "", "is_read": False},
-        {"id": "B", "subject": "乙", "sender": "", "received": "", "is_read": True}])
+        {"id": "A", "subject": "甲", "sender": "", "received": ""},
+        {"id": "B", "subject": "乙", "sender": "", "received": ""}])
     monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "a", "B": "b"})
     seen = {}
 
@@ -1925,7 +1929,7 @@ def test_mail_summarize_indexes_are_contiguous(monkeypatch):
 def test_mail_summarize_returns_mails_too(monkeypatch):
     """前端要把 AI 结果的 mail_index 对回原邮件 → 响应必须同时带上 mails。"""
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
-        {"id": "A", "subject": "作业", "sender": "", "received": "", "is_read": False}])
+        {"id": "A", "subject": "作业", "sender": "", "received": ""}])
     monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "b"})
     monkeypatch.setattr(llm_client, "summarize_mail",
                         lambda *a, **k: {"groups": [], "warnings": []})
@@ -1954,7 +1958,7 @@ def test_mail_summarize_fetch_bodies_failure_reports_mail_phase(monkeypatch):
     "llm" 上，用户会被指去查 API key —— 方向是错的。
     """
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
-        {"id": "A", "subject": "作业", "sender": "", "received": "", "is_read": False}])
+        {"id": "A", "subject": "作业", "sender": "", "received": ""}])
 
     def boom(items):
         raise mail_client.MailError("邮箱会话已失效")
@@ -1968,7 +1972,7 @@ def test_mail_summarize_fetch_bodies_failure_reports_mail_phase(monkeypatch):
 def test_mail_summarize_llm_failure_reports_llm_phase(monkeypatch):
     """AI 阶段炸了 → reason == "llm"：**不许**发手动登录问询（那是 API key 的问题）。"""
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
-        {"id": "A", "subject": "作业", "sender": "", "received": "", "is_read": False}])
+        {"id": "A", "subject": "作业", "sender": "", "received": ""}])
     monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "b"})
 
     def boom(*a, **k):
@@ -2001,8 +2005,8 @@ def test_mail_summarize_missing_body_falls_back_to_empty(monkeypatch):
     被端点的宽 except 吞掉），其余邮件的摘要也随之全丢。
     """
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
-        {"id": "A", "subject": "甲", "sender": "", "received": "", "is_read": False},
-        {"id": "B", "subject": "乙", "sender": "", "received": "", "is_read": True}])
+        {"id": "A", "subject": "甲", "sender": "", "received": ""},
+        {"id": "B", "subject": "乙", "sender": "", "received": ""}])
     monkeypatch.setattr(mail_client, "fetch_bodies",
                         lambda items: {"A": "a"})      # B 没取到正文
     monkeypatch.setattr(llm_client, "summarize_mail",
