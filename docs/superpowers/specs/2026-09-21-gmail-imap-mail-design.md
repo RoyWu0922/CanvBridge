@@ -251,13 +251,13 @@ fail-open 是**刻意的**，沿用旧实现并经旧测试验证：单封格式
   - 其它 `multipart/*` → 拼接各 `text/plain` 段，**跳过** `Content-Disposition: attachment`
   - 只有 `text/html` → 转纯文本
   - charset 声明解不出 → `errors="replace"`，绝不抛
-- HTML 转纯文本**复用 `canvas_client._TextExtractor`**
-  （`backend/canvas_client.py:233`，`HTMLParser` 子类，块级标签处换行）。
+- HTML 转纯文本**复用 `canvas_client.strip_html()`**
+  （`backend/canvas_client.py:254`）。它是**公开函数**，内部就是 `_TextExtractor`
+  （`HTMLParser` 子类，块级标签处换行）加空白归一 —— 正好是邮件正文需要的。
 
-  **已知的丑**：跨模块 import 一个下划线私有名。接受它，因为另一条路是复制一个
-  HTML 解析器——两处副本必然漂移，比一个私有名难看得多。若实施时发现
-  `canvas_client` 的导入链过重，退路是在 `mail_client` 内实现等价物**并说明为何不复制**，
-  不默认走退路。
+  ~~原稿写的是「跨模块 import 私有名 `_TextExtractor`，接受这个丑」~~
+  **那条作废（2026-09-21 写计划时更正）**：`strip_html` 是公开的，
+  直接用它即可，既没有私有名问题、也不必自己复制一个解析器。
 
 ### 5.8 错误与「不重试」
 
@@ -317,7 +317,7 @@ DELETE /api/mail/gmail/credentials
 | 位置 | 删除内容 |
 |---|---|
 | `backend/mail_client.py` | OWA 取信整层，共 14 个函数 + 6 个常量（**已逐个对照源码核实**）：`_prop` / `_response_items` / `_sender_name` / `find_item_payload` / `get_item_payload` / `parse_find_items` / `parse_get_bodies` / `jwt_exp` / `extract_bearer` / `_post_json` / `_capture_token` / `collect_items` / `_do_list` / `_do_bodies`；常量 `SVC_URL` / `_HDR` / `PAGE_SIZE` / `MAIL_URL` / `_TOKEN_WAIT_TICKS` / `_TOKEN_WAIT_MS` |
-| `backend/banweb.py` | `MAIL_HOSTS` / `_is_mail_url` / `_find_mail_page` / `_ensure_mail_page`，以及 `_find_page` 里的**邮件域排除**分支（`banweb.py:649/654`） |
+| `backend/banweb.py` | **只删 `_find_mail_page` / `_ensure_mail_page`**（邮件客户端的浏览器入口，改走 IMAP 后无人调用）。**`MAIL_HOSTS` / `_is_mail_url` 与 `_find_page` 里的邮件域排除一律保留** —— 理由见下方「不能删的那两样」。 |
 | `frontend/app.js` | `app.js:3068` 的 `is_read` 取值 |
 | `tests/test_mail_client.py` | 围绕 OWA 的用例整套重写 |
 | `tools/check_mail_frontend.mjs` | 随 `is_read` 移除更新 |
@@ -334,9 +334,33 @@ DELETE /api/mail/gmail/credentials
 | `select_scope` | **保留函数名与 fail-open 语义，删掉「未读」分支**（§4.1、§5.6）。 |
 | `MailError` / `TIMEOUT` / `DEFAULT_DAYS` / `BODY_BATCH` / `_THROTTLE` | 保留（`BODY_BATCH` 取值 10 → 5，见 §5.4）。 |
 
-**`_find_page` 的邮件域排除要小心**：它是为 OWA tab 加的，现在没了 OWA tab 就是死代码；
-但删它会改到 `_find_page` 的行为，**删之前先确认用例覆盖**（旧 spec §5.1 约束 1）。
-若无用例覆盖，先补一条再删。
+**不能删的那两样（2026-09-21 写计划时发现的 spec 缺陷，已就地更正）：**
+
+原先本节写的是「连 `MAIL_HOSTS` / `_is_mail_url` / `_find_page` 的邮件域排除一起删掉」。
+**那是错的，会静默吃掉用户自己的 Outlook 标签页。**
+
+理由：后端有一条**附着到用户真实 Chrome** 的路径（`connect_over_cdp(127.0.0.1:9339)`，
+`_browser_headless is None`）。这条路径下 `ctx.pages` 里是**用户自己开着的标签页** ——
+其中很可能有他手动开着的 Outlook。`banweb.py` 里对此有白纸黑字的注释：
+
+> 「没有可用 AIMS 页 → None（无窗口，或**只剩邮件 tab**）。与「无窗口」同等对待，
+> **绝不擅自把邮件 tab 当 AIMS 页用**。」
+> 「页面还在（如只剩邮件 tab）⇒ **绝不** close：……还会顺带关掉用户刚打开的邮件 tab。」
+
+删掉排除逻辑，`_find_page` 就会把用户的 Outlook tab 认领为 AIMS 页，接着
+`goto(TERM_PAGE)` 把它导航走 —— 用户自己的邮箱页面就此消失。**邮件功能不再用浏览器，
+不等于用户不用。**
+
+而且「没有可用 AIMS 页 → 返回 None」是**轮询绝不弹窗**那条约束的承重件：
+没有了邮件域排除，只剩邮件 tab 的情况会被当成"有页可用"，`launch=False` 的分支就走不到。
+
+`_find_page` 的邮件域排除**已有 4 条用例覆盖**（`tests/test_banweb.py` 的
+`test_find_page_never_returns_a_mail_tab` / `..._a_mail_login_relay_tab` /
+`test_find_page_prefers_aims_page_over_mail_tab` / `..._still_falls_back_to_unknown_blank_page`），
+不需要补。**这些用例连同实现一起保留。**
+
+真正该删的是 `_find_mail_page` / `_ensure_mail_page` —— 它们只服务邮件客户端，
+改走 IMAP 后没有任何调用方。
 
 ---
 
@@ -420,6 +444,12 @@ DELETE /api/mail/gmail/credentials
 ## 12. 落地顺序
 
 1. **先跑 §10 的实测**（尤其 1 与 2）—— 不验就写代码等于赌
+
+   **顺序上的坑（写计划时发现）**：实测需要钥匙串里有应用专用密码，而「在设置页填」
+   是第 6 步才有的东西。解法：**用户自己**在终端跑一条
+   `security add-generic-password -s cityu_gmail_imap -a <Gmail地址> -w` 直接写进钥匙串。
+   信任边界与设置页完全相同（都是钥匙串），且**密码同样不经过对话/文件/日志**。
+   不要在设置页做完之前就把实测卡住。
 2. `credentials.py` 参数化 + Gmail 四个函数 + 端点（钥匙串这层可独立测）
 3. `mail_client.py` 重写为 IMAP 取信层（纯函数先行：头部解码、MIME、日期过滤）
 4. 接上 I/O 层：连接、只读三件套、批量取件、UIDVALIDITY
