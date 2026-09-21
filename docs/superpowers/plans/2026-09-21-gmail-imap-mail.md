@@ -2823,3 +2823,87 @@ git commit -m "test(mail): 收紧字段断言为集合相等；清掉 is_read �
 - [ ] `tools/probe_gmail_imap.py` 已删除（Task 1 Step 5）
 - [ ] 把实测结论与实现要点写进 memory
 - [ ] **保持本地，先不推**（用户未授权推送）
+
+---
+
+## 后续项与未验证边界（终审后记录，2026-09-22）
+
+**这一节不是计划的一部分**，是终审 + 三轮修复之后收尾时留下的：记**已知但有意未做**的事，
+以及**这条计划没有验证到**的地方。实施这条计划时用的 `.superpowers/` 临时工作区
+（brief / 报告 / 终审与复审报告 / ledger / diff 包）已按 subagent-driven-development 的流程删除，
+**那些结论留存下来的地方就是这一节**。
+
+终局状态：HEAD `0014e4e`（本地，未推送），`542 passed, 1 warning`（与基线同值），
+四个自检器全 `exit 0`（`check_mail_frontend` 55 条 / `check_gmail_ui` 44 条 /
+`check_dom_ids` 157 id / `check_i18n_keys` 419 键、21 死键 = 基线）。
+
+### F-1（**未修**）：钥匙串「读失败」被渲染成「没存过」
+
+**位置**：`backend/credentials.py` 的 `_find_account(service)` —— 即 `security find-generic-password
+-s <service>` 那次**查账号**调用（不带 `-w` 的那条）。
+
+**缺陷**：`credentials.py:61-63` 是 `r = _run(["security", "find-generic-password", "-s", service])`
+后跟 `if r.returncode != 0: return ""` —— 它对**任何** `rc != 0` 都返回 `""`，
+把 `errSecItemNotFound`(44) 与**真实错误**（钥匙串被锁、权限被拒等）混为一谈。
+（它自己的 docstring `:60` 写的是「未存过返回空串」—— **这句声明本身就是同一个缺陷**：
+对 `rc != 0 且 != 44` 是假的。修的时候顺手改掉。）
+
+**后果（两处都已打开文件核实）**：
+- (a) **真实的读失败被渲染成「没存过」**。`get_gmail_address()`（`:159-161`）直接返回 `_find_account`，
+  于是 `main.py:984-988` 那个 `try/except → {"ok": False, "error": …}` **对钥匙串读失败不可达** ——
+  它返回的是 `{"ok": True, "has_credentials": False}`。前端 `app.js:223-245` 的 `fail` 分支
+  （`status.gmail_status_fail`）因此**对该成因永远不触发**，用户看到的是「还没配置，去设置页填」，
+  被引向错误方向。`_run` 自身抛错（如 subprocess 起不来）才走得到那个 `except`。
+- (b) **钥匙串里累积重复条目**。`_save`（`:75-77`）是先 `old = _find_account(service)`、
+  再 `if old and old != username:` 删旧的；读失败时 `old` 是 `""`（假值）⇒ **不删**，
+  随后 `add-generic-password … -U` 就把新账号加成**第二条**。
+
+**调用点（5 个，全在共享凭据模块上）**：`get_gmail_address`、`_load`
+（→ `get_credentials` → `banweb.py` 的 `_stored_credentials` → `auto_login_from_stored`）、
+`get_username`、`_delete`、`_save`。
+
+**为什么当时不修**：信息损失发生在**共享的** `_find_account` 内部，没有窄修法；它牵动
+**AIMS 自动登录**，而后者的既定失败模式是干净的 `BanwebError`（UI 据此提示「去设置页填」）；
+且 `tests/test_credentials.py` 里**所有**「未存过」用例用的都是 `acct_rc=44`，
+**没有一条**建模真实错误。⇒ 它是在**安全关键的共享凭据模块**上做一个小特性，不是改一行；
+在终审门口捎带做，风险是把 AIMS 登录弄坏 —— 那是整个应用都依赖的东西。
+
+**两份修法候选**：
+1. **区分 rc**：`errSecItemNotFound`(44) 返回 `""`，其余 rc 抛错（或返回哨兵）。
+   改的是 `_find_account` 的**返回语义** ⇒ 5 个调用点都要跟着处理新形态。
+2. **只改读路径**：`_find_account` 原样不动，另加一个能辨识「读失败」的查询函数，
+   只在 Gmail 读路径用它。影响面小，代价是同一模块里出现两种「查账号」语义。
+
+**修之前必须先补的测试**：至少一条建模 `rc != 0 且 != 44` 的用例 ——
+现有夹具 `_patch` 的假 `_run` 对账号查询只回一个 `rc`，全部「未存过」档走的都是 44。
+
+### 未验证边界（这条计划**没有**验证到的）
+
+- **一次真实 IMAP 连接都没连过。** 协议层行为（`INTERNALDATE` 解析、7 天窗口、
+  `BODY.PEEK` 只读纪律、节流）**全部只由替身与 spec 支撑**。第一次真实「刷新邮件」才是真检验。
+- **`check_mail_frontend.mjs` 的 J 段只覆盖 zh**：沙箱里 `localStorage.getItem` 返回 `null`
+  ⇒ `LANG() == "zh"`。`mail.no_subject` 的 **en 值没有任何断言会咬住它**，
+  只受「两语种键集一致」这项结构检查保护。
+- **没有做 JS 解析级的注释剥离比对**：`frontend/app.js` 的「零可执行变化」是**逐行归类**
+  得出的（Python 侧用的是真 AST 判据）。
+- **`_kill_zombie_chrome` 的真实杀伤行为未验**：全部结论都是「在假对象上观察调用点是否被触发」
+  + 读源码；**没有、也不该**启动真实浏览器（本项目明令不得碰用户正在用的 Chrome，端口 9339）。
+- **`_find_account` 在真机上如何区分 44 与真错误，未也无法在不碰真钥匙串的前提下核实。**
+
+### 已知、已裁定「不必修」的（**不要再当新缺陷上报**）
+
+- `setStatus` 的「后写覆盖先写」语义 —— 成功信号占横幅是**故意**的，
+  被 `tools/check_gmail_ui.mjs` 的 K1/K2 **双向**钉住。
+- 全局 `time.sleep` 补丁；`frontend/app.js` 用 `0x01` 当分隔符。
+- `tools/` 四个 `.mjs` 自检器**没有统一入口**（复审判「载荷但属流程性」；
+  加 runner 是新产物，要另走一轮评审）。
+- `docs/superpowers/plans/2026-09-18-school-mail.md` 里仍有 4 处 `mail.no_body`：
+  那是**被本计划取代的旧计划**（2026-09-18 的 OWA 版），属历史记录，刻意不动。
+- `tests/test_mail_client.py` 里那条 f-string 断言消息的括注在**空列表档**下自相矛盾
+  （「header FETCH 把列表填满了：[]」），但该档下它**永远走不到**（`assert fetches` 先炸）。
+- `banweb.py` 的 `_kill_zombie_chrome` docstring 里，步骤 1「没返回」的成因枚举是
+  **「能演示的穷举」而非「可证明的穷举」**：形式上还可能有第四种（`_find_page` 自身抛错），
+  但本仓 `_retry_once` 的 docstring 说明 `.url` 这类属性在浏览器刚关掉时**读旧缓存不抛**，
+  故不主张它是真实路径。**坐实要开真浏览器，本计划未做。**
+- Task 2 的 5 条 Minor、Task 4 复审的 Minor 3–6、`spec:477` 的半句话、
+  `8bit`/`7bit` 的措辞口误、starlette/httpx 弃用 warning 的归因 —— 均为外观，已关闭。
