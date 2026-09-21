@@ -38,6 +38,27 @@
 - 触发形状在变异表里很常见：等长重排、常量对调、格式串互换。
 - **驱动器「写回 pristine」这一步也要防**：它必须还原到**本轮开始时的**工作区内容。2026-09-21 Task 4 修复轮 2 实测过一次事故：驱动器结尾写回的是**上一轮**留的备份，把本轮的改动**静默回滚**了（`git status` 不显示该文件，因为回滚后与 HEAD 一致 —— 反而更不容易发现）。做法：跑前把 `pristine` 备份的 sha256 与**当前工作区**的 sha256 对一次，不等就停下重取；跑完再对一次。
 - **锚点命中数必须是 1**：命中 2 次说明这是个会改错地方的锚点（`days: int = DEFAULT_DAYS` 就同时出现在 `select_scope` 与 `list_mail` 上）。要么加足上下文，要么判 SKIP 报回，**不要挑第一个替换** —— 改错地方的变异红起来原因不同，等于换了道题。
+- **🔴 活性探针的指纹公式：绝不要对 `repr(co_consts)` 取哈希。**（2026-09-21 Task 6 复审实测，控制器独立复现）
+  含**嵌套 code object** 的函数（里面有列表推导 / 生成器 / 嵌套函数），其 `co_consts` 里那个 code object 的 `repr` **带内存地址**
+  （`<code object <listcomp> at 0x1031466b0, file "…">`）⇒ 指纹**每次运行都不同**，无论变异有没有落盘。
+  实测（同一个 pristine 源，连跑 3 次）：
+  `_do_bodies` = `51d785cd` / `063bbcd9` / `6236f14e`，`_do_list` = `ed7ce795` / `c71657a5` / `32a5f0ff` —— **全不同**；
+  而**不含**嵌套 code object 的 `_fetch_bodies_chunk` = `81d1d0c8` 三次恒定。
+  ⇒ 对这三个含推导式的函数，`sha256(repr((co_code, co_consts, co_names)))` 报的「指纹 = 变」**一点鉴别力都没有**：
+  哪怕变异根本没写进文件（陈旧 `.pyc`），它照样报「变」—— 正是它本该堵住的那条假绿通道。
+  - **也别改用 `dis`**（我试过，会重蹈覆辙）：`dis.Bytecode(fn).dis()` 在外层函数里会把嵌套 code object 渲染成
+    `LOAD_CONST <code object <listcomp> at 0x…>`，同样带地址 ⇒ 实测 `_do_bodies` = `1f37d35c` / `88d8b337` / `fb42c712`，**仍不稳定**。
+  - **正确公式（已双向实测：跨进程稳定 + 变异敏感）**：递归指纹，嵌套 code object 用**自身递归指纹**而非 `repr`：
+    ```python
+    def stable(c):
+        parts = [c.co_code, c.co_names, c.co_varnames, c.co_freevars, c.co_cellvars,
+                 tuple(stable(k) if hasattr(k, "co_code") else k for k in c.co_consts)]
+        return hashlib.sha256(repr(parts).encode()).hexdigest()
+    ```
+    实测：`_do_bodies` = `2cdef0e1` ×3、`_do_list` = `c54ff581` ×3、`_fetch_bodies_chunk` = `240c5df6` ×3（**稳定**）；
+    对 `_do_list` 去掉批间节流 → `1334e895`，把 `if n:` 换成 `if 1:`（**等长**，最易失鲜的形状）→ `22bcd6b3`（**敏感**）。
+  - **判据是两向的，缺一不可**：先证明它**稳定**（同一份源连跑 3 次同值），再证明它**敏感**（真做一次变异后变值）。
+    只测其中一向都会翻车 —— 这次翻的正是「从不测稳定性、只看"变了没有"」。
 
 ---
 
@@ -1170,7 +1191,7 @@ def select_scope(items: list[dict], now: datetime,
 | `select_scope` 改成按 `received`（`Date:` 头）筛选 —— **必须忠实地用 `datetime.fromisoformat` 解 `received`** | `test_select_scope_filters_by_internaldate_not_date_header` |
 | `select_scope` 的 `ts.tzinfo is None` 守卫去掉（把 naive 也拿去比） | `test_select_scope_keeps_missing_naive_or_bad_fail_open` |
 | `select_scope` 改回丢弃坏日期（`continue`，而非保留） | `test_select_scope_keeps_missing_naive_or_bad_fail_open` |
-| `select_scope` 加回 `if not it.get("is_read"):` 分支 | `test_select_scope_has_no_unread_branch` |
+| `select_scope` 改回 OWA 原语义「未读 **∪** 最近 N 天」—— 在现有 keep 条件的**末尾加一个 OR 分支**：`... or ts >= cutoff or not it.get("is_read"):`（**必须是 OR**；**别按字面「嵌进分支内部」**，见本表下方警告） | `test_select_scope_has_no_unread_branch` |
 | `select_scope` 的 `ts >= cutoff` → `ts > cutoff`（边界由「含」变「不含」） | `test_select_scope_boundary_is_inclusive` |
 | `select_scope` 的 `days: int = DEFAULT_DAYS` → `days: int = 30`（默认值不再是 7）。**锚点要带上下文**：裸串 `days: int = DEFAULT_DAYS` 在文件里命中 **2 次**（`select_scope` 与 `list_mail`），拿裸串当锚点会改错地方 —— 而「改了 `list_mail` 的默认值」是**另一个变异**，红的原因也不同（张冠李戴的入口）。用 `def select_scope(...)` 两行上下文定位 | `test_select_scope_defaults_to_default_days` |
 | `message_body` 里把 `plains` 与 `htmls` 优先级对调 | `test_message_body_prefers_plain_in_alternative` |
@@ -1179,6 +1200,23 @@ def select_scope(items: list[dict], now: datetime,
 | `header_item` 去掉 `or internaldate` 回退 | `test_header_item_falls_back_to_internaldate` |
 | `header_item` 改成 `_iso(internaldate or received_dt(msg))`（顺序反了） | `test_header_item_prefers_date_header_over_internaldate` |
 | `parse_internaldate` 的格式串改成 `%Y-%m-%d %H:%M:%S %z`（写成 ISO 顺序） | `test_parse_internaldate_reads_imap_format` |
+
+> **⚠️ T4-9 别按字面把 `is_read` 判断「嵌进 keep 分支」—— 那是个语义空操作。**
+> （2026-09-21 实施者实测报回；控制器已回源码逐条复核，下面是核过的算式，不是转述。）
+>
+> 该用例只有**一封**邮件（`tests/test_mail_client.py:547-555`）：
+> `{"_internaldate": datetime(2026, 1, 1, tzinfo=utc), "is_read": False}`，`now = 2026-09-17 12:00 UTC`、`days = 7`
+> ⇒ `cutoff = 2026-09-10`。现有 keep 条件（`backend/mail_client.py:229`）是
+> `if not isinstance(ts, datetime) or ts.tzinfo is None or ts >= cutoff:`。
+>
+> - **按字面嵌进去**（`out.append(it)` 外面再包一层 `if not it.get("is_read"):`）：外层三项**全假**
+>   （`ts` 是 aware datetime、`2026-01-01 < cutoff`）⇒ 内层**永不可达** ⇒ `out == []` ⇒ 用例**照绿**，
+>   产出**假的 `SURVIVED`**。
+> - **OR 形式**（条件末尾加 `or not it.get("is_read")`）：`not False` 为真 ⇒ 该邮件被保留 ⇒ `out == [item]`
+>   ⇒ `assert ... == []` 失败，**红**。
+>
+> 而 `SURVIVED` 最省事的处置恰恰是**把那条用例删掉** —— 正是本计划在 Task 4 结束态那节点名警告过的路。
+> 一般规律：**变异要打在承重行上** —— 先问「这一行在什么输入下会改变返回值」，答「没有」的那一行是装饰，不是变异对象。
 
 > **⚠️ 本表不要写「去掉 `astimezone`」类的变异 —— 它们全部退化。** 原因是一个结构性事实：
 > **UTC 归一本文件做了两遍** —— `_parse_ts` 与 `parse_internaldate` 各做一次
@@ -1230,12 +1268,14 @@ git commit -m "feat(mail): IMAP 取信层的纯函数（RFC 2047 解码 / MIME �
 > **Task 5 与 Task 6 必须连续执行，中间不交付。** 本任务删掉 OWA 层后 `fetch_bodies` 会失去依赖；把 `fetch_bodies` 与 `_do_bodies` 一并删掉、由 Task 6 立刻补上新的，**不要**留一个半死的实现。
 
 > ⚠️ **本任务结束时「全量 pytest」是红的，而且必须让它红着 —— 这不是缺陷，是设计。** 已核实（控制器，2026-09-21）：
-> - `tests/test_main.py` 里有 **7 条** `test_mail_summarize_*` 用例会 **ERROR**（不是失败）：`test_mail_summarize_joins_bodies_and_groups`(:1859) / `test_mail_summarize_indexes_are_contiguous`(:1894) / `test_mail_summarize_returns_mails_too`(:1925) / `test_mail_summarize_fetch_bodies_failure_reports_mail_phase`(:1950) / `test_mail_summarize_llm_failure_reports_llm_phase`(:1968) / `test_mail_summarize_no_mail_skips_llm`(:1983) / `test_mail_summarize_missing_body_falls_back_to_empty`(:1996)。
+> - `tests/test_main.py` 里有 **7 条** `test_mail_summarize_*` 用例会**红**：`test_mail_summarize_joins_bodies_and_groups`(:1859) / `test_mail_summarize_indexes_are_contiguous`(:1894) / `test_mail_summarize_returns_mails_too`(:1925) / `test_mail_summarize_fetch_bodies_failure_reports_mail_phase`(:1950) / `test_mail_summarize_llm_failure_reports_llm_phase`(:1968) / `test_mail_summarize_no_mail_skips_llm`(:1983) / `test_mail_summarize_missing_body_falls_back_to_empty`(:1996)。
 > - **机制**：它们都 `monkeypatch.setattr(mail_client, "fetch_bodies", …)`，而 `monkeypatch.setattr` 默认 `raising=True`，属性不存在时抛 `AttributeError`（已用最小探针在 pytest 9.1.1 上实测复现：`AttributeError: <module …> has no attribute 'gone'`）。
 > - `backend/main.py:1029` 的 `mail_client.fetch_bodies(mails)` 也会在**运行时**炸（只有走到 AI 总结的取正文那段才会触发，单测抓不到）。
 > - **Task 6 会把它治好**：新 `fetch_bodies` 与旧**同名同签名**（`(items: list[dict]) -> dict`）—— 外部契约不变正是本计划的前提，那 7 条用例是猴补公开名，会自动恢复。
 >
-> 因此本任务的验收口径是：**`pytest tests/test_mail_client.py -q` 全绿**；全量 `pytest -q` 预期**恰好这 7 条 ERROR**。**除这 7 条以外还有红 ⇒ 停下来查。** 三条禁令：**不要**为了让全量变绿而留一个 stub `fetch_bodies`（那会把真断线伪装成绿）；**不要**改 `tests/test_main.py`（Task 9 才碰它）；**不要把 `fetch_bodies` 改成 `raising=False` 能修的东西**——病根是被调用的符号没了，不是猴补写得不对。报告里要把这 7 条**如实列为预期红**，不得写成「全绿」。
+> - **标签更正（Task 5 实测，控制器 2026-09-21 核）：**这 7 条在 pytest 9.1.1 上记作 **`FAILED`，不是 `ERROR`**。机制完全不变（`raising=True` 的 `AttributeError`），差别只在结局标签：`ERROR` 是 fixture/收集阶段炸，而这里的 `setattr` 写在**用例体内**。**集合与计数逐字对得上**，验收口径不受影响 —— 但「预期 ERROR」这个写法本身是错的标签，读的人会去找收集阶段的报错。原措辞已在此更正，留痕。
+>
+> 因此本任务的验收口径是：**`pytest tests/test_mail_client.py -q` 全绿**；全量 `pytest -q` 预期**恰好这 7 条红**（标签 `FAILED`）。**除这 7 条以外还有红 ⇒ 停下来查。** 三条禁令：**不要**为了让全量变绿而留一个 stub `fetch_bodies`（那会把真断线伪装成绿）；**不要**改 `tests/test_main.py`（Task 9 才碰它）；**不要把 `fetch_bodies` 改成 `raising=False` 能修的东西**——病根是被调用的符号没了，不是猴补写得不对。报告里要把这 7 条**如实列为预期红**，不得写成「全绿」。
 
 > ⚠️ **还有一个更早的中间态：Task 4 交付态到本任务完成之间，`list_mail` 返回的是「整个收件箱」（Task 4 复审发现，控制器 2026-09-21 裁定）。**
 > - **机制**：Task 4 把 `select_scope` 改成比 `_internaldate`；而**此刻仍然在线**的 OWA 路径产出的条目**没有这个键**（`backend/mail_client.py:134` 给的是 `DateTimeReceived`）⇒ 新 `select_scope` 一律 **fail-open 全留** ⇒ `collect_items` 的翻页循环（`:416-427`）把 FindItem 的整个收件箱原样返回。
@@ -1243,6 +1283,27 @@ git commit -m "feat(mail): IMAP 取信层的纯函数（RFC 2047 解码 / MIME �
 > - **裁定：接受这个中间态，不加临时防线。** 理由三条：① Task 5/6 连续执行、中间不交付；② 失败方向是**多给**（不是丢件、不是静默错误值）；③ 只读路径，不置已读、不落盘、不泄凭据。代价是多花 LLM token（`trim_bodies` 的下限机制会让总额随 n 线性增长）。
 > - **为什么不加「无 `_internaldate` 时退回旧口径」那种临时防线**：那是一段只活一个任务的代码，要写、要测、还要**记得删** —— 忘了就是永久的第二套筛选语义，比多花的 token 贵得多。且它会让 Task 5 的删除面变得不干净。
 > - **操作后果（必须遵守）**：**本任务完成之前，不要启动 App、不要做端到端手工验证**（Task 9 收尾清单里「点刷新邮件能看到真实邮件」那条属于 Task 9 之后）。中间态要跑就只跑单测。
+
+> 🔴 **本任务最大的一个陷阱：RED 阶段跑新用例，会驱动旧 OWA 实现去动真实浏览器。**（Task 5 实施时**真的发生了一次**，控制器 2026-09-21 补记）
+> - **机制**：TDD 要求**先写测试再改实现**。此刻 `mail_client.list_mail` **还是旧的 OWA 实现**，而新用例是围绕 `_install(...)` 换上的 IMAP 替身写的 —— 替身装了，旧实现却**根本不看它**，照样走 `banweb._on_browser_thread(...)` → `_ensure_mail_page()` → **真实 Chrome**。`tests/conftest.py` 的 socket 守卫拦不住它（浏览器是独立进程，不是 Python 发的 socket）。
+> - **实测后果（Task 5 复审 Important 3 修正后，控制器 2026-09-21 逐行核过 banweb 源码）**：
+>   1. **附着（attach）是确定发生的**，不是「可能」。邮件路径必经
+>      `_ensure_mail_page` → `_ensure_browser` → `_chrome` 的 `connect_over_cdp("http://127.0.0.1:9339")`（`backend/banweb.py:919`）。
+>      实施者报告里「我没有、也不会去启动/附着/杀死任何浏览器」这句**与它自己承认的路径自相矛盾** —— 要走到邮件页就必须附着。**如实记为「确定附着过」。**
+>   2. **开/切标签页很可能发生**：`_find_mail_page` 会 `ctx.new_page()`（`backend/banweb.py:668`），随后 `_capture_token` 对邮件页 `goto(MAIL_URL)`。**记为「很可能对那个浏览器开过一个邮件标签页」。**
+>   3. **最重的一条：`kill -9` 的路径已经被武装，只差 60 秒。** `_on_browser_thread` 的看门狗在
+>      `fut.result(timeout=BROWSER_OP_TIMEOUT)`（`backend/banweb.py:770`）上等 **`BROWSER_OP_TIMEOUT = 180`** 秒（`:77`）；
+>      超时（`concurrent.futures.TimeoutError`）→ 第 0 次尝试走 `_recover_browser_subprocess()`（`:777`）→
+>      **无条件**调 `_kill_zombie_chrome()`（`:716`）→ `lsof -tiTCP 9339 -sTCP:LISTEN` 拿 PID 逐个 `kill -9`，
+>      再 `pkill -9 -f <PROFILE_DIR>` 兜底（`:839-873`）。**那会杀掉用户正在用的 PID 24178。**
+>      那次运行是在 **120 秒**被 `TaskStop` 掐断的 —— **120 < 180，所以杀进程那一步根本没轮到**。
+>      **是「掐断得够早」而不是任何安全设计挡住了它。**
+>      （`_kill_zombie_chrome` 自己的 docstring 写着「只在该端口已连不上（connect_over_cdp 失败）时才会走到这里，不会误杀活窗口」
+>      —— 这句话对**看门狗超时这个调用点不成立**，那是个**无条件**调用。该假声明已登记为终审待办，见 ledger Ruling AX。）
+>  4. **修正后的完整记述**：「确定附着过；很可能开过/切过一个邮件标签页；一条 `kill -9` 活窗口的路径已武装、
+>      靠 120 秒的掐断赶在 180 秒看门狗之前活了下来。」**报告原记述对「标签页状态」这一面是准的，作为「可达副作用清单」则偏窄。**
+> - **因此本任务的 RED 与全部变异运行，必须先禁掉 banweb 的浏览器边界再跑**（把 `banweb._ensure_mail_page` / `_on_browser_thread` / `_retry_once` 临时替换成抛异常的东西）。**它不是卫生习惯，是承重的**：它挡的不只是「多发一次导航」，而是上面第 3 条那条 `kill -9` 活窗口的路径（长跑必炸，且**没有任何超时会救你** —— 看门狗本身就是那个杀手）。这条守卫只在 RED/变异阶段必要：GREEN 之后 `mail_client` 已经不再 import `banweb`，浏览器路径从取信层消失。
+> - **教训（本仓通用）**：对一个**正要被替换掉的 I/O 层**跑新用例，先假设旧实现会做出它最擅长做的坏事 —— 先把那条边界堵上，再跑。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -1726,6 +1787,12 @@ def list_mail(days: int = DEFAULT_DAYS) -> list[dict]:
 
 同时把模块 docstring 整段重写，说明：这条路是 IMAP、为什么放弃 OWA（指向旧 spec §3 的实测）、只读三件套是什么。
 
+> ⚠️ **已知缺口，故意留到 Task 6 补：头部批次循环没有节流。** `_do_list` 的
+> `for chunk in _chunks(uids, HEADER_BATCH)` 逐字照抄自本计划，**里面没有 `time.sleep(_THROTTLE)`**；
+> 而全局约束写着「批量 `UID FETCH` 之间留间隔」。这是**计划自身的矛盾**（Task 5 实施者按 brief 逐字实现、
+> 没有自行加一段零覆盖的 sleep，处置正确）。缺口的归属与补法见 **Task 6 Step 3b** ——
+> 放在那里是因为 `_THROTTLE` 与 `time` 到 Task 6 才第一次真正被消费，同一步里连用例与变异一起补齐。
+
 **注意**：旧的 `list_mail` 里那段关于「归一化位置与 `_target_closed` 重试」的长注释**整段作废**，随 OWA 层一起删掉 —— 那个机制在 IMAP 下不存在。
 
 - [ ] **Step 4: 跑测试**
@@ -1748,7 +1815,18 @@ def list_mail(days: int = DEFAULT_DAYS) -> list[dict]:
 | `days + 1` → `days` | `test_list_mail_search_since_is_coarsened_by_one_day` |
 | `_uidvalidity_of` 读不到时返回 `"0"` 而不是报错 | `test_missing_uidvalidity_raises` |
 | `header_item` 里 `subject` 改用 `msg.get("Subject") or ""`（不解码） | `test_list_mail_returns_contract_items` |
-| `_fetch_headers` 的 FETCH 命令去掉 `INTERNALDATE` | `test_list_mail_fetches_internaldate` 与 `..._uses_internaldate_when_date_header_missing` |
+| `_fetch_headers` 的 FETCH 命令去掉 `INTERNALDATE` | `test_list_mail_fetches_internaldate`（**只咬得动这一条**，见下） |
+| `_fetch_headers` 不调 `parse_internaldate`（`internaldate = None`） | `test_list_mail_uses_internaldate_when_date_header_missing` |
+
+> **为什么第 9 行必须拆成两行（Task 5 实测后拆分，控制器 2026-09-21）**：原写成「改命令」一行、
+> 期望两条都红，**实测只红一条**。原因在替身而不在被测代码：`_FakeIMAP.uid` 的 FETCH 分支
+> **无条件**把 `INTERNALDATE "…"` 拼进它返回的 meta blob，而 `_fetch_headers` 是**正则扫这个 blob**
+> 取 INTERNALDATE 的 —— 命令里写不写 INTERNALDATE，替身的回答一模一样。所以「改命令」这一行
+> 只能咬住「命令串里得有 INTERNALDATE」那条断言，够不到「拿它当退路」那条。
+> **该用例本身不弱**：把变异改成「不调 `parse_internaldate`」，它当场变红（`assert '' == '2026-09-17T20:00:00+00:00'`）。
+> **一般化的教训**：变异要喂到「断言真正比较的那个对象」上 —— 喂给一个**替身会忽略的输入**
+> （命令串、参数、字段名）时，替身的补全会让变异静默失效；而它表现为「用例不该红却没红」，
+> 最省事的处置（把用例删了或改成恒真）恰好会**拆掉真正的守卫**。
 | `_do_list` 删掉 `return select_scope(...)`（改成 `return items`） | `test_do_list_applies_select_scope` |
 | `_do_list` 里 `select_scope(items, now, days)` 的 `days` 写死成 `DEFAULT_DAYS` | `test_do_list_applies_select_scope` |
 | `_do_list` **不剥** `_internaldate`（返回时原样带着内部键） | `test_do_list_applies_select_scope`（末两条断言：键集合恰好四个、`_internaldate` 不在） |
@@ -1949,13 +2027,86 @@ def fetch_bodies(items: list[dict]) -> dict:
         raise MailError(f"读取邮件正文失败：{exc}") from exc
 ```
 
+- [ ] **Step 3b: 给 Task 5 的头部批次循环补上节流（控制器 2026-09-21 裁定加入；Task 5 §Step 3 的说明里已留指针）**
+
+**为什么落在本任务**：全局约束写着「批量 `UID FETCH` 之间留间隔」，而 Task 5 的 `_do_list` 逐字代码里**没有** `time.sleep(_THROTTLE)` —— 这是**计划自身的矛盾**。Task 5 实施者按 brief 逐字实现、没有自行加一段**零覆盖**的 sleep（处置正确，已在报告里报回）。`_THROTTLE` 与 `time` 到本任务才第一次被真正消费，所以连同**用例与变异**一起在此补齐 —— 一段没有任何用例钉住的 sleep 和没有它一样糟。
+
+**改 `backend/mail_client.py` 的 `_do_list`，批次循环从两行变四行：**
+
+```python
+        items: list[dict] = []
+        for n, chunk in enumerate(_chunks(uids, HEADER_BATCH)):
+            if n:
+                time.sleep(_THROTTLE)      # 批次之间留间隔（全局约束）
+            items.extend(_fetch_headers(conn, chunk))
+```
+
+**加一条用例**（放在 `tests/test_mail_client.py` 的列表一节，与 Task 5 的其它 I/O 用例同格式；它是 `test_fetch_bodies_batches_and_throttles` 的镜像）：
+
+```python
+def test_list_mail_batches_and_throttles(monkeypatch):
+    """51 封 → 2 批（HEADER_BATCH=50），批间有 sleep（全局约束：批量 UID FETCH 之间留间隔）。"""
+    sleeps = []
+    monkeypatch.setattr(mail_client.time, "sleep", lambda s: sleeps.append(s))
+    ids = [str(i) for i in range(51)]
+    fake = _install(monkeypatch, _FakeIMAP(headers={i.encode(): _hdr() for i in ids}))
+    mail_client.list_mail(7)
+    header_fetches = [c for c in fake.sent if c[0] == "uid" and c[1] == "FETCH"]
+    assert len(header_fetches) == 2
+    assert sleeps == [mail_client._THROTTLE]
+```
+
+> **两处要按实际文件核对，不符就以文件为准并在报告里写明**（Task 5 是照 brief 转录的，替身的名字或构造签名可能有细微差异）：`_FakeIMAP` 的构造参数名、`_hdr()` 的签名。**若实际差异会让这条用例变成「显然通过」，停下来报回**，别改成恒真的写法。
+
+- [ ] **Step 3c: 补上 `_uidvalidity_from_status` 的覆盖（Task 5 复审 Important 2，控制器 2026-09-21 裁定归本任务）**
+
+**为什么归本任务**：Task 5 交的 `_uidvalidity_from_status`（STATUS 退路）**零覆盖** —— 替身 `_FakeIMAP` 只定义了 `login`/`select`/`uid`/`logout`，**没有 `status`**，所以那条 `except Exception: return ""` 与 `typ != "OK"` 分支从来没有被执行过；唯一提到它的用例（`tests/test_mail_client.py` 里 `monkeypatch.setattr(mail_client, "_uidvalidity_from_status", lambda conn: "")` 那条）是把它**猴补掉**。而它是「主路径的形状假设若错了」与「用户看到一条硬错误」之间**唯一的**东西。改动落在同一个文件、你是下一个实现者，故在此补。
+
+**先给替身加一个 `status`：** 构造参数新增 `status_reply=("OK", [b'"INBOX" (UIDVALIDITY 12345)'])`，并加方法
+
+```python
+    def status(self, mailbox, what):
+        self.sent.append(("status", mailbox, what))
+        return self.status_reply
+```
+
+**两条用例：**
+
+```python
+def test_uidvalidity_from_status_parses_reply(monkeypatch):
+    """主路径（EXAMINE 的 untagged 响应）读不到时，退到 STATUS 再问一次。"""
+    _install(monkeypatch, _FakeIMAP(untagged={}))       # 主路径给不出 ⇒ 必须走退路
+    mail_client.list_mail(7)
+    assert mail_client._uidvalidity == "12345"
+
+
+def test_uidvalidity_from_status_rejects_non_ok(monkeypatch):
+    """非 OK 的 STATUS 回答绝不能被当成有效 UIDVALIDITY。"""
+    _install(monkeypatch, _FakeIMAP(
+        untagged={}, status_reply=("NO", [b"NO [SERVERBUG] UIDVALIDITY 99999 unavailable"])))
+    with pytest.raises(mail_client.MailError) as ei:
+        mail_client.list_mail(7)
+    assert "UIDVALIDITY" in str(ei.value)
+```
+
+> **第二条的 payload 是刻意选的**：里面**含一个像模像样的 `UIDVALIDITY 99999`**。这正是「漏掉 `typ != "OK"` 检查」会静默取到错值的那种输入 —— 换个纯文本报错（如 `b"boom"`）就咬不动了（正则匹配不到，退化成 `""`，结局仍是报错）。**别把它改简单。**
+
+**变异表补两行：**
+
+| 变异 | 应红的用例 |
+|---|---|
+| `_uidvalidity_of` 不再退到 `_uidvalidity_from_status`（读不到就直接 `return ""`） | `test_uidvalidity_from_status_parses_reply` |
+| `_uidvalidity_from_status` 去掉 `typ != "OK"` 检查 | `test_uidvalidity_from_status_rejects_non_ok` |
+
+> **`except Exception: return ""` 那条分支不单独覆盖**（控制器裁定，记录在案）：它 err 之后的**用户可见结局与「非 OK」完全相同**（都是 `""` → `_connect` 抛同一条 `MailError`），再写一条只是重复同一个结局。若你发现两者结局其实不同，**停下来报回**。
+
 - [ ] **Step 4: 跑测试**
 
 ```bash
 .venv/bin/python -m pytest tests/test_mail_client.py -q
 ```
 
-预期：全绿。
+预期：全绿。**并且全量 `pytest -q` 也要全绿** —— Task 5 留的那 7 条预期红（`tests/test_main.py` 的 `test_mail_summarize_*`，`AttributeError: … has no attribute 'fetch_bodies'`）在本任务用同名同签名补回后**必须自动愈合**。若全量还有红，**先确认那 7 条确实已绿**，再查别的：`backend/main.py:1029` 的运行时断裂（Task 5 的中间态）也到这一步才算治好。**从本任务起，全仓不应再有任何预期红**（Task 7 会另外删掉它自己那批用例，那是有意的）。
 
 - [ ] **Step 5: 变异验证**
 
@@ -1966,6 +2117,7 @@ def fetch_bodies(items: list[dict]) -> dict:
 | 去掉 UIDVALIDITY 比对 | `test_fetch_bodies_raises_on_uidvalidity_change` |
 | 去掉 `MAX_BODY_CHARS` 截断 | `test_fetch_bodies_truncates_huge_body` |
 | 空输入时不早返回（改成照样连） | `test_fetch_bodies_empty_input_does_not_connect` |
+| 去掉 `_do_list` 批次间的 `if n: time.sleep(_THROTTLE)`（Step 3b 加的） | `test_list_mail_batches_and_throttles` |
 
 - [ ] **Step 6: 提交**
 
@@ -2016,11 +2168,25 @@ grep -rn "_find_mail_page\|_ensure_mail_page" backend/ tests/ tools/ frontend/
 
 **同时删掉 `tests/test_banweb.py` 里那 4 条用例**（文件头的 `Test:` 行写的就是「只删，不新增」）。
 **为什么必须删而不是留着**：函数没了，它们会对 `banweb._find_mail_page` 取属性 ⇒ `AttributeError` ⇒
-用例 **ERROR**，Step 4 的「全绿」就不可能成立。
+用例**红**，Step 4 的「全绿」就不可能成立。
+**标签是 `FAILED`，不是 `ERROR`**（控制器 2026-09-21 实测，pytest 9.1.1）：异常发生在**调用阶段**（用例体内），
+`ERROR` 只留给 fixture/收集阶段的异常。三种形状都实测过 —— 直接取属性、`monkeypatch.setattr` 取属性、
+以及**被 `pytest.raises` 包住**的取属性（第 4 条用例正是这种：`AttributeError` 不是 `BanwebError`，
+所以 `pytest.raises` 以「抛了别的异常」判红）—— **三种一律记 `FAILED`**。别按 `ERROR` 去找那 4 条红。
 **别删错邻居**：`:693-711` 那三条（`test_find_page_never_returns_a_mail_login_relay_tab` /
 `test_find_page_prefers_aims_page_over_mail_tab` / `test_find_page_never_returns_a_mail_tab`）与
 `:797-810` 的 `test_poll_with_only_mail_tab_must_not_close_browser` 覆盖的是**`_find_page` 的邮件域排除**，
 是本任务**要保住**的东西（见上方 ⚠️），它们引用的名字里带 `mail` 但**不引用**这两个被删的函数。
+`:718` 的 `test_find_page_returns_none_when_no_pages`（无参数、包在 `test_find_page(...)` 里）同样要保住。
+
+**删除边界的精确值**（控制器 2026-09-21 逐行读过 `tests/test_banweb.py:716-762`）：
+保留面占 `:693`–`:721`，删除面占 `:722`–`:761`，**连续不交错**。
+最后一条用例的代码行是 `:759`，其后 `:760`/`:761` 是它的两个尾随空行，`:762` 是下一段注释
+`# --- 轮询（launch=False）…`。**要删到 `:761`**（含尾随空行）—— 只删到 `:759` 会让 `:720/:721`
+那两个空行与 `:760/:761` 叠成**三个**空行，是可见的整洁度退化。
+**删前先确认这 4 条没有 `@pytest.mark` 之类的装饰器**（控制器已核：这 4 条都没有；但同仓别处的用例有，
+凭印象按 `def` 行删会留下孤儿装饰器 ⇒ `SyntaxError`）。删完用
+`pytest --collect-only -q tests/test_banweb.py` 确认收集正常，再用 `git diff` 确认**只少了这 4 个函数**（无别的行被动过）。
 
 - [ ] **Step 3: 确认 `_find_page` 的邮件域排除**还在
 
@@ -2030,13 +2196,43 @@ sed -n '/^def _find_page/,/^def /p' backend/banweb.py | grep -c "_is_mail_url"
 
 预期：**2**（第一段循环的 `continue` 和兜底循环的条件）。少于 2 就是删过头了。
 
+- [ ] **Step 3b: 证明保留下来的守卫用例**不空转（本任务删掉 4 条用例，必须证明留下的那 4 条真的在咬）
+
+本任务删掉 4 条用例之后，「`_find_page` 的邮件域排除受保护」这句话就**全靠**剩下那 4 条了。
+**「它们还在且是绿的」不等于「它们在咬」** —— 一个恒真的守卫和一个没写一样。所以要**变异一次**证明：
+
+**变异必须落在第二段兜底循环，绝不能落在第一段**（控制器 2026-09-21 实测后改正 —— 原因见下面的引用块）：
+把 `_find_page` 第二段的 `if not _is_mail_url(p.url):` 改成 `if True:`，跑 `tests/test_banweb.py`，
+**预期至少这三条红**：`test_find_page_never_returns_a_mail_login_relay_tab`、
+`test_find_page_never_returns_a_mail_tab`、以及本任务点名要保住的
+`test_poll_with_only_mail_tab_must_not_close_browser`（第三条红在 `DID NOT RAISE BanwebError`）。
+然后**立刻还原**，并用 `shasum -a 256 backend/banweb.py` 与还原前的值对一次。
+
+> **第一段循环的那个 `continue` 是行为空操作 —— 摘掉它照绿是正确答案，不是守卫失效**
+> （Task 7 实施者 2026-09-21 实测；控制器同日复核源码后确认）。
+> 第一段只在 `p.url.startswith(BANWEB) or p.url.startswith(LOGIN_HOST)` 成立时才 `return p`，而
+> `MAIL_HOSTS`（`outlook.cloud.microsoft` / `outlook.office.com` / `login.microsoftonline.com`）与
+> `{BANWEB, LOGIN_HOST}`（`banweb.cityu.edu.hk` / `auth.cityu.edu.hk`）**按前缀两两不相交**
+> （`backend/banweb.py:33-35` 把这条写成了不变式，`tests/test_banweb.py:673` 有用例守着）
+> ⇒ 那个 `and not _is_mail_url(...)` 合取项对**每一个会 `return p` 的页**恒为真，摘掉它不改变任何输入下的返回值。
+> **它是冗余防御，保留**（与它的注释、不变式用例是一套的）—— 但**不能拿它当变异**。
+> 本计划原先写的正是它 ⇒ 那是**计划缺陷**，由控制器 2026-09-21 改正。
+>
+> **整道邮件域保护确有活性，但它全部由第二段兜底循环承载** —— 所以变异要打第二段。
+
+- 变异纪律照「变异验证的执行纪律」一节：**每步清缓存或给独立的 `PYTHONPYCACHEPREFIX`**；
+  锚点命中数必须 == 1；**活性探针要用那一节里给的递归指纹公式**（`repr(co_consts)` 与 `dis` 对含推导式的函数都不稳定）。
+- **若四条全绿**（一条都不红）⇒ **停下报回**：说明这道守卫名存实亡，那是比删错用例更严重的事。
+- 报告里写清：变异后**哪条**用例红了、红的断言是什么。**「红了」不足以断言被判別住** ——
+  要红在预期的那条上、且原因正是该变异。
+
 - [ ] **Step 4: 跑测试**
 
 ```bash
 .venv/bin/python -m pytest tests/test_banweb.py -q
 ```
 
-预期：全绿（那 4 条引用已删函数的用例在 Step 2 一并删掉了；**若还在 ⇒ 它们 ERROR，全绿不可能成立**）。**特别注意这 4 条必须仍然绿**，它们是邮件域排除的守卫：
+预期：全绿（那 4 条引用已删函数的用例在 Step 2 一并删掉了；**若还在 ⇒ 它们红（标签 `FAILED`），全绿不可能成立**）。**特别注意这 4 条必须仍然绿**，它们是邮件域排除的守卫：
 
 - `test_find_page_never_returns_a_mail_tab`
 - `test_find_page_never_returns_a_mail_login_relay_tab`
@@ -2230,12 +2426,52 @@ git add frontend/ tools/check_mail_frontend.mjs
 git commit -m "feat(mail): 设置页 Gmail 凭据一组；去掉 is_read 渲染（转发件恒未读，是假信息）"
 ```
 
+### 执行后的追加（2026-09-21，Task 9 修复轮 1 / commit `53a06b0`）—— **F4：邮件失败路径不再开 AIMS 登录窗**
+
+**本任务漏了一件「没人认领的行为」。** 上面的步骤只规定了「删 `is_read` 渲染」和「加 Gmail 设置页一组」，
+**从头到尾没说邮件的*失败*路径该做什么** ⇒ OWA 时代的行为原样继承了下来：
+取信失败 ⇒ 叙述「多半是 Okta 会话失效 —— 与 AIMS 同一个会话」⇒ `offerManualLogin(...)`
+⇒ 弹「要打开 Chrome 窗口手动登录吗」⇒ `banweb/open_login`。
+
+新机制下这话已经不成立：**新取信层没有浏览器、不依赖 AIMS 登录态**
+（spec「收益是结构性的」表：依赖 AIMS 登录态 = **否**）。
+spec §11 逐字要求「应用专用密码失效 | **认证失败文案直接指向设置页重填**；**不重试**」，
+而后端 `backend/mail_client.py` 的 `_auth_msg` **本来就已产出合格文案** ——
+缺的不是文案，是**前端拿这条消息干了什么**：它去开登录窗，而不是把消息给用户看。
+
+**改动（修复轮 1 已落地）**：
+
+| 位置 | 改前（旧行号，改后已位移） | 改后（**当前行号，已核**） |
+|---|---|---|
+| `initMailTab` 的续延 | `.then(ok => { if(!ok) offerManualLogin(mailState.error) })` | `frontend/app.js:3077` `return loadMail();` —— 续延整条删掉 |
+| `loadMail` | 无返回值 | `frontend/app.js:3082-3096` 返回布尔；失败时 `mailState.error = r.error \|\| t("mail.load_failed")` 后 `return false`（**不再自己发问**） |
+| `refreshMail` | `try{…}catch(err){ if(err) offerManualLogin(err) }` / 取信阶段失败 ⇒ `offerManualLogin(failMsg)` | `frontend/app.js:3101-3103` 只剩 `await withBusy(t("mail.refresh"), $("btnMailRefresh"), loadMail);` —— 续延整条删掉 |
+| 注释 ×2 | 「多半是 Okta 会话失效 —— 与 AIMS 同一个会话」「邮箱与 AIMS 共用同一个 Okta 会话」 | `frontend/app.js:3098-3100` 改述为「取信走 IMAP，没有浏览器、也不依赖 AIMS 登录态」 |
+| `backend/main.py` 的 `mail_summarize` docstring | 「前者其实是 Okta 会话失效（该去重登）」 | 改述补救动作；**`reason` 键保留**（前端仍要区分取信失败与 AI 失败） |
+| `tests/test_main.py` 的 docstring | 「前端据此才敢发手动登录问询：这一段失败多半是 Okta 会话失效」 | 同上改述 |
+| `tools/check_mail_frontend.mjs` | 无 | **新增 I 段（9 条断言，总数 52）**：钉住邮件失败路径不发 AIMS 登录问询 |
+
+呈现路径不变：`renderMail()` 的错误卡（`frontend/app.js:3116-3117`）本来就是 `mailState.error` 的渲染出口，
+后端 `_auth_msg` 那条「请到设置页检查 Gmail 地址与应用专用密码」原样落到用户眼前 —— **所以不需要新文案**。
+
+> ⚠️ **组合坑（本轮最容易踩的一条）：`offerManualLogin` 被两条线共用。**
+> AIMS / Canvas 的失败路径（`frontend/app.js` 的 `:205`、`:1885`、`:1923`、`:2393`）**一个字都不许动** ——
+> 那里「Okta 会话失效」是**真的**，仍应发手动登录问询。**改一处必须证明另一处没坏。**
+
+> **教训（写给下一个写计划的人）：计划没规定的地方，旧行为会原样继承。**
+> 换机制时，旧机制里**每一处提到旧机制的话**都要重新过一遍 —— 不只代码，还有注释、docstring、
+> 以及「失败之后该把用户引到哪」这类**没有代码承载的承诺**。
+> 判断办法很土但有效：**把新机制的硬约束逐条对着旧代码问「这条现在还成立吗」**，
+> 而不是只对着计划里写了的东西问。
+
 ---
 
 ## Task 9: 收紧断言 + 全量验证
 
 **Files:**
 - Modify: `tests/test_main.py`
+- Modify: `tests/test_mail_client.py`（**仅 Step 2b/2c**：堵 Task 6 复审查出的两个覆盖缺口 + 补 Task 5 复审留下的四条）
+- Modify: `backend/mail_client.py`（**仅 Step 2b 第 (3) 项**：加一句前提注释，不改逻辑）
 
 **Interfaces:**
 - Consumes: 全部
@@ -2266,6 +2502,25 @@ git commit -m "feat(mail): 设置页 Gmail 凭据一组；去掉 is_read 渲染�
 
 **改法**：保留这段话的**用意**（它讲的是「为什么原先那句 `assert "token" not in json.dumps(body)` 是真空断言」，这条教训与实现无关、仍然成立），把机制部分改写成新实现的事实 —— 新取信层里**根本不存在 bearer token**（Gmail 只读三件套，凭据在钥匙串、只在 `credentials.get_gmail` 里取用），响应里能出现的只有 `id/subject/sender/received` 四个键加 `index`/`body`。**别再写行号**：行号会随每次改动漂移，写函数名/用例名。若找不到对应的字段级用例，就指到 `test_header_item_shape_exactly_four_keys`（Task 4 新增）。
 
+**⚠️ 同一处毛病还有第二份，别只改一份**（控制器 2026-09-21 全仓扫描发现 —— 这就是 memory 里「修一处 ≠ 修一类」那一条）：
+`tests/test_main.py:1880-1889` 是**另一个用例**里的同族注释，同样两处失效：
+
+- `:1880` 仍写「邮箱 **bearer token** 只活在 mail_client 的 HTTP 层（header）」—— 新取信层里没有 bearer token。
+- `:1888-1889` 明写「**用 `<=` 而不是 `==`**：端点允许往后加字段（本轮的失败路径就加过 `reason`）」——
+  **Step 1 一旦把 `:1890` 改成 `==`，这两行就成了对下面代码的直接否认**（注释说用 `<=`，代码是 `==`）。
+
+⇒ 一并改写。机制部分按新实现重写；`<=` → `==` 的用意**改写成「刻意收紧」**，但**必须说准它多咬的是哪一头**：
+`<=` 只在**多出白名单外的键**时变红，**少了一个白名单内的键**它照样绿 —— `==` 正是为了把后者也咬住
+（Task 9 复审实测双向：元素塞 `zzz_extra` ⇒ `<=` 与 `==` **都红**；元素少 `index` ⇒ `<=` 绿、`==` 红）。
+红了就来这里显式决定「这个字段该不该出现」，而不是让它静默通过。
+（原来那句「允许往后加字段」的用意，正是 Task 5 删掉 `is_read` 时**没有任何用例变红**的原因 ——
+那是**少键**：`<=` 放行，`==` 会红。）
+**别写成「白名单就是要在加字段时变红」** —— 那句话方向是反的，且正是本计划原先逐字指定的措辞（Task 9 复审 F2）。
+
+**不要**顺手删 `backend/mail_client.py:8-13` 里的 bearer / OWA 字样 —— 控制器核过，那是**刻意留下的决策记录**
+（「为什么是 IMAP，而不是继续截获 OWA 的 bearer token」），是**活的文档**，不是残留。
+**残留与理由长得一样，所以要逐个打开看它是在陈述历史、还是在陈述现状。**
+
 - [ ] **Step 2: 清掉 test_main.py 里其余 `is_read`**
 
 ```bash
@@ -2273,6 +2528,175 @@ grep -n "is_read" tests/test_main.py
 ```
 
 把各处 fixtures 里的 `"is_read": …` 逐处删掉。**每删一处就确认该用例的断言不依赖它。**
+
+- [ ] **Step 2b: 堵掉 Task 6 复审查出的两个覆盖缺口**（`tests/test_mail_client.py`），外加一条注释澄清
+
+前两处**不是**本任务「顺手改进」，是复审实测出来的**真缺口**，且都属本任务的主题（收紧断言）：
+
+**(1) `tests/test_mail_client.py:668` 是一条恒真断言。** 现在是：
+
+```python
+    assert fetches
+    assert all("BODY.PEEK[]" in str(c[-1]) for c in fetches)
+```
+
+第二行复述的正是**上一行 `fetches` 的筛选条件** ⇒ 它永远不可能是红的那一行（实测：改成 `BODY[]` 时红的是
+`assert fetches`，报 `E assert []`）。**删掉这第二行**，或改成与筛选条件**不同口径**的断言。
+
+**2026-09-21 实际落地的形状**（`tests/test_mail_client.py:713-718`，Task 9 修复轮 1；**按这个来**）：
+
+```python
+    fetches = [c for c in fake.sent if c[0] == "uid" and c[1] == "FETCH"]
+    assert fetches, "没发出任何 FETCH，下面的断言是空转的"
+    assert all("BODY.PEEK" in str(c[-1]) and not re.search(r"BODY\[", str(c[-1]))
+               for c in fetches), f"有 FETCH 不是 PEEK 取件：{fetches}"
+    assert any("BODY.PEEK[]" in str(c[-1]) for c in fetches), \
+        f"正文一条 FETCH 都没发（header FETCH 把列表填满了）：{fetches}"
+```
+
+> ⚠️ **`any(...)` 必须放在 `all(...)` 之后 —— 顺序承重，不是排版。**（Task 9 修复轮 1 裁定，控制器采纳）
+> 两条守的是**两件不同的事**：`all` 守「没有裸 `BODY[` 的取件」，`any` 守「**正文**取件真的发生过」。
+> 该用例先调 `list_mail(7)`，那一步自己发的 **header** FETCH
+> （`(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)] INTERNALDATE)`，`backend/mail_client.py:330`）
+> 本身是 peek、但**不含**子串 `BODY.PEEK[]` ⇒
+> · 变异「正文一条都不发」⇒ `all` **照样通过**（header 那条满足它），红在 `any`
+>   （Task 9 复审实测：补这条锚之前，该变异下用例 **1 passed** —— 假阴性）；
+> · 变异「正文 `BODY.PEEK[]`→`BODY[]`」⇒ 两条都不满足，红在**先写的** `all`。
+> **把 `any` 挪到 `all` 前面，第二条变异的红就全落到 `any` 上、`all` 永远走不到** ——「各红各的行」就没了。
+
+> ⚠️ **也别把 `any` 那句写成 `all("BODY.PEEK[]" in str(c[-1]) for c in fetches)` —— 未变异时就为假。**
+> （2026-09-21 Task 9 实测报回；控制器的派发曾把它写成 `all(...)`，**推翻了本计划这段本来正确的文字**，
+> 实施者跑出来顶回 —— **本会话第三次同一类错**。）
+> **先确认未变异时绿，再谈变异红。**
+>
+> 一般规律：**筛选条件与断言条件同口径 ⇒ 恒真**（这正是本条要修的东西），
+> 而把口径改宽成 `all(...)` 又会把**同一个测试里别的命令**卷进来 —— 两头都要防。
+
+**(2) `tests/test_mail_client.py:699` 只钉长度、不钉哪一头。** 现在是
+`assert len(out["1"]) == mail_client.MAX_BODY_CHARS` ⇒ 复审在 `/tmp` 实测
+**把 `body[:MAX_BODY_CHARS]` 写成 `body[-MAX_BODY_CHARS:]` 照绿（1 passed）**，
+而用户拿到的是邮件**结尾**而不是开头。
+把关：让 fixture 正文**首尾可区分**，断言**具体的前缀串**而不是只断长度：
+
+```python
+    huge = "A" * 199_999 + "B" * 10_000          # 总长 209_999，首尾形状完全不同
+    ...
+    assert out["1"] == "A" * 199_999 + "B"       # 长度 200_000，且钉住"是开头不是结尾"
+```
+
+**这个期望值是字面量、不是拿 `huge[:MAX]` 现算的** —— 现算就又是自证。控制器的算术实测：
+`huge[:200_000] == "A" * 199_999 + "B"` 为 **True**（长度 200_000 ✓），
+而 `huge[-200_000:]`（即那条变异）≠ 该期望 ⇒ **变异会红**。
+
+两处改完各跑一次聚焦，并各**变异一次**证明它们是承重的：
+把第一处的 `BODY.PEEK[]` 改回 `BODY[]`（**删掉恒真那行后，红必须落在新断言上**）；
+把第二处的 `body[:MAX_BODY_CHARS]` 改成 `body[-MAX_BODY_CHARS:]`（**改前绿、改后红**，
+按「变异验证的执行纪律」：锚点命中数 == 1、活性探针用递归指纹、跑完还原并核 sha256）。
+
+**(3) 一条注释澄清**（`backend/mail_client.py`，复审判定「不是缺陷、但值得写明前提」）。
+`_do_bodies` 的 UIDVALIDITY 核对是 `if _uidvalidity and uidvalidity != _uidvalidity:` ——
+**进程内从未 `list_mail` 过就调 `fetch_bodies` 时，这个核对会被静默跳过**（模块级 `_uidvalidity` 还是空串）。
+当前生产不可达（唯一调用点 `backend/main.py:1026-1029` 在同一次请求内先 `list_mail`），所以**不改代码**，
+只在那一行上方补一句注释说明这个前提，否则下一个人会以为它无条件生效：
+
+```python
+        # 前提：同一次刷新里 list_mail 已经先跑过。进程内第一次就直接调 fetch_bodies 时
+        # `_uidvalidity` 还是空串，这里的核对会被跳过（生产路径不会这样调）。
+```
+
+**这一处只加注释、不改逻辑**（改逻辑会让 UIDVALIDITY 的语义与 brief 的逐字实现分叉）。
+
+- [ ] **Step 2c: 补上 Task 5 复审留下、却漏进本计划的那几条**（`tests/test_mail_client.py`）
+
+这几条在 Task 5 结束时**被记进了 ledger、判给了本任务，却漏进了本计划** ——
+控制器 2026-09-21 拿 ledger 与 plan 对账时才发现（见 ledger「漂移」条）。都属本任务主题（收紧断言 / **除锈**）。
+**行号由控制器 2026-09-21 逐条打开文件核过**（不是从 ledger 转抄 —— ledger 里那条自己的引用就把行号写偏了）。
+
+> ⚠️ **控制器自纠（2026-09-21，同日）**：本步骤**第一版只补了两条断言 + UTC 那条，漏掉了下面的 (4) 错字** ——
+> 也就是说，**同一类漏项在「补漏」这一步里又发生了一次**。发现方式是写完 brief 后**回头 grep 每个行号**：
+> `grep ":446" task-9-brief.md` **零命中**。⇒ 记一条：**做完「补漏」后，要拿每个被补的锚点回 brief 里搜一遍**，
+> 确认它真的落地了。补漏本身也需要一道验证。
+
+**(1) `tests/test_mail_client.py:121` `test_never_issues_mutating_commands` 是空转的否定式断言。**
+它两条断言全是否定式（`assert bad == []`、`assert not any(...)`）⇒ `list_mail` 若**一条命令都不发**，
+两条**同时恒真**。补正例锚，证明这次运行真走到了「可能发 STORE/MOVE」的那段路：
+
+```python
+    assert any(c[0] == "uid" and c[1] == "SEARCH" for c in fake.sent), \
+        "连 SEARCH 都没发，下面的否定式断言是空转的"
+    assert any(c[0] == "uid" and c[1] == "FETCH" for c in fake.sent), \
+        "连 FETCH 都没发，下面的否定式断言是空转的"
+```
+
+**(2) `tests/test_mail_client.py:249` `test_list_mail_returns_empty_without_fetching` 名不副实。**
+用例名与 docstring 都承诺「不发 FETCH」，断言里却**没有一条**在核这件事的另一面 ——
+只钉了返回值 `== []`（`_do_list` 若在 SEARCH 之前就 `return []`，这几行照样绿）。
+补一条锚，证明它**确实发过 SEARCH**，即站到了 FETCH 本该出现的位置前一步：
+
+```python
+    assert any(c[0] == "uid" and c[1] == "SEARCH" for c in fake.sent), \
+        "连 SEARCH 都没发，'不发 FETCH' 是空转的"
+```
+
+**(3) `tests/test_mail_client.py:262` 的断言跨 UTC 午夜会偶红 —— 冻住时钟，改成字面量期望。**
+现在是 `assert since.date() == (datetime.now(timezone.utc) - timedelta(days=8)).date()`：
+左边由 `list_mail` **调用期间**的时钟决定，右边由**断言执行时**的时钟决定，两者差着整个 `list_mail` 的耗时
+⇒ 恰好跨 UTC 午夜就差一天 ⇒ 红（概率 ~ε/日，ε = 该调用的毫秒级耗时）。这是**真**偶红，不是理论上的。
+
+**不要**改成「接受两个候选日期」那种写法 —— 控制器 2026-09-21 推过一遍，**它放行真缺陷**：
+`(T-7d)` 与 `(T_a-8d)` 只差 `1d-ε`，当 `T_a-8d` 落在 UTC 午夜之后 ε 之内时两者落在同一日
+⇒ **`days + 1` 写成 `days` 的那个 off-by-one 照样绿**。那等于「偶红没了、偶漏来了」。
+**改成冻结时钟 + 字面量期望**，偶红与偶漏**一起**消失：
+
+```python
+_FIXED_NOW = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
+"""冻结的「现在」：取 UTC 正午 —— 离 UTC 午夜最远；且 HKT（UTC+8）= 当日 20:00，
+   两种时区下同一天，所以期望值不受「代码按哪个时区格式化」影响。"""
+
+
+class _FrozenDateTime(datetime):
+    """只冻结 now()，strptime / 算术 / 比较全部继承 —— 不碰 datetime 模块本身。"""
+
+    @classmethod
+    def now(cls, tz=None):
+        return _FIXED_NOW if tz is None else _FIXED_NOW.astimezone(tz)
+```
+
+放在该用例紧上方（与 `_body_msg` 贴在它那批用例旁的既有先例一致）。用例改成：
+
+```python
+def test_list_mail_search_since_is_coarsened_by_one_day(monkeypatch):
+    """SINCE 放宽一天：它按日粒度且按服务端时区（spec §5.3）。"""
+    fake = _install(monkeypatch, _FakeIMAP(headers={}))
+    monkeypatch.setattr(mail_client, "datetime", _FrozenDateTime)
+    mail_client.list_mail(7)
+    search = next(c for c in fake.sent if c[0] == "uid" and c[1] == "SEARCH")
+    assert search[-1] == "03-Sep-2026"
+```
+
+**这个字面量的来历**（控制器 2026-09-21 按 `backend/mail_client.py:359-360` 现算核过，不是抄的）：
+代码是 `(datetime.now(timezone.utc) - timedelta(days=days + 1)).strftime("%d-%b-%Y")`；
+`list_mail(7)` ⇒ `days + 1 == 8`；`2026-09-11 12:00Z - 8d = 2026-09-03 12:00Z` ⇒ `"03-Sep-2026"`。
+
+**换来的额外覆盖**（旧写法没有的）：`%d` 是**零填充**，把日期选在 `03` 就顺手钉住了填充
+（`%-d` ⇒ `"3-Sep-2026"`，而旧写法的 `strptime("%d-%b-%Y")` 对两种都接受、**钉不住**）；月份缩写 `Sep` 同样被钉住。
+
+**这个 patch 的边界**：`monkeypatch.setattr(mail_client, "datetime", …)` 只替换**该模块的全局名**，
+不动 `datetime` 模块，也不影响 `backend/mail_client.py:126` 的 `datetime.strptime`（子类继承，返回值仍是 `datetime`）。
+它不是本仓 Minor-6 那种「猴补全进程」的写法。
+
+**(4) `tests/test_mail_client.py:446` 的 docstring 有个错字：`根不到` → `根本走不到`。**
+在 `test_header_item_falls_back_to_internaldate` 的 docstring 里，原句是
+「`fmtLocal` 的 `!iso` 分支直接返回空串，**根不到** `new Date()`」—— 缺一个「本」字，读起来不成句。
+控制器 2026-09-21 打开该行核过。**只改 docstring 文字，不改任何代码、不改断言。**
+这一条**不需要变异**：它不改变任何行为，没有可咬的东西；改完确认那个词变成「根本走不到」即可。
+
+前三条改完各**变异一次**证明承重（按「变异验证的执行纪律」：清缓存 / 活性探针用递归指纹 / 锚点命中数 == 1）：
+(1) 在 `_do_list` 里、`conn.uid("SEARCH", …)` 之后插一句提前 `return []` ⇒ 第 (1)(2) 条的正例锚**必须红**
+（控制器已核过 `_do_list` 的命令序：`SEARCH` 在 `if not uids: return []` **之前**发出，
+所以 `headers={}` 时 SEARCH 确实发过 ⇒ 第 (2) 条的锚有东西可锚）；
+(2) 把 `backend/mail_client.py:360` 的 `days + 1` 改成 `days` ⇒ 第 (3) 条**必须红**（`04-Sep-2026`）；
+(3) 跑完立即还原并核 `shasum -a 256 backend/mail_client.py`。
 
 - [ ] **Step 3: 全仓确认无残留**
 
@@ -2309,8 +2733,11 @@ grep -rn "未读" backend/llm_client.py backend/main.py backend/mail_client.py t
 |---|---|
 | `backend/llm_client.py:258` | **改** —— 本步骤的对象 |
 | `backend/main.py:1003`（endpoint docstring「列出『未读 ∪ 最近 N 天』的学校邮箱邮件」） | **改** —— Task 5 不重写 `main.py`，这行会活下来，而新实现**没有未读过滤**了。改成「列出最近 N 天的学校邮箱邮件」 |
-| `backend/mail_client.py:314` | **不要动** —— Task 4 新写的正确说明 |
-| `tests/test_mail_client.py:562` | **不要动** —— Task 4 新写的正确说明 |
+| `backend/mail_client.py:222` | **不要动** —— Task 4 新写的正确说明（本表原写 `:314`，行号漂了，内容一致） |
+| `tests/test_mail_client.py:548` | **不要动** —— Task 4 新写的正确说明（本表原写 `:562`，同上） |
+| `backend/mail_client.py:20` | **不要动** —— 只读三件套的活说明（「未读状态必须原样保留 —— 我们只是看一眼，不是替他处理邮件」）。**本表原缺此行**，见下 |
+| `tests/test_mail_client.py:76` | **不要动** —— `_install` 的 docstring，说明 Task 4 的纯函数覆盖了「无未读分支」等三条。**本表原缺** |
+| `tests/test_mail_client.py:110` | **不要动** —— `test_all_fetches_use_body_peek`，说明 `BODY[]` 会改用户未读状态。**本表原缺** |
 | `backend/mail_client.py:11` / `:413` / `:437`、`tests/test_mail_client.py:216` / `:225` | **不应出现** —— 它们随 OWA 层在 Task 5 被删。若这里还看得到，说明 Task 5 没删干净 ⇒ **如实报回，不要顺手补删**（本任务不动 `mail_client.py`） |
 
 `backend/llm_client.py:256-260`（`trim_bodies` 的 docstring）里有一句：取信路径
@@ -2320,9 +2747,27 @@ grep -rn "未读" backend/llm_client.py backend/main.py backend/mail_client.py t
 通常大一个数量级 ⇒ 这段 docstring 赖以成立的「线性无上界」结论**依然成立，但触发得更容易**。
 
 改法（**只改这一句机制叙述，数字与结论都不动**）：把「只由邮箱里未读邮件的多少兜着」改成
-「只由最近 `DEFAULT_DAYS` 天内的全部邮件数兜着（旧实现的未读过滤已随 OWA 层删除，界比那时更松）」。
+「只由最近 `DEFAULT_DAYS` 天内的全部邮件数兜着（旧实现是 `未读 ∪ 最近 N 天`，是这条的**超集**；
+删掉未读分支后这个界只会**更紧**，不会更松）」。
+
+> **⚠️ 方向别写反（Task 9 复审 F3，控制器已回旧版本源码核实）。** 本计划原先逐字指定的是
+> 「旧实现的未读过滤已随 OWA 层删除，**界比那时更松**」—— **反了**。
+> `git show 2f27333:backend/mail_client.py`（OWA 版 `select_scope`）的 keep 条件是
+> 「**未读 ∪ 最近 days 天**」：`if not it.get("is_read"): out.append(it); continue` 然后才看窗口 ——
+> 即**并集**，是「只看窗口」的**超集**。集合更大 ⇒ 删掉未读分支后 n **只可能更小** ⇒ 界**更紧**。
+> （「更松」只有在拿**旧 docstring 自称的**「未读数」当参照物时才成立 —— 而那句话本身就是低估旧实现的。
+> 参照物有歧义时，按**能跑的旧代码**写，别按旧注释写。）
 **别顺手改「10×」那类数字** —— 它们是对的，见 [[test-specs-need-positive-assertions]] 的「改一处 ≠ 改一类」。
-这条 grep 的中文命中数**预期恰好 1 处**；多于 1 处 ⇒ 把每一处都看过再决定。
+这条 grep 的中文命中数**不是 1 处**。（控制器原写「预期恰好 1 处」，那是**照上面那张表数出来的**，
+而表当时只列了 5 个位置。）Task 9 实测 **7 处**（2026-09-21 实施者报回，控制器复核后把表补全）：
+**2 处改、5 处留**。判据是 brief 给的「这一处能不能说出它为什么必须留」，**不是数字** ——
+按「多于 1 处就是残留」去删，会删掉 4 处正确且承重的说明。
+
+跑完本步这条 grep 仍会命中 **6 处**（`llm_client.py` 1 + `mail_client.py` 2 + `test_mail_client.py` 3）：
+`main.py` 那处随改写消失，而 `llm_client.py` 改写后的句子里**故意保留**了「未读」二字
+（「旧实现的未读过滤已随 OWA 层删除」），其余 5 处就是上表点名的留项。**6 不是没删干净。**
+
+表里的行号以实施时实测为准（`:222`、`:548`）；**行号也是断言**，照旧行号去核会核到别的东西。
 
 - [ ] **Step 4: 全量测试**
 
@@ -2353,9 +2798,16 @@ node tools/check_mail_frontend.mjs && node tools/check_dom_ids.mjs && node tools
 - [ ] **Step 8: 提交**
 
 ```bash
-git add tests/test_main.py
+git add tests/test_main.py tests/test_mail_client.py backend/mail_client.py backend/llm_client.py backend/main.py
 git commit -m "test(mail): 收紧字段断言为集合相等；清掉 is_read 残留"
 ```
+
+> **本任务的改动落在那 5 个文件上，别只 stage 第一个。**（2026-09-21 实施者实测报回：Step 8 原先只写了
+> `git add tests/test_main.py` —— 那是本步骤刚写时的样子，Step 1 只碰一个文件；但本任务后来长出
+> Step 2b/2c（`tests/test_mail_client.py`、`backend/mail_client.py`）与 Step 3（`backend/llm_client.py`、
+> `backend/main.py`）⇒ 照字面只 stage 一个文件，其余 4 个文件的改动会**悬在工作区**。
+> 实施者的处置是拆成两个 commit（先按字面、再补一个），也可一次全 stage；两种都能接受，
+> **不可接受的是留下未提交的改动**。绝不 `git add -A`（`docs/` 与 `.superpowers/` 都不许进这次提交）。
 
 ---
 
