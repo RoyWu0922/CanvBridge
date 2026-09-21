@@ -719,46 +719,6 @@ def test_find_page_returns_none_when_no_pages():
     assert banweb._find_page(_Ctx([])) is None
 
 
-def test_find_mail_page_reuses_existing_tab():
-    ctx = _Ctx(["https://banweb.cityu.edu.hk/x",
-                "https://outlook.cloud.microsoft/mail/"])
-    assert banweb._find_mail_page(ctx).url.startswith("https://outlook.cloud.microsoft")
-    assert ctx.new_pages == 0
-
-
-def test_find_mail_page_opens_one_when_absent():
-    ctx = _Ctx(["https://banweb.cityu.edu.hk/x"])
-    assert banweb._find_mail_page(ctx).url == "about:blank"
-    assert ctx.new_pages == 1
-
-
-def test_ensure_mail_page_returns_mail_tab_not_aims_tab(monkeypatch):
-    """关键：_ensure_browser 返回的是 **AIMS 页**，拿它去 goto 邮件 URL 会把
-    AIMS tab 导航走。邮件必须走 _ensure_mail_page 拿到邮件 tab。"""
-    ctx = _Ctx(["https://banweb.cityu.edu.hk/twkwkmgr.P_DispMyWeek",
-                "https://outlook.cloud.microsoft/mail/"])
-    monkeypatch.setattr(banweb, "_ensure_browser", lambda **k: ctx.pages[0])
-    monkeypatch.setattr(banweb, "_ctx", ctx)
-    got = banweb._ensure_mail_page()
-    assert got.url.startswith("https://outlook.cloud.microsoft")
-
-
-def test_ensure_mail_page_raises_when_browser_never_came_up(monkeypatch):
-    """_ensure_browser 抛错时不要吞 —— 原样传播，让上层报「会话已失效」。
-
-    `_ctx` 必须**置为可用哨兵**：否则实现吞掉 _ensure_browser 的异常时，会接着
-    撞上 `if _ctx is None` 守卫、抛出同类型的 BanwebError，用例照样绿 —— 那就
-    分不清「原样传播」与「自己抛」。置上哨兵后，吞掉异常的实现会继续走到
-    `_find_mail_page` 并**正常返回**，`pytest.raises` 立刻以 DID NOT RAISE 判红。
-    """
-    def boom(**k):
-        raise banweb.BanwebError("AIMS 登录窗口未打开")
-    monkeypatch.setattr(banweb, "_ensure_browser", boom)
-    monkeypatch.setattr(banweb, "_ctx", _Ctx(["https://outlook.cloud.microsoft/mail/"]))
-    with pytest.raises(banweb.BanwebError, match="AIMS 登录窗口未打开"):
-        banweb._ensure_mail_page()
-
-
 # --- 轮询（launch=False）不得优雅退出 Chrome（spec §3.2/§11）---
 
 class _Browser:

@@ -656,35 +656,6 @@ def _find_page(ctx) -> object | None:
     return None
 
 
-def _find_mail_page(ctx) -> object:
-    """挑邮件 tab；没有就开一个。
-
-    与 _find_page 不同，这里**允许** new_page：邮件操作永远由用户点按钮触发，
-    开窗不违反「轮询绝不弹窗」。
-    """
-    for p in ctx.pages:
-        if _is_mail_url(p.url):
-            return p
-    return ctx.new_page()
-
-
-def _ensure_mail_page() -> object:
-    """邮件侧的浏览器入口：确保浏览器在跑，返回**邮件 tab**。
-
-    绝不能改用 _ensure_browser 的返回值 —— 它给的是 AIMS 页，拿它去
-    goto(MAIL_URL) 会把 AIMS tab 导航走、毁掉 AIMS 会话。两者是同一个
-    persistent context 里的两个 tab，必须各拿各的。
-
-    线程/锁契约：本函数**不**自带 `_on_browser_thread(lambda: _retry_once(_run))`
-    包装、也不持 `_lock`（Playwright sync API 绑定线程），与其余 AIMS 入口的
-    写法一致 —— 调用方必须自己照那个范式包一层。
-    """
-    _ensure_browser(launch=True)          # 只为保证 _ctx 就绪，丢弃返回的 AIMS 页
-    if _ctx is None:
-        raise BanwebError("AIMS 浏览器未就绪，无法打开邮箱页")
-    return _find_mail_page(_ctx)
-
-
 def _browser_executor_instance():
     """取当前单线程 executor；首次调用时惰性创建。"""
     global _browser_executor
