@@ -3193,7 +3193,7 @@ async function mailSummarize(){
       llm_base_url: s.llm_base_url, llm_api_key: s.llm_api_key, llm_model: s.llm_model,
       days: 7, language: LANG() });
     if(r.ok !== true){
-      failReason = r.reason || "llm";        // 老后端不带 reason：当 AI 阶段（下一行据此选显示哪段文案）
+      failReason = r.reason || "llm";        // 老后端不带 reason：当 AI 阶段（下面据此选显示哪段文案）
       failMsg = r.error || "";
       setStatus((failReason === "mail" ? t("mail.load_failed") : t("mail.ai_failed")) + failMsg, "err");
       return;

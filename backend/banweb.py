@@ -815,17 +815,17 @@ def _kill_zombie_chrome() -> None:
     1) 按端口 lsof 拿 PID 强杀（不依赖命令行匹配）；
     2) 再按 profile 路径 pkill -9 兜底（清理只占 profile 锁、没占端口的进程）。
     **调用方的前置条件各不相同，本函数对此不作任何判断**：
-    · `_ensure_browser` 步骤 2（端口上可能残留的僵死 Chrome）—— 「僵死」那一档；
+    · `_ensure_browser` 步骤 2（端口上可能残留的僵死 Chrome —— 也可能是刚附着上的活实例）；
     · `_recover_browser_subprocess` 的看门狗恢复分支 —— worker 卡死超时**不等于**浏览器
       已经死了，此时浏览器**可能仍活着**，照拆不误；
     · `_ensure_browser` 的无头/有头方向切换 —— 此时 CDP 明明通着，**会主动拆掉我们
       自己开的活窗口**（这是把模式换过去的正确做法，不是误杀）。
     本函数只按端口与 profile 路径动手，**无法区分**「我们开的窗口」与「附着到的外部
     实例」。「不碰附着的外部实例」这条保护在 `_ensure_browser`：`_browser_headless is
-    None` 时它原样返回现成的页。但那个提前返回位于 `_page is not None:` 分支的**顶部**
-    —— 它的前提是**手里已经有 `_page`**，而不是「某一条路径」。`_page is None`（冷启动，
+    None` 时它原样返回现成的页。但那个提前返回位于 `_page is not None:` 分支内、**存活探测之后**
+    —— 探测失败会被 `except` 分支跳过；它的前提是手里已经有一个**活着**的 `_page`。`_page is None`（冷启动，
     或页面对象已被清）时整个分支都进不去，它根本不执行。此时在 `launch=True`（开窗）那一档，
-    步骤 1 只要没返回 —— 附着失败，或 `browser.contexts` 为空 —— 就会一路落到步骤 2 的
+    步骤 1 只要没返回（附着失败、`browser.contexts` 为空、或 `new_page()` 抛错）就会一路落到步骤 2 的
     `_kill_zombie_chrome()`，那一步对附着的外部实例同样不设防（`launch=False` 的轮询档在
     `if not launch` 处先抛错，走不到步骤 2）。所以它既不是本函数的性质，也不是三个调用点
     共有的保证。
