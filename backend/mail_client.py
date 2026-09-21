@@ -291,16 +291,26 @@ def message_body(msg) -> str:
 
 def select_scope(items: list[dict], now: datetime,
                  days: int = DEFAULT_DAYS) -> list[dict]:
-    """取「最近 days 天」内的邮件。
+    """取「最近 days 天**收到**」的条目（spec §5.3）。
 
-    received 解析不出来的条目按「保留」处理 —— 宁可多给一封，不要静默丢件。
+    窗口比的是**收到时刻**（条目内部键 `_internaldate`，由 `_fetch_headers` 放进去），
+    不是 `received` —— 那是 `Date:` 头，即**原始发信时间**；转发件上它可能很旧，
+    按它筛会把「刚收到的旧邮件」静默丢掉。`_internaldate` 不是对外契约的键，
+    `_do_list` 在返回前剥掉。
+
+    缺失 / `None` / naive / 任何不可比的值一律按「保留」处理 —— fail-open：
+    宁可多给一封，也不要因单封坏邮件静默丢件，更不要让它抛穿整次抓取。
 
     没有「未读」分支：转发过来的邮件在 Gmail 里恒为未读，而只读访问永不改变它，
     那个分支恒真、等于没有（spec §4.1）。
     """
     cutoff = now - timedelta(days=days)
-    return [it for it in items
-            if (ts := _parse_ts(it.get("received", ""))) is None or ts >= cutoff]
+    out = []
+    for it in items:
+        ts = it.get("_internaldate")
+        if not isinstance(ts, datetime) or ts.tzinfo is None or ts >= cutoff:
+            out.append(it)
+    return out
 
 
 def jwt_exp(token: str) -> datetime | None:

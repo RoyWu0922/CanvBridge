@@ -562,21 +562,38 @@ def test_header_item_survives_missing_headers():
     assert it == {"id": "7", "subject": "", "sender": "", "received": ""}
 
 
-# --- select_scope：纯日期窗口，fail-open ---
+# --- select_scope：按 INTERNALDATE 的纯日期窗口，fail-open（见裁定 D）---
 
-def test_select_scope_keeps_recent():
+def test_select_scope_keeps_recent_by_internaldate():
     now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
-    items = [{"received": "2026-09-16T00:00:00+00:00"},
-             {"received": "2026-09-01T00:00:00+00:00"}]
-    assert [i["received"] for i in mail_client.select_scope(items, now, 7)] == \
-        ["2026-09-16T00:00:00+00:00"]
+    items = [{"_internaldate": datetime(2026, 9, 16, tzinfo=timezone.utc)},
+             {"_internaldate": datetime(2026, 9, 1, tzinfo=timezone.utc)}]
+    assert mail_client.select_scope(items, now, 7) == [items[0]]
 
 
-def test_select_scope_keeps_unparseable_fail_open():
-    """坏日期保留 —— 宁可多给一封，不要静默丢件。"""
+def test_select_scope_filters_by_internaldate_not_date_header():
+    """**本任务最重要的一条**：窗口按「收到时刻」，不按 `Date:` 头（spec §5.3）。
+
+    Outlook→Gmail 转发件的 `Date:` 是**原始发信时间**（可能几个月前），而
+    INTERNALDATE 是它落进 Gmail 的时刻。按 `Date:` 筛，会把「刚收到的旧邮件」
+    静默丢掉 —— 那恰恰是这个功能存在的理由（用户就是为了收转发来的邮件才做的转发）。
+    """
     now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
-    items = [{"received": "???"}, {"received": ""}]
-    assert len(mail_client.select_scope(items, now, 7)) == 2
+    it = {"received": "2026-01-01T00:00:00+00:00",                     # Date 头：一月的
+          "_internaldate": datetime(2026, 9, 16, tzinfo=timezone.utc)}  # 昨天到的
+    assert mail_client.select_scope([it], now, 7) == [it]
+
+
+def test_select_scope_keeps_missing_naive_or_bad_fail_open():
+    """缺 `_internaldate` / `None` / naive —— 一律保留，且**不抛**。
+
+    naive 与 aware 的 cutoff 比较会抛 TypeError；单封坏邮件不该炸穿整次抓取。
+    """
+    now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+    items = [{"received": "???"},
+             {"_internaldate": None},
+             {"_internaldate": datetime(2026, 1, 1)}]      # naive
+    assert mail_client.select_scope(items, now, 7) == items
 
 
 def test_select_scope_has_no_unread_branch():
@@ -585,7 +602,8 @@ def test_select_scope_has_no_unread_branch():
     （is_read 键已从契约删除；这里刻意塞一个 is_read=False 的老邮件证明它不再被保留。）
     """
     now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
-    items = [{"received": "2026-01-01T00:00:00+00:00", "is_read": False}]
+    items = [{"_internaldate": datetime(2026, 1, 1, tzinfo=timezone.utc),
+              "is_read": False}]
     assert mail_client.select_scope(items, now, 7) == []
 
 
@@ -617,11 +635,17 @@ def test_message_body_falls_back_to_html_as_text():
 
 
 def test_message_body_skips_attachments():
-    """附件内容绝不能混进正文。"""
+    """附件内容绝不能混进正文。
+
+    附件刻意用 **text/plain**：application/octet-stream 那种形状光靠 ctype 过滤
+    （既非 text/plain 也非 text/html）就被排除了，**disposition 守卫在它身上不可达** ——
+    实测删掉守卫用例照样绿（覆盖缺口，修复轮 1 更正）。text/plain 附件才是唯一
+    能走到守卫那一步的形状。
+    """
     m = EmailMessage()
     m.set_content("正文", subtype="plain", charset="utf-8")
-    m.add_attachment(b"ATTACHMENT-BYTES", maintype="application",
-                     subtype="octet-stream", filename="a.bin")
+    m.add_attachment(b"ATTACHMENT-BYTES", maintype="text",
+                     subtype="plain", filename="a.txt")
     body = mail_client.message_body(m)
     assert "正文" in body
     assert "ATTACHMENT-BYTES" not in body
