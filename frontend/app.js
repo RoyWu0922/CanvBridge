@@ -102,6 +102,7 @@ function fillProfessorFilter(){
 function openSettings(){
   $("selTheme").value = themeMode;
   refreshAimsUi();
+  refreshGmailUi();
   fillIgnoreCourses();
 }
 $("selTheme").addEventListener("change", e => applyTheme(e.target.value));
@@ -210,6 +211,41 @@ $("btnClearAims").onclick = async () => {
     $("aimsUsername").value=""; $("aimsPassword").value="";
     setStatus(t("status.aims_cleared"), "ok");
     await refreshAimsUi();
+  });
+};
+
+/* 学校邮箱（Gmail）凭据：应用专用密码存本机钥匙串，后端**永不**回传密码 ——
+   status 只回「有没有」与地址，故密码框只能靠用户每次现填，绝不用服务器响应回填。 */
+async function refreshGmailUi(){
+  const el = $("gmailSavedHint"); if(!el) return;
+  const r = await api("mail/gmail/credentials/status", undefined, "GET");
+  const has = r.ok === true && r.has_credentials === true;
+  $("gmailAddress").value = has ? (r.address || "") : "";
+  $("gmailAppPassword").value = "";   // 与 AIMS 同款：刷新即清空，不给密码留在 DOM 里的机会
+  $("btnClearGmail").hidden = !has;
+  el.textContent = has ? t("status.gmail_saved_hint") : "";
+}
+$("btnSaveGmail").onclick = async () => {
+  const address = $("gmailAddress").value.trim();
+  const app_password = $("gmailAppPassword").value;
+  if(!address || !app_password){ setStatus(t("status.gmail_need_both"), "err"); return; }
+  await withBusy(t("status.gmail_saving"), $("btnSaveGmail"), async ()=>{
+    /* 这两个端点失败时也回 HTTP 200，正文里是 {ok:false, error} —— 判据只能取正文的 ok，
+       不能看状态码（与 AIMS 那两条同形）。地址按原样送，后端自己会去空白。 */
+    const r = await api("mail/gmail/credentials", { address, app_password });
+    if(r.ok !== true){ setStatus(t("status.gmail_save_fail") + (r.error||""), "err"); return; }
+    $("gmailAppPassword").value = "";   // 存成功即清空：密码不留在 DOM 里
+    setStatus(t("status.gmail_saved_ok"), "ok", 4000);
+    await refreshGmailUi();
+  });
+};
+$("btnClearGmail").onclick = async () => {
+  await withBusy(t("status.gmail_clearing"), $("btnClearGmail"), async ()=>{
+    const r = await api("mail/gmail/credentials", undefined, "DELETE");
+    if(r.ok !== true){ setStatus(t("status.gmail_clear_fail") + (r.error||""), "err"); return; }
+    $("gmailAddress").value=""; $("gmailAppPassword").value="";
+    setStatus(t("status.gmail_cleared"), "ok");
+    await refreshGmailUi();
   });
 };
 
@@ -3064,11 +3100,11 @@ function renderMail(){
   box.innerHTML = mailRenderGroups();
 }
 
+/* 不再渲染未读标记：来源改为 Gmail 转发件后，「已读」只反映转发账号的收件状态，
+   与用户是否处理过无关 —— 一律显示未读是假信息。 */
 function mailRowHtml(m){
-  const flag = m.is_read ? ""
-    : `<span class="mail-badge">${esc(t("mail.unread"))}</span>`;
   return `<div class="card mail-row">
-    <div class="mail-row-head">${flag}<span class="mail-subject">${esc(m.subject || t("mail.no_body"))}</span></div>
+    <div class="mail-row-head"><span class="mail-subject">${esc(m.subject || t("mail.no_body"))}</span></div>
     <div class="mail-row-sub">${esc(m.sender || "")} · ${esc(fmtLocal(m.received))}</div>
   </div>`;
 }

@@ -46,7 +46,14 @@ const FRONTEND = join(ROOT, "frontend");
    mailItemHtml / mailSummarize 内联 `t()` 取用，`confirm.cancel` `confirm.ok` 挂在
    index.html 那个新弹层 `#confirmPrompt` 的 `data-i18n` 上。实测死键 21，与预留数
    逐字吻合，故把本行下调到 21 收紧防线（本任务另新增 `mail.ddl_incomplete` 并有消费者，
-   不影响死键数）。 */
+   不影响死键数）。
+
+   2026-09-21 学校邮箱取信层改走 Gmail IMAP（前端那半）：去掉 `is_read` 的未读标记渲染
+   （转发件的「已读」只反映转发账号自己的收件状态，与用户是否处理过无关 —— 恒显示未读
+   是假信息），`mail.unread` 因此失去唯一消费者。**键本身一并删掉**，而不是留着让它变成
+   死键把计数顶到 22 超出基线 —— 这个键没有任何「给下一个任务预留」的理由。实测死键仍为
+   21，与基线持平，故 DEAD_BASELINE 不动。上面 Task 7 那行把 `mail.unread` 列为消费者是
+   **当时**的事实，保留原样不改写。 */
 const DEAD_BASELINE = 21;
 
 /* 动态家族前缀：源码里存在 "wd." 这样的引号字面量，键由它拼出来

@@ -216,8 +216,8 @@ const ok = (cond, label) => { total++; console.log((cond ? "✓ " : "✗ ") + la
 /* ---- 合成数据（全为占位串，绝不含真实邮件内容） ---- */
 run(`
   mailState.mails = [
-    { index: 0, subject: "SYNTH-SUBJ-0", sender: "s0@example.invalid", received: "2026-09-01T00:00:00Z", is_read: false },
-    { index: 1, subject: "SYNTH-SUBJ-1", sender: "s1@example.invalid", received: "2026-09-02T00:00:00Z", is_read: true },
+    { index: 0, subject: "SYNTH-SUBJ-0", sender: "s0@example.invalid", received: "2026-09-01T00:00:00Z" },
+    { index: 1, subject: "SYNTH-SUBJ-1", sender: "s1@example.invalid", received: "2026-09-02T00:00:00Z" },
   ];
   mailState.groups = [
     { course: "SYNTH-COURSE", types: [

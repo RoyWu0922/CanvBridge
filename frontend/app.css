@@ -536,8 +536,6 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 .mail-row-head { display: flex; align-items: center; gap: 8px; }
 .mail-subject { font-weight: 600; }
 .mail-row-sub { color: var(--muted, #888); font-size: 12px; margin-top: 4px; }
-.mail-badge { background: #d33; color: #fff; border-radius: 8px;
-              font-size: 11px; padding: 1px 6px; }
 .mail-empty, .mail-error { padding: 14px; color: var(--muted, #888); }
 .mail-error { color: var(--err, #c33); }
 

@@ -298,6 +298,20 @@
         </section>
 
         <section class="set-card">
+          <span class="eyebrow" data-i18n="settings.group.gmail"></span>
+          <p class="muted" data-i18n="settings.gmail_hint"></p>
+          <div class="grid">
+            <label class="field"><span data-i18n="settings.gmail_user"></span><input id="gmailAddress" type="text" autocomplete="username" placeholder="you@gmail.com"></label>
+            <label class="field"><span data-i18n="settings.gmail_pass"></span><input id="gmailAppPassword" type="password" autocomplete="off" placeholder="••••••••••••••••"></label>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <button id="btnSaveGmail" class="btn btn-primary" data-i18n="btn.save_gmail"></button>
+            <button id="btnClearGmail" class="btn btn-ghost" data-i18n="btn.clear_gmail" hidden></button>
+            <span id="gmailSavedHint" class="muted"></span>
+          </div>
+        </section>
+
+        <section class="set-card">
           <span class="eyebrow" data-i18n="settings.group.download"></span>
           <div class="field"><span data-i18n="settings.download_dir"></span>
             <div class="row" style="gap:8px">
