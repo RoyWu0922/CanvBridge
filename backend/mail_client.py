@@ -365,7 +365,9 @@ def _do_list(days: int) -> list[dict]:
         if not uids:
             return []
         items: list[dict] = []
-        for chunk in _chunks(uids, HEADER_BATCH):
+        for n, chunk in enumerate(_chunks(uids, HEADER_BATCH)):
+            if n:
+                time.sleep(_THROTTLE)      # 批次之间留间隔（全局约束）
             items.extend(_fetch_headers(conn, chunk))
         kept = select_scope(items, datetime.now(timezone.utc), days)
         # 剥掉内部键 `_internaldate`：对外契约恰好四个键（spec §4）
@@ -380,3 +382,64 @@ def list_mail(days: int = DEFAULT_DAYS) -> list[dict]:
     **不**走 banweb 的浏览器线程，也**不**重试：认证失败即停（spec §5.8）。
     """
     return _do_list(days)
+
+
+def _fetch_bodies_chunk(conn, uids: list[str]) -> list[tuple[str, str]]:
+    """批量取整封。**BODY.PEEK[]** —— 绝不置已读。
+
+    注意 IMAP 会把附件一起给你（没有「只要正文」的通用取法）；message_body
+    负责把附件排除在正文之外。更省的做法（BODYSTRUCTURE + 分段取）见 spec §11。
+    """
+    typ, data = conn.uid("FETCH", ",".join(uids).encode(), "(BODY.PEEK[])")
+    if typ != "OK":
+        raise MailError(f"读取邮件正文失败：{data}")
+    out = []
+    for entry in data:
+        if not isinstance(entry, tuple) or len(entry) < 2:
+            continue
+        meta, raw = entry[0], entry[1]
+        blob = meta if isinstance(meta, bytes) else str(meta).encode()
+        m = re.search(rb"UID\s+(\d+)", blob)
+        if not m:
+            continue
+        msg = message_from_bytes(raw if isinstance(raw, bytes) else b"")
+        body = message_body(msg)
+        if len(body) > MAX_BODY_CHARS:
+            body = body[:MAX_BODY_CHARS]
+        out.append((m.group(1).decode(), body))
+    return out
+
+
+def _do_bodies(items: list[dict]) -> dict:
+    conn, uidvalidity = _connect()
+    try:
+        if _uidvalidity and uidvalidity != _uidvalidity:
+            raise MailError(
+                "邮箱自上次刷新后已被重建（UIDVALIDITY 变了），"
+                "邮件与编号的对应关系不再可靠。请重新点「刷新邮件」。")
+        ids = [it["id"] for it in items]
+        out: dict = {}
+        for n, chunk in enumerate(_chunks(ids, BODY_BATCH)):
+            if n:
+                time.sleep(_THROTTLE)      # 旧 spec §9 请求节流
+            for uid, body in _fetch_bodies_chunk(conn, chunk):
+                out[uid] = body
+        return out
+    finally:
+        _logout_quietly(conn)
+
+
+def fetch_bodies(items: list[dict]) -> dict:
+    """批量取正文，返回 {item_id: body}。
+
+    空输入直接返回 —— 绝不为了「取零封邮件的正文」去连一次 IMAP。
+    全程只读：EXAMINE + BODY.PEEK，不碰用户已读状态。
+    """
+    if not items:
+        return {}
+    try:
+        return _do_bodies(items)
+    except MailError:
+        raise
+    except Exception as exc:
+        raise MailError(f"读取邮件正文失败：{exc}") from exc

@@ -19,10 +19,11 @@ class _FakeIMAP:
     """替身，记录**发出的每一条命令**。绝不真连网（netguard 兜底）。"""
 
     def __init__(self, *, uidvalidity=b"7", headers=None, login_err=None,
-                 untagged=None):
+                 untagged=None, status_reply=("OK", [b'"INBOX" (UIDVALIDITY 12345)'])):
         self.uidvalidity = uidvalidity
         self.headers = headers or {}     # {uid_bytes: raw_header_bytes}
         self.login_err = login_err
+        self.status_reply = status_reply
         self.sent = []
         if untagged is not None:
             self.untagged_responses = untagged
@@ -31,7 +32,7 @@ class _FakeIMAP:
         else:
             self.untagged_responses = {}
 
-    # --- 被 mail_client 调到的四个方法 ---
+    # --- 被 mail_client 调到的五个方法 ---
     def login(self, user, pw):
         self.sent.append(("login", user))
         if self.login_err:
@@ -57,6 +58,10 @@ class _FakeIMAP:
                                 self.headers[u]))
             return ("OK", out)
         return ("OK", [b""])
+
+    def status(self, mailbox, what):
+        self.sent.append(("status", mailbox, what))
+        return self.status_reply
 
     def logout(self):
         self.sent.append(("logout",))
@@ -264,6 +269,18 @@ def test_list_mail_connects_once(monkeypatch):
     assert len([c for c in fake.sent if c[0] == "login"]) == 1
 
 
+def test_list_mail_batches_and_throttles(monkeypatch):
+    """51 封 → 2 批（HEADER_BATCH=50），批间有 sleep（全局约束：批量 UID FETCH 之间留间隔）。"""
+    sleeps = []
+    monkeypatch.setattr(mail_client.time, "sleep", lambda s: sleeps.append(s))
+    ids = [str(i) for i in range(51)]
+    fake = _install(monkeypatch, _FakeIMAP(headers={i.encode(): _hdr() for i in ids}))
+    mail_client.list_mail(7)
+    header_fetches = [c for c in fake.sent if c[0] == "uid" and c[1] == "FETCH"]
+    assert len(header_fetches) == 2
+    assert sleeps == [mail_client._THROTTLE]
+
+
 # ============ UIDVALIDITY（spec §5.5）============
 
 def test_list_mail_records_uidvalidity(monkeypatch):
@@ -276,6 +293,27 @@ def test_missing_uidvalidity_raises(monkeypatch):
     """读不到 UIDVALIDITY 说明协议假设变了 —— 报错，不静默跳过。"""
     _install(monkeypatch, _FakeIMAP(untagged={}, headers={}))
     monkeypatch.setattr(mail_client, "_uidvalidity_from_status", lambda conn: "")
+    with pytest.raises(mail_client.MailError) as ei:
+        mail_client.list_mail(7)
+    assert "UIDVALIDITY" in str(ei.value)
+
+
+def test_uidvalidity_from_status_parses_reply(monkeypatch):
+    """主路径（EXAMINE 的 untagged 响应）读不到时，退到 STATUS 再问一次。"""
+    _install(monkeypatch, _FakeIMAP(untagged={}))       # 主路径给不出 ⇒ 必须走退路
+    mail_client.list_mail(7)
+    assert mail_client._uidvalidity == "12345"
+
+
+def test_uidvalidity_from_status_rejects_non_ok(monkeypatch):
+    """非 OK 的 STATUS 回答绝不能被当成有效 UIDVALIDITY。
+
+    payload 里的 `UIDVALIDITY 99999` 是刻意的：它是「漏掉 `typ != "OK"` 检查」
+    会静默取到错值的**唯一**形状。换成不含这个词的报错串（如 `b"boom"`），
+    正则匹配不到 ⇒ 退化成 `""` ⇒ 结局仍是报错，变异就咬不动了。
+    """
+    _install(monkeypatch, _FakeIMAP(
+        untagged={}, status_reply=("NO", [b"NO [SERVERBUG] UIDVALIDITY 99999 unavailable"])))
     with pytest.raises(mail_client.MailError) as ei:
         mail_client.list_mail(7)
     assert "UIDVALIDITY" in str(ei.value)
@@ -570,3 +608,113 @@ def test_message_body_unknown_charset_does_not_raise():
 
 def test_message_body_empty_message_is_empty_string():
     assert mail_client.message_body(EmailMessage()) == ""
+
+
+# ============ 正文：批量 + 节流 + 截断（spec §5.4）============
+
+class _BodyIMAP(_FakeIMAP):
+    """除头之外还能给整封。"""
+
+    def __init__(self, bodies=None, **kw):
+        super().__init__(**kw)
+        self.bodies = bodies or {}     # {uid_bytes: raw_message_bytes}
+
+    def uid(self, cmd, *args):
+        if cmd == "FETCH" and "BODY.PEEK[]" in str(args[-1]):
+            self.sent.append(("uid", cmd) + tuple(args))
+            uids = args[0] if isinstance(args[0], bytes) else str(args[0]).encode()
+            return ("OK", [(b"1 (UID %s BODY[] {%d}" % (u, len(self.bodies[u])),
+                            self.bodies[u]) for u in uids.split(b",") if u in self.bodies])
+        return super().uid(cmd, *args)
+
+
+def _body_msg(text, ctype="plain"):
+    """一整封的原始字节，正文**恰好**是 text。
+
+    **刻意不用 `EmailMessage.set_content()`**：它交给 stdlib 的 `_encode_text`，
+    后者把正文按 `b"\\n".join(lines) + b"\\n"` 收尾（base64 分支是先把同一个串
+    编码再转 base64，尾换行**编进内容**里 ⇒ 事后截掉原始字节的尾换行也去不掉）。
+    于是解析回来的正文恒多一个 `"\\n"`，断言里就得写 `"x\\n"` —— 那是**关于 fixture
+    的知识，不是关于 `fetch_bodies` 的知识**，写进去只会让后来者以为正文该带尾换行。
+    直接给原始字节，正文就是 text 本身。
+
+    `Content-Transfer-Encoding: 8bit` 配原始 UTF-8 字节：`get_payload(decode=True)`
+    走 surrogateescape 原样还原，正是 `_part_text` 期望的形状。
+    """
+    head = (f'Content-Type: text/{ctype}; charset="utf-8"\r\n'
+            "Content-Transfer-Encoding: 8bit\r\n"
+            "MIME-Version: 1.0\r\n"
+            "\r\n").encode("ascii")
+    return head + text.encode("utf-8")
+
+
+def test_fetch_bodies_returns_id_to_body(monkeypatch):
+    _install(monkeypatch, _BodyIMAP(
+        headers={b"1": _hdr(), b"2": _hdr()},
+        bodies={b"1": _body_msg("第一封正文"), b"2": _body_msg("第二封正文")}))
+    mail_client.list_mail(7)              # 先记 uidvalidity
+    out = mail_client.fetch_bodies([{"id": "1"}, {"id": "2"}])
+    assert out == {"1": "第一封正文", "2": "第二封正文"}
+
+
+def test_fetch_bodies_uses_body_peek(monkeypatch):
+    fake = _install(monkeypatch, _BodyIMAP(headers={b"1": _hdr()},
+                                           bodies={b"1": _body_msg("x")}))
+    mail_client.list_mail(7)
+    mail_client.fetch_bodies([{"id": "1"}])
+    fetches = [c for c in fake.sent if c[0] == "uid" and c[1] == "FETCH"
+               and "BODY.PEEK[]" in str(c[-1])]
+    assert fetches
+    assert all("BODY.PEEK[]" in str(c[-1]) for c in fetches)
+
+
+def test_fetch_bodies_empty_input_does_not_connect(monkeypatch):
+    fake = _install(monkeypatch, _BodyIMAP())
+    assert mail_client.fetch_bodies([]) == {}
+    assert not [c for c in fake.sent if c[0] == "login"]
+
+
+def test_fetch_bodies_batches_and_throttles(monkeypatch):
+    """一次 12 封 → 3 批（BODY_BATCH=5），批间有 sleep（spec §9 请求节流）。"""
+    sleeps = []
+    monkeypatch.setattr(mail_client.time, "sleep", lambda s: sleeps.append(s))
+    ids = [str(i) for i in range(12)]
+    fake = _install(monkeypatch, _BodyIMAP(
+        headers={i.encode(): _hdr() for i in ids},
+        bodies={i.encode(): _body_msg("x") for i in ids}))
+    mail_client.list_mail(7)
+    mail_client.fetch_bodies([{"id": i} for i in ids])
+    body_fetches = [c for c in fake.sent if c[0] == "uid" and c[1] == "FETCH"
+                    and "BODY.PEEK[]" in str(c[-1])]
+    assert len(body_fetches) == 3
+    assert sleeps == [mail_client._THROTTLE, mail_client._THROTTLE]
+
+
+def test_fetch_bodies_truncates_huge_body(monkeypatch):
+    huge = "字" * (mail_client.MAX_BODY_CHARS + 500)
+    _install(monkeypatch, _BodyIMAP(headers={b"1": _hdr()},
+                                    bodies={b"1": _body_msg(huge)}))
+    mail_client.list_mail(7)
+    out = mail_client.fetch_bodies([{"id": "1"}])
+    assert len(out["1"]) == mail_client.MAX_BODY_CHARS
+
+
+def test_fetch_bodies_raises_on_uidvalidity_change(monkeypatch):
+    """邮箱被重建 → UID 可能指向别的邮件 → 报错，绝不尽力而为地取（spec §5.5）。"""
+    fake = _install(monkeypatch, _BodyIMAP(uidvalidity=b"7",
+                                           headers={b"1": _hdr()},
+                                           bodies={b"1": _body_msg("x")}))
+    mail_client.list_mail(7)
+    fake.untagged_responses = {"UIDVALIDITY": [b"8"]}     # 邮箱被重建
+    with pytest.raises(mail_client.MailError) as ei:
+        mail_client.fetch_bodies([{"id": "1"}])
+    assert "重建" in str(ei.value)
+    assert not [c for c in fake.sent if c[0] == "uid" and "BODY.PEEK[]" in str(c[-1])], \
+        "UIDVALIDITY 不符时不该取任何正文"
+
+
+def test_fetch_bodies_ok_when_uidvalidity_matches(monkeypatch):
+    _install(monkeypatch, _BodyIMAP(headers={b"1": _hdr()},
+                                    bodies={b"1": _body_msg("x")}))
+    mail_client.list_mail(7)
+    assert mail_client.fetch_bodies([{"id": "1"}]) == {"1": "x"}
