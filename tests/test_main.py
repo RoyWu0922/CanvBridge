@@ -2012,3 +2012,51 @@ def test_mail_summarize_missing_body_falls_back_to_empty(monkeypatch):
     assert body["ok"] is True
     assert [m["id"] for m in body["mails"]] == ["A", "B"]
     assert [m["body"] for m in body["mails"]] == ["a", ""]
+
+
+def test_gmail_credentials_status_empty_when_unset(monkeypatch):
+    monkeypatch.setattr(credentials, "get_gmail_address", lambda: "")
+    r = TestClient(main.app).get("/api/mail/gmail/credentials/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["has_credentials"] is False
+    assert body["address"] == ""
+    # 键集合白名单：新增任何键都弄红它。否定式断言（"password" not in ...）
+    # 会给假保证 —— 见 memory: test-specs-need-positive-assertions 第 5 条。
+    assert set(body) == {"ok", "has_credentials", "address"}
+
+
+def test_gmail_credentials_status_echoes_address(monkeypatch):
+    monkeypatch.setattr(credentials, "get_gmail_address", lambda: "me@gmail.com")
+    body = TestClient(main.app).get("/api/mail/gmail/credentials/status").json()
+    assert body["has_credentials"] is True
+    assert body["address"] == "me@gmail.com"
+    assert set(body) == {"ok", "has_credentials", "address"}
+
+
+def test_gmail_save_passes_address_and_password(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(credentials, "save_gmail",
+                        lambda a, p: seen.update(address=a, password=p))
+    r = TestClient(main.app).post("/api/mail/gmail/credentials",
+                                  json={"address": " me@gmail.com ", "app_password": "pw16"})
+    assert r.json() == {"ok": True}
+    assert seen == {"address": "me@gmail.com", "password": "pw16"}
+
+
+def test_gmail_save_error_is_reported_not_raised(monkeypatch):
+    def boom(a, p):
+        raise credentials.CredentialsError("钥匙串拒绝写入")
+    monkeypatch.setattr(credentials, "save_gmail", boom)
+    body = TestClient(main.app).post("/api/mail/gmail/credentials",
+                                     json={"address": "me@gmail.com",
+                                           "app_password": "pw16"}).json()
+    assert body["ok"] is False
+    assert "钥匙串拒绝写入" in body["error"]
+
+
+def test_gmail_delete_ok(monkeypatch):
+    monkeypatch.setattr(credentials, "delete_gmail", lambda: True)
+    body = TestClient(main.app).delete("/api/mail/gmail/credentials").json()
+    assert body == {"ok": True}

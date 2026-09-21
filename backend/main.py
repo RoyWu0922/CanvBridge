@@ -127,6 +127,11 @@ class AimsCredentials(BaseModel):
     password: str
 
 
+class GmailCredentials(BaseModel):
+    address: str
+    app_password: str
+
+
 class CourseDetailRequest(BaseModel):
     canvas_url: str
     canvas_token: str
@@ -958,6 +963,39 @@ def library_search(req: LibrarySearchRequest):
         pool.shutdown(wait=not stuck)
 
     return {"ok": True, "parsed": parsed, "warnings": warnings, **blocks}
+
+
+@app.post("/api/mail/gmail/credentials")
+def gmail_save_credentials(req: GmailCredentials):
+    """把 Gmail 地址与应用专用密码存入本机钥匙串（只存本地，不返回密码）。
+
+    密码由用户在此输入，绝不经过对话/文件/日志 —— spec §6.4。
+    """
+    try:
+        credentials.save_gmail(req.address.strip(), req.app_password)
+        return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/api/mail/gmail/credentials/status")
+def gmail_credentials_status():
+    """返回是否已存 Gmail 凭据 + 地址（永不返回密码）。"""
+    try:
+        address = credentials.get_gmail_address()
+        return {"ok": True, "has_credentials": bool(address), "address": address}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.delete("/api/mail/gmail/credentials")
+def gmail_delete_credentials():
+    """清除已存的 Gmail 地址与应用专用密码。"""
+    try:
+        credentials.delete_gmail()
+        return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @app.post("/api/mail/list")
