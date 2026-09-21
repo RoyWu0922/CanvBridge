@@ -1947,7 +1947,7 @@ def test_mail_summarize_failure_is_200_json(monkeypatch):
     r = TestClient(main.app).post("/api/mail/summarize", json={
         "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m"})
     assert r.status_code == 200
-    # 失败路径的形状 = 原来的两键 + `reason`（本轮新增，前端据此分流登录问询）。
+    # 失败路径的形状 = 原来的两键 + `reason`（本轮新增，前端据此给两段各显示对的文案）。
     # 这里刻意写成整字典相等：失败响应的键集合是前端契约的一部分，多一个少一个都该红。
     assert r.json() == {"ok": False, "reason": "mail", "error": "邮箱会话已失效"}
 

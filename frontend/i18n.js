@@ -872,7 +872,7 @@ function applyLang() {
   /* 图书馆页：结果列表/页码/领域下拉都是 JS 生成的，切语言得就地重画
      （只在内存数据上工作，不触发网络）。 */
   if (typeof renderLibraryPage === "function") renderLibraryPage();
-  /* 邮箱页：列表行（主题/发件人/时间/未读徽标）都是 JS 拼的，切语言得就地重画
+  /* 邮箱页：列表行（主题/发件人/时间）都是 JS 拼的，切语言得就地重画
      （只在内存数据上工作，不触发网络）。 */
   if (typeof renderMail === "function") renderMail();
 }

@@ -2408,7 +2408,7 @@ let libraryState = { parsed: null, page: 1, loaded: false, areas: [], last: null
 
 const LIBRARY_MAX_PAGES = 5;   /* 与后端 library_client.MAX_PAGES 一致；后端才是权威 */
 
-/* 学校邮箱的会话状态。
+/* 学校邮箱的页面状态。
    **声明在这里、而不是末尾那段邮箱代码里**：与上面的 `libraryState` 同一个道理 ——
    本文件顶层的 `applyLang()` 会经 i18n.js 的钩子调用 renderMail()，而 renderMail
    是**函数声明**（提升），`typeof` 守门拦不住它；状态若压在文件末尾的 `let` 里，
@@ -3067,7 +3067,7 @@ function renderLibraryPager(r){
 }
 
 /* ---------- 学校邮箱 ---------- */
-/* 会话状态 `mailState` 声明在文件上部（applyLang() 那一段、`libraryState` 旁边）——
+/* 页面状态 `mailState` 声明在文件上部（applyLang() 那一段、`libraryState` 旁边）——
    理由同上：applyLang() 会经 i18n.js 的钩子调用 renderMail()，状态不能压在文件末尾。 */
 
 function initMailTab(){

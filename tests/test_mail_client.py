@@ -693,10 +693,14 @@ def test_fetch_bodies_uses_body_peek(monkeypatch):
     """取正文整封走 BODY.PEEK[] —— 裸 BODY[] 会置 \\Seen。
 
     筛选条件只认 `(uid, FETCH)`，断言钉的是**命令内容**，两者不同口径。
-    三句各守一件事，缺任何一句都丢一档分辨力（各配一条变异）：`assert fetches`
-    只管「发过 FETCH」；`all(...)` 管「发出去的每一条都不能是裸 `BODY[`」；
-    `any("BODY.PEEK[]")` 管「**正文**那一条确实发过」。
-    少了最后一句，本用例自己 `list_mail(7)` 发出的 header FETCH
+    独立的一档只有两条（各配一条变异）：`all(...)` 管「发出去的每一条都不能是裸
+    `BODY[`」；`any("BODY.PEEK[]")` 管「**正文**那一条确实发过」。
+    `assert fetches` **不单独构成一档** —— 它是前提守卫，失败条件被 `any(...)` **严格
+    蕴含**（`any` 为真 ⇒ 列表必然非空）。实测：删掉它、再把 `_do_bodies` 改成早退
+    `return {}`，本用例**照样 `1 failed`**（红行前移到 `any(...)`）。
+    留它的价值在**空列表**：那时它先炸、消息直白（`any(...)` 那条 f-string 会打出
+    「header FETCH 把列表填满了：[]」—— 空列表不可能被填满）。
+    少了 `any(...)`，本用例自己 `list_mail(7)` 发出的 header FETCH
     （`BODY.PEEK[HEADER.FIELDS …]`）就会把 `fetches` 填满、并通过上面那句 `all(...)`
     ——「正文一条都没取」于是全绿（把 `_do_bodies` 改成早退 `return {}` 照绿）。
     **顺序是刻意的**：`any(...)` 放在 `all(...)` **之后**，两条变异才各红各的行 ——
