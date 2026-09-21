@@ -196,6 +196,17 @@ def test_get_gmail_returns_pair(monkeypatch):
     assert credentials.get_gmail() == ("me@gmail.com", "app-pw-16")
 
 
+def test_get_gmail_strips_whitespace_in_app_password(monkeypatch):
+    """Google 把应用专用密码按四组显示（中间是空格），用户会带空格粘贴进来。
+
+    带空格的密码送去 IMAP 认证必然 AUTHENTICATIONFAILED，而那个错误会被翻成
+    「请检查地址与应用专用密码」，把用户引向错误的因由 —— 读出来必须是连写的
+    16 位。地址不受影响。
+    """
+    _patch(monkeypatch, acct="me@gmail.com", pw="abcd efgh ijkl mnop")
+    assert credentials.get_gmail() == ("me@gmail.com", "abcdefghijklmnop")
+
+
 def test_get_gmail_none_when_missing(monkeypatch):
     _patch(monkeypatch, acct_rc=44)
     assert credentials.get_gmail() is None

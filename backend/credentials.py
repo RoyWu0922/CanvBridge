@@ -128,8 +128,23 @@ def save_gmail(address: str, app_password: str) -> None:
 
 
 def get_gmail() -> tuple[str, str] | None:
-    """返回 (地址, 应用专用密码)；未存过返回 None。"""
-    return _load(GMAIL_SERVICE)
+    """返回 (地址, 应用专用密码)；未存过返回 None。
+
+    密码去掉**全部空白字符**后再返回：Google 把应用专用密码显示成
+    「abcd efgh ijkl mnop」——16 位、用空格分成四组——用户手抄或手动选中复制时
+    会把这些空格一起带进来。带空格的密码送去 IMAP 认证必然
+    AUTHENTICATIONFAILED，而下游会把它翻成「请检查地址与应用专用密码（需已开启
+    两步验证）」，把用户引向完全错误的因由。
+
+    归一化收口在**读取侧**而非 save_gmail：用户可以照 Task 1 的前置条件自己用
+    `security add-generic-password` 直接写钥匙串，那条路径绕过 save_gmail，只在
+    写入侧做就会漏。地址原样返回，不在这里动（地址里的空白归端点处理）。
+    """
+    creds = _load(GMAIL_SERVICE)
+    if creds is None:
+        return None
+    address, app_password = creds
+    return (address, "".join(app_password.split()))
 
 
 def get_gmail_address() -> str:
