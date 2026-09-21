@@ -195,6 +195,7 @@ UID FETCH <set> (BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)])
 转发场景下这两者**可能不同**（`Date:` 是原始发信时间）。分工如下，别混：
 
 - **筛选**按 `INTERNALDATE` —— 「最近 N 天**收到**的邮件」本就该按收到算
+  （`SINCE` 与 §5.6 的精确过滤**都**按它；精确过滤读条目里的内部键 `_internaldate`，见 §5.6）
 - **`received` 字段**取 `Date:` 头 —— 用户要看的是「这封邮件什么时候发的」；
   `Date:` 缺失或解不出时退回 `INTERNALDATE`，绝不因此丢件（fail-open，§5.6）
 
@@ -243,15 +244,26 @@ UID FETCH <set> (BODY.PEEK[])          # 整封 RFC822
 
 ### 5.6 日期过滤
 
-纯日期窗口，`select_scope` 保留但其「未读」分支删除：
+纯日期窗口，`select_scope` 保留但其「未读」分支删除。**窗口比的是 `INTERNALDATE`（收到时刻），
+不是 `received`** —— 后者取 `Date:` 头（§5.3），转发件上那是**原始发信时间**：
 
 ```python
 def select_scope(items, now, days=DEFAULT_DAYS) -> list[dict]
     cutoff = now - timedelta(days=days)
-    # received 解析不出来的 → 保留（fail-open：宁可多给一封，不要静默丢件）
+    # ts = items[i]["_internaldate"]（INTERNALDATE，datetime | None，由 _fetch_headers 放入）
+    # ts 缺失 / None / naive / 不可比 → 保留（fail-open：宁可多给一封，不要静默丢件）
 ```
 
+`_internaldate` 是**内部键**，不属于 §4 的对外契约 —— 返回前端前剥掉。
+
 fail-open 是**刻意的**，沿用旧实现并经旧测试验证：单封格式异常的邮件不该让整次抓取少件。
+
+> **2026-09-21 更正（写实施计划时发现）**：本节草稿原写作「`received` 解析不出来的 → 保留」，
+> 与 §5.3「**筛选**按 `INTERNALDATE`」相矛盾。现更正为按 `INTERNALDATE`：§5.3 是带理由的规范句
+> （「最近 N 天**收到**的邮件本就该按收到算」），§10.8 亦复述「按 INTERNALDATE 筛选……照旧」；
+> 而草稿里的 `received` 是**旧 OWA 实现的字段名** —— 那时 `received`（`receivedDateTime`）
+> 就是到达时刻，筛它是对的，换到 IMAP 后该字段改义为 `Date:` 头，这一行没有跟着改。
+> 转发件上按 `Date:` 筛会**静默丢掉刚收到的旧邮件**，正是本功能的目标场景。
 
 ### 5.7 MIME 与头部解码
 

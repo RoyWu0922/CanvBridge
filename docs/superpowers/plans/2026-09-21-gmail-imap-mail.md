@@ -57,6 +57,7 @@
 | A | §5.3 的取头命令含 `MESSAGE-ID` | **去掉**，只取 `FROM SUBJECT DATE` | 对外契约（§4）只有四个键，`MESSAGE-ID` 没有任何消费方 —— 取了不用的字段是死重量，复审（正确地）会提。**若将来要做转发件去重**，那正是它的用武之地，届时一个字符串即可加回。 |
 | B | §5.3 要求 `Date:` 解不出时**退回 `INTERNALDATE`** | **已照做**（`header_item(uid, msg, internaldate=None)`） | 这不是差异，是**自审时发现的漏项**：初稿的 `received_dt` 返回 `None` → `received: ""`，而 §4 说该字段喂给前端 `new Date(iso)`。已补 `parse_internaldate()` 与两条用例。 |
 | C | §5.1 常量表里**没有** `HEADER_BATCH` | **新增 `HEADER_BATCH = 50`** | §5.1 只规定了 `BODY_BATCH`（正文批大小）。取头也需要一个批大小，spec 未定；50 与旧 `PAGE_SIZE` 同量级，且头很小。纯属补 spec 留白，不是背离。 |
+| D | §5.3「**筛选**按 `INTERNALDATE` —— 「最近 N 天**收到**的邮件本就该按收到算」」 vs §5.6 骨架里那句 `# received 解析不出来的 → 保留` | **按 §5.3 执行**：窗口筛 INTERNALDATE（条目内部键 `_internaldate`），`received` 只作展示与退回 | **spec 自己前后不一致，本计划此前抄了 §5.6 那一侧。** §5.3 是带理由的规范句，§10.8 也复述「按 INTERNALDATE 筛选……照旧」；而 §5.6 的骨架沿用了**旧 OWA 实现的字段名** —— 那时 `received`（`receivedDateTime`）**就是到达时刻**，筛它是对的；换到 IMAP，`received` 改义成 `Date:` 头，那一行没跟着改。后果不是「差一天」：转发件的 `Date:` 是原始发信时间（可能几个月前），按它筛会**静默丢掉刚收到的旧邮件** —— 正是这个功能的目标场景。已同步更正 spec §5.6。 |
 
 另：§7「不能删的那两样」、§5.7「用公开的 `strip_html()`」、§12「用户自己写钥匙串」三处
 spec 更正是**早先在写计划过程中**做的，已提交在 spec 里，本计划照改后的口径执行。
@@ -634,6 +635,8 @@ git commit -m "feat(mail): Gmail 凭据的三个端点（存取删，永不返�
   - `header_item(uid: str, msg, internaldate: datetime | None = None) -> dict`
   - `message_body(msg) -> str`
   - `select_scope(items, now, days=DEFAULT_DAYS) -> list[dict]`（**保留 fail-open，删「未读」分支**）
+    - 窗口比的是条目里的**内部键 `_internaldate`（`datetime | None`，即 INTERNALDATE）**，**不是 `received`** —— 后者是 `Date:` 头（见下方「规划期裁定 D」）
+    - `_internaldate` **不是对外契约的键**：Task 5 的 `_fetch_headers` 放进去、`_do_list` 在返回前剥掉（形状断言会盯着这件事）
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -799,21 +802,38 @@ def test_header_item_survives_missing_headers():
     assert it == {"id": "7", "subject": "", "sender": "", "received": ""}
 
 
-# --- select_scope：纯日期窗口，fail-open ---
+# --- select_scope：按 INTERNALDATE 的纯日期窗口，fail-open（见裁定 D）---
 
-def test_select_scope_keeps_recent():
+def test_select_scope_keeps_recent_by_internaldate():
     now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
-    items = [{"received": "2026-09-16T00:00:00+00:00"},
-             {"received": "2026-09-01T00:00:00+00:00"}]
-    assert [i["received"] for i in mail_client.select_scope(items, now, 7)] == \
-        ["2026-09-16T00:00:00+00:00"]
+    items = [{"_internaldate": datetime(2026, 9, 16, tzinfo=timezone.utc)},
+             {"_internaldate": datetime(2026, 9, 1, tzinfo=timezone.utc)}]
+    assert mail_client.select_scope(items, now, 7) == [items[0]]
 
 
-def test_select_scope_keeps_unparseable_fail_open():
-    """坏日期保留 —— 宁可多给一封，不要静默丢件。"""
+def test_select_scope_filters_by_internaldate_not_date_header():
+    """**本任务最重要的一条**：窗口按「收到时刻」，不按 `Date:` 头（spec §5.3）。
+
+    Outlook→Gmail 转发件的 `Date:` 是**原始发信时间**（可能几个月前），而
+    INTERNALDATE 是它落进 Gmail 的时刻。按 `Date:` 筛，会把「刚收到的旧邮件」
+    静默丢掉 —— 那恰恰是这个功能存在的理由（用户就是为了收转发来的邮件才做的转发）。
+    """
     now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
-    items = [{"received": "???"}, {"received": ""}]
-    assert len(mail_client.select_scope(items, now, 7)) == 2
+    it = {"received": "2026-01-01T00:00:00+00:00",                     # Date 头：一月的
+          "_internaldate": datetime(2026, 9, 16, tzinfo=timezone.utc)}  # 昨天到的
+    assert mail_client.select_scope([it], now, 7) == [it]
+
+
+def test_select_scope_keeps_missing_naive_or_bad_fail_open():
+    """缺 `_internaldate` / `None` / naive —— 一律保留，且**不抛**。
+
+    naive 与 aware 的 cutoff 比较会抛 TypeError；单封坏邮件不该炸穿整次抓取。
+    """
+    now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+    items = [{"received": "???"},
+             {"_internaldate": None},
+             {"_internaldate": datetime(2026, 1, 1)}]      # naive
+    assert mail_client.select_scope(items, now, 7) == items
 
 
 def test_select_scope_has_no_unread_branch():
@@ -822,7 +842,8 @@ def test_select_scope_has_no_unread_branch():
     （is_read 键已从契约删除；这里刻意塞一个 is_read=False 的老邮件证明它不再被保留。）
     """
     now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
-    items = [{"received": "2026-01-01T00:00:00+00:00", "is_read": False}]
+    items = [{"_internaldate": datetime(2026, 1, 1, tzinfo=timezone.utc),
+              "is_read": False}]
     assert mail_client.select_scope(items, now, 7) == []
 
 
@@ -960,7 +981,8 @@ def parse_internaldate(raw: str | None) -> datetime | None:
 
     格式是 IMAP 专有的（日月年用短横线、无星期），用 strptime 把它钉死；
     带偏移的返回 UTC aware，解析不出（含不带偏移的串）返回 None。
-    注：`parsedate_to_datetime` 同样吃得下这个格式（spec §10.8 有实测），
+    注：`parsedate_to_datetime` 同样吃得下这个格式（spec §10.8 的**离线复验**，
+    不是对着真实邮箱量的「实测」，两级不可混称），
     保留手写版本是为了格式显式，不是因为标准库解析不了。
     """
     if not isinstance(raw, str) or not raw:
@@ -1041,21 +1063,31 @@ def message_body(msg) -> str:
     return _part_text(msg)
 ```
 
-**改写** `select_scope`（删「未读」分支，保留 fail-open）：
+**改写** `select_scope`（窗口改筛 INTERNALDATE、删「未读」分支，保留 fail-open —— 见裁定 D）：
 
 ```python
 def select_scope(items: list[dict], now: datetime,
                  days: int = DEFAULT_DAYS) -> list[dict]:
-    """取「最近 days 天」内的邮件。
+    """取「最近 days 天**收到**」的条目（spec §5.3）。
 
-    received 解析不出来的条目按「保留」处理 —— 宁可多给一封，不要静默丢件。
+    窗口比的是**收到时刻**（条目内部键 `_internaldate`，由 `_fetch_headers` 放进去），
+    不是 `received` —— 那是 `Date:` 头，即**原始发信时间**；转发件上它可能很旧，
+    按它筛会把「刚收到的旧邮件」静默丢掉。`_internaldate` 不是对外契约的键，
+    `_do_list` 在返回前剥掉。
+
+    缺失 / `None` / naive / 任何不可比的值一律按「保留」处理 —— fail-open：
+    宁可多给一封，也不要因单封坏邮件静默丢件，更不要让它抛穿整次抓取。
 
     没有「未读」分支：转发过来的邮件在 Gmail 里恒为未读，而只读访问永不改变它，
     那个分支恒真、等于没有（spec §4.1）。
     """
     cutoff = now - timedelta(days=days)
-    return [it for it in items
-            if (ts := _parse_ts(it.get("received", ""))) is None or ts >= cutoff]
+    out = []
+    for it in items:
+        ts = it.get("_internaldate")
+        if not isinstance(ts, datetime) or ts.tzinfo is None or ts >= cutoff:
+            out.append(it)
+    return out
 ```
 
 - [ ] **Step 4: 跑测试**
@@ -1075,7 +1107,9 @@ def select_scope(items: list[dict], now: datetime,
 | `_parse_ts` 改回 `fromisoformat`（不再吃 RFC 2822） | `test_parse_ts_converts_to_utc_aware`、`test_received_dt_reads_date_header` |
 | `_parse_ts` 的 `ts.tzinfo is None` 判断改成 `False`（接受 naive） | `test_parse_ts_rejects_naive` |
 | `_iso` 改成 `dt.replace(tzinfo=None).isoformat()`（丢掉时区） | `test_iso_keeps_timezone_offset` |
-| `select_scope` 改回丢弃坏日期 | `test_select_scope_keeps_unparseable_fail_open` |
+| `select_scope` 改成按 `received`（`Date:` 头）筛选 —— **必须忠实地用 `datetime.fromisoformat` 解 `received`** | `test_select_scope_filters_by_internaldate_not_date_header` |
+| `select_scope` 的 `ts.tzinfo is None` 守卫去掉（把 naive 也拿去比） | `test_select_scope_keeps_missing_naive_or_bad_fail_open` |
+| `select_scope` 改回丢弃坏日期（`continue`，而非保留） | `test_select_scope_keeps_missing_naive_or_bad_fail_open` |
 | `select_scope` 加回 `if not it.get("is_read"):` 分支 | `test_select_scope_has_no_unread_branch` |
 | `message_body` 里把 `plains` 与 `htmls` 优先级对调 | `test_message_body_prefers_plain_in_alternative` |
 | `message_body` 删掉 attachment 跳过 | `test_message_body_skips_attachments` |
@@ -1085,15 +1119,20 @@ def select_scope(items: list[dict], now: datetime,
 | `parse_internaldate` 的格式串改成 `%Y-%m-%d %H:%M:%S %z`（写成 ISO 顺序） | `test_parse_internaldate_reads_imap_format` |
 
 > **⚠️ 本表不要写「去掉 `astimezone`」类的变异 —— 它们全部退化。** 原因是一个结构性事实：
-> **UTC 归一本文件做了两遍** —— `_parse_ts`（`:950`）与 `parse_internaldate`（`:972`）各做一次
-> `astimezone(timezone.utc)`，`_iso`（`:981`）**再做一次**。而三条日期用例断言的都是 `_iso(dt)`，
+> **UTC 归一本文件做了两遍** —— `_parse_ts` 与 `parse_internaldate` 各做一次
+> `astimezone(timezone.utc)`，`_iso` **再做一次**。而三条日期用例断言的都是 `_iso(dt)`，
 > 所以只改「表示形式」（去掉某一处的 `astimezone`）的变异，最终串逐字不变，**用例照绿**。
-> 2026-09-21 实测（三行全绿 ⇒ 全退化）：`parse_internaldate` 去掉 `astimezone` → `2026-09-17T08:31:00+00:00`（不变）；
+> 2026-09-21 本地实跑（三行全绿 ⇒ 全退化）：`parse_internaldate` 去掉 `astimezone` → `2026-09-17T08:31:00+00:00`（不变）；
 > `_parse_ts` 去掉 `astimezone` → 同上（不变）；`_iso` 去掉 `astimezone` → `+0000` 输入本已 UTC，亦不变。
 > ⇒ **能咬的只有两类**：**丢偏移**（`_iso` 那行）或**改错时刻/格式**（`_parse_ts` 的 `fromisoformat` 行、
 > `parse_internaldate` 的格式串行）。表已按此选行。
-> 历史：本行先写作「改用 `parsedate_to_datetime`」（实测等价，退化），改后被复审指出**替换后的
+> 历史：本行先写作「改用 `parsedate_to_datetime`」（本地实跑判为等价 ⇒ 退化），改后被复审指出**替换后的
 > 「去掉 `astimezone`」同样退化**，遂换成现在这条 —— 它钉的是该用例 docstring 声称的性质（日月年短横线这个 IMAP 专有顺序）。
+>
+> **另一处陷阱（本表新增的 `select_scope` 那一行）**：该行要求「按 `received`（`Date:` 头）筛选」，
+> 实现时**必须忠实地用 `datetime.fromisoformat` 去解 `received`** —— 若图省事拿 `_parse_ts`（只吃 RFC 2822）
+> 去解那个 ISO 串，它会返回 `None`，条目被 fail-open 全量保留，**用例照绿**。
+> 那正是本表要钉的缺陷被另一种错法掩盖的样子 —— 两处错互相抵消，比只有一处更难看见。
 
 - [ ] **Step 6: 提交**
 
@@ -1353,6 +1392,7 @@ def test_do_list_applies_select_scope(monkeypatch):
         seen["ids"] = [it["id"] for it in items]
         seen["days"] = days
         seen["now_aware"] = now.tzinfo is not None
+        seen["intd"] = [it.get("_internaldate") for it in items]
         return [{"id": "sentinel"}]
 
     _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr(), b"2": _hdr()}), scope=spy)
@@ -1360,7 +1400,9 @@ def test_do_list_applies_select_scope(monkeypatch):
     assert out == [{"id": "sentinel"}]
     assert seen["ids"] == ["1", "2"]
     assert seen["days"] == 3
-    assert seen["now_aware"], "now 必须是 aware，否则与 received 比较会抛 TypeError"
+    assert seen["now_aware"], "now 必须是 aware，否则与 cutoff 比较会抛 TypeError"
+    assert all(isinstance(x, datetime) and x.tzinfo is not None for x in seen["intd"]), \
+        "交给 select_scope 的 _internaldate 必须是 aware datetime —— 串会被 fail-open 静默放过，窗口就死了"
 
 
 def test_list_mail_returns_empty_without_fetching(monkeypatch):
@@ -1551,10 +1593,13 @@ def _fetch_headers(conn, uids: list[bytes]) -> list[dict]:
         if not m:
             continue
         intd = re.search(rb'INTERNALDATE "([^"]+)"', blob)
+        internaldate = parse_internaldate(intd.group(1).decode()) if intd else None
         msg = message_from_bytes(raw if isinstance(raw, bytes) else b"")
-        out.append(header_item(
-            m.group(1).decode(), msg,
-            parse_internaldate(intd.group(1).decode()) if intd else None))
+        item = header_item(m.group(1).decode(), msg, internaldate)
+        # 窗口比的是收到时刻（spec §5.3），对外契约却只有四个键 ——
+        # 收到时刻放内部键，`_do_list` 在返回前剥掉（形状断言盯着这件事）。
+        item["_internaldate"] = internaldate
+        out.append(item)
     return out
 
 
@@ -1575,7 +1620,9 @@ def _do_list(days: int) -> list[dict]:
         items: list[dict] = []
         for chunk in _chunks(uids, HEADER_BATCH):
             items.extend(_fetch_headers(conn, chunk))
-        return select_scope(items, datetime.now(timezone.utc), days)
+        kept = select_scope(items, datetime.now(timezone.utc), days)
+        # 剥掉内部键 `_internaldate`：对外契约恰好四个键（spec §4）
+        return [{k: v for k, v in it.items() if k != "_internaldate"} for it in kept]
     finally:
         _logout_quietly(conn)
 
