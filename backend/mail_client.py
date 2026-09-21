@@ -18,6 +18,11 @@ import binascii
 import json
 import time
 from datetime import datetime, timedelta, timezone
+from email import message_from_bytes
+from email.header import decode_header, make_header
+from email.utils import parseaddr, parsedate_to_datetime
+
+from backend.canvas_client import strip_html
 
 from . import banweb
 
@@ -149,39 +154,153 @@ def parse_get_bodies(resp: dict) -> list[dict]:
     return out
 
 
-def _parse_ts(raw: str) -> datetime | None:
-    """OWA 时间戳形如 2026-09-17T08:31:00Z。解析不出返回 None。
+# ---------- 头部解码（spec §5.7）----------
 
-    缺时区偏移的（naive）也返回 None：它与 aware 的 cutoff 比较会抛 TypeError，
-    而那是本文件唯一一条 fail-closed 路径 —— 单封坏邮件就能炸穿整个 select_scope。
-    归到 None 即走「保留」分支，与其余坏输入的处理一致。
+def decode_mime_header(raw: str | None) -> str:
+    """解 RFC 2047 编码字（=?UTF-8?B?…?=）。解不出就原样返回，绝不编造。
+
+    Gmail 上中文主题/发件人是编码字属常态而非边缘情况，不做这一步就是乱码。
+    """
+    if not raw:
+        return ""
+    try:
+        return str(make_header(decode_header(raw)))
+    except Exception:
+        return raw
+
+
+def sender_name(raw: str | None) -> str:
+    """显示名优先，退回邮箱地址（口径与旧 OWA 版一致）。"""
+    name, addr = parseaddr(raw or "")
+    name = decode_mime_header(name)
+    return name or addr
+
+
+# ---------- 日期（spec §5.3：received 取 Date 头，转 UTC 带时区）----------
+
+def _parse_ts(raw: str | None) -> datetime | None:
+    """解析 RFC 2822 Date 头（如 Thu, 17 Sep 2026 08:31:00 +0800）。
+
+    解析不出、或缺时区（naive）都返回 None。naive 返回 None 是刻意的：
+    它与 aware 的 cutoff 比较会抛 TypeError，而那是本文件唯一一条 fail-closed
+    路径 —— 单封坏邮件就能炸穿整个 select_scope。归到 None 即走「保留」分支。
+
+    （旧版解析的是 OWA 的 ISO 时间戳；语义已改，函数名保留。）
     """
     if not isinstance(raw, str) or not raw:
         return None
     try:
-        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
+        ts = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
         return None
-    return None if ts.tzinfo is None else ts
+    if ts is None or ts.tzinfo is None:
+        return None
+    return ts.astimezone(timezone.utc)
+
+
+def received_dt(msg) -> datetime | None:
+    """取邮件的「发送时间」。用 Date 头（原始发信时间），解不出返回 None。"""
+    return _parse_ts(msg.get("Date"))
+
+
+def parse_internaldate(raw: str | None) -> datetime | None:
+    """解析 IMAP 的 INTERNALDATE（如 17-Sep-2026 08:31:00 +0000）。
+
+    格式是 IMAP 专有的（日月年用短横线、无星期），用 strptime 把它钉死；
+    带偏移的返回 UTC aware，解析不出（含不带偏移的串）返回 None。
+    注：`parsedate_to_datetime` 同样吃得下这个格式（spec §10.8 有实测），
+    保留手写版本是为了格式显式，不是因为标准库解析不了。
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        ts = datetime.strptime(raw.strip(), "%d-%b-%Y %H:%M:%S %z")
+    except (TypeError, ValueError):
+        return None
+    return ts.astimezone(timezone.utc)
+
+
+def _iso(dt: datetime | None) -> str:
+    """带时区的 ISO 8601（UTC），形如 2026-09-17T08:31:00+00:00。
+
+    前端 fmtLocal() 解析不出会**原样显示** —— 格式错了会以肉眼可见的丑样子
+    暴露，而不是静默。所以这里不需要额外兜底。
+    """
+    return dt.astimezone(timezone.utc).isoformat() if dt else ""
+
+
+def header_item(uid: str, msg, internaldate: datetime | None = None) -> dict:
+    """把一封邮件的头组装成对外契约的条目（键集合：id/subject/sender/received）。
+
+    时间取 Date 头（原始发信时间）；**解不出时退回 INTERNALDATE**（邮件落进 Gmail
+    的时刻），绝不返回空串 —— 空串会让前端 new Date("") 得到 Invalid Date，
+    那是静默的坏值。两个都没有才给空串，此时 select_scope 会 fail-open 保留它。
+    """
+    return {
+        "id": uid,
+        "subject": decode_mime_header(msg.get("Subject")),
+        "sender": sender_name(msg.get("From")),
+        "received": _iso(received_dt(msg) or internaldate),
+    }
+
+
+# ---------- 正文（spec §5.7）----------
+
+def _part_text(part) -> str:
+    """解码单个 MIME part 的文本。charset 认不出就 replace，绝不抛。"""
+    try:
+        data = part.get_payload(decode=True)
+    except Exception:
+        return ""
+    if not data:
+        return ""
+    charset = part.get_content_charset() or "utf-8"
+    try:
+        return data.decode(charset, errors="replace")
+    except (LookupError, ValueError):
+        return data.decode("utf-8", errors="replace")
+
+
+def message_body(msg) -> str:
+    """抽正文纯文本。
+
+    multipart/alternative 优先 text/plain；跳过带 Content-Disposition: attachment
+    的 part；只有 HTML 就用 canvas_client.strip_html 转纯文本。
+    """
+    if msg.is_multipart():
+        plains, htmls = [], []
+        for part in msg.walk():
+            if part.is_multipart():
+                continue
+            if (part.get_content_disposition() or "") == "attachment":
+                continue
+            ctype = part.get_content_type()
+            if ctype == "text/plain":
+                plains.append(_part_text(part))
+            elif ctype == "text/html":
+                htmls.append(_part_text(part))
+        if any(t.strip() for t in plains):
+            return "\n".join(t for t in plains if t.strip())
+        if htmls:
+            return strip_html("\n".join(htmls))
+        return ""
+    if msg.get_content_type() == "text/html":
+        return strip_html(_part_text(msg))
+    return _part_text(msg)
 
 
 def select_scope(items: list[dict], now: datetime,
                  days: int = DEFAULT_DAYS) -> list[dict]:
-    """取「未读 ∪ 最近 days 天」。
+    """取「最近 days 天」内的邮件。
 
-    未读不看时间：可能很旧但仍需处理。
     received 解析不出来的条目按「保留」处理 —— 宁可多给一封，不要静默丢件。
+
+    没有「未读」分支：转发过来的邮件在 Gmail 里恒为未读，而只读访问永不改变它，
+    那个分支恒真、等于没有（spec §4.1）。
     """
     cutoff = now - timedelta(days=days)
-    out = []
-    for it in items:
-        if not it.get("is_read"):
-            out.append(it)
-            continue
-        ts = _parse_ts(it.get("received", ""))
-        if ts is None or ts >= cutoff:
-            out.append(it)
-    return out
+    return [it for it in items
+            if (ts := _parse_ts(it.get("received", ""))) is None or ts >= cutoff]
 
 
 def jwt_exp(token: str) -> datetime | None:

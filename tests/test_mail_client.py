@@ -1,5 +1,7 @@
 """OWA 取信层测试（纯函数 + I/O）。全程合成 fixture，不出网。"""
+import email
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 
 import pytest
 
@@ -404,3 +406,243 @@ def test_list_mail_keeps_target_closed_retry(monkeypatch):
     monkeypatch.setattr(mail_client, "_capture_token", flaky_capture)
     assert mail_client.list_mail(7) == []
     assert len(calls) == 2      # 第一次被 _retry_once 吞下并整体重跑
+
+
+# ============ Gmail IMAP 取信层：纯函数（spec §4/§5.3/§5.6/§5.7）============
+
+def _msg(subject="", sender="", date="", body="", ctype="text/plain", charset="utf-8"):
+    m = EmailMessage()
+    if subject:
+        m["Subject"] = subject
+    if sender:
+        m["From"] = sender
+    if date:
+        m["Date"] = date
+    m.set_content(body or "", subtype=ctype.split("/")[-1], charset=charset)
+    return m
+
+
+# --- RFC 2047 头部解码：Gmail 上中文主题是常态，不解码就是乱码 ---
+
+def test_decode_mime_header_decodes_base64_utf8():
+    """=?UTF-8?B?…?= 必须解出中文，逐字钉住。"""
+    raw = "=?UTF-8?B?5L2c5Lia5oiq5q2i5pel5pyf?="
+    assert mail_client.decode_mime_header(raw) == "作业截止日期"
+
+
+def test_decode_mime_header_decodes_quoted_printable():
+    assert mail_client.decode_mime_header("=?UTF-8?Q?=E6=B5=8B=E8=AF=95?=") == "测试"
+
+
+def test_decode_mime_header_passes_plain_through():
+    assert mail_client.decode_mime_header("Assignment 3") == "Assignment 3"
+
+
+def test_decode_mime_header_handles_empty_and_none():
+    assert mail_client.decode_mime_header("") == ""
+    assert mail_client.decode_mime_header(None) == ""
+
+
+def test_decode_mime_header_joins_adjacent_encoded_words():
+    """相邻编码字之间的空白要吃掉，不能留缝。"""
+    raw = "=?UTF-8?B?5L2c5Lia?= =?UTF-8?B?5oiq5q2i?="
+    assert mail_client.decode_mime_header(raw) == "作业截止"
+
+
+def test_decode_mime_header_returns_something_on_garbage():
+    """解不出也不能抛 —— 返回 str 即可（值本身不钉，因为 fallback 形态是实现细节）。"""
+    out = mail_client.decode_mime_header("=?UTF-8?B?!!!not-base64!!!?=")
+    assert isinstance(out, str)
+
+
+# --- 发件人：显示名优先，退回地址 ---
+
+def test_sender_name_prefers_display_name():
+    assert mail_client.sender_name("CityU Registry <reg@cityu.edu.hk>") == "CityU Registry"
+
+
+def test_sender_name_decodes_encoded_display_name():
+    """显示名是编码字时必须解出来。"""
+    raw = "=?UTF-8?B?6ICB5biI?= <t@cityu.edu.hk>"
+    assert mail_client.sender_name(raw) == "老师"
+
+
+def test_sender_name_falls_back_to_address():
+    assert mail_client.sender_name("<reg@cityu.edu.hk>") == "reg@cityu.edu.hk"
+
+
+def test_sender_name_empty_input():
+    assert mail_client.sender_name("") == ""
+    assert mail_client.sender_name(None) == ""
+
+
+# --- 日期：RFC 2822 → 带时区 ISO（UTC）---
+
+def test_parse_ts_converts_to_utc_aware():
+    dt = mail_client._parse_ts("Thu, 17 Sep 2026 16:31:00 +0800")
+    assert dt is not None
+    assert dt.tzinfo is not None
+    assert mail_client._iso(dt) == "2026-09-17T08:31:00+00:00"
+
+
+def test_iso_keeps_timezone_offset():
+    """格式必须带时区 —— 前端 fmtLocal 解析不出会原样显示，所以这点会肉眼可见。"""
+    dt = mail_client._parse_ts("Thu, 17 Sep 2026 08:31:00 +0000")
+    assert mail_client._iso(dt).endswith("+00:00")
+
+
+def test_parse_ts_rejects_naive():
+    """缺时区的返回 None：naive 与 aware 的 cutoff 比较会抛 TypeError，
+    那是唯一一条 fail-closed 路径，单封坏邮件能炸穿整个 select_scope。"""
+    assert mail_client._parse_ts("17 Sep 2026 08:31:00") is None
+
+
+def test_parse_ts_rejects_garbage():
+    assert mail_client._parse_ts("???") is None
+    assert mail_client._parse_ts("") is None
+    assert mail_client._parse_ts(None) is None
+
+
+def test_received_dt_reads_date_header():
+    m = _msg(date="Thu, 17 Sep 2026 16:31:00 +0800")
+    assert mail_client._iso(mail_client.received_dt(m)) == "2026-09-17T08:31:00+00:00"
+
+
+def test_received_dt_none_when_no_date():
+    assert mail_client.received_dt(_msg()) is None
+
+
+# --- INTERNALDATE：Date 头缺失时的退路（spec §5.3）---
+
+def test_parse_internaldate_reads_imap_format():
+    """IMAP 的 INTERNALDATE 是日月年短横线、带偏移，须换算成 UTC。"""
+    dt = mail_client.parse_internaldate("17-Sep-2026 16:31:00 +0800")
+    assert mail_client._iso(dt) == "2026-09-17T08:31:00+00:00"
+
+
+def test_parse_internaldate_rejects_garbage():
+    assert mail_client.parse_internaldate("???") is None
+    assert mail_client.parse_internaldate("") is None
+    assert mail_client.parse_internaldate(None) is None
+
+
+def test_header_item_falls_back_to_internaldate():
+    """**Date 头缺失时不能给空串** —— 那会让前端 new Date("") 拿到 Invalid Date。
+    退到 INTERNALDATE（spec §5.3）。"""
+    m = _msg(subject="无日期头")
+    it = mail_client.header_item("9", m,
+                                 mail_client.parse_internaldate("17-Sep-2026 16:31:00 +0800"))
+    assert it["received"] == "2026-09-17T08:31:00+00:00"
+
+
+def test_header_item_prefers_date_header_over_internaldate():
+    """两者都在时用 Date 头（原始发信时间），不用 INTERNALDATE（落进 Gmail 的时刻）。"""
+    m = _msg(date="Thu, 10 Sep 2026 00:00:00 +0000")
+    it = mail_client.header_item("9", m,
+                                 mail_client.parse_internaldate("17-Sep-2026 16:31:00 +0800"))
+    assert it["received"] == "2026-09-10T00:00:00+00:00"
+
+
+# --- header_item：组装对外契约的条目 ---
+
+def test_header_item_shape_exactly_four_keys():
+    """键集合白名单 —— is_read 已删除，多一个少一个都要红。"""
+    m = _msg(subject="作业", sender="老师 <t@cityu.edu.hk>",
+             date="Thu, 17 Sep 2026 16:31:00 +0800")
+    it = mail_client.header_item("42", m)
+    assert set(it) == {"id", "subject", "sender", "received"}
+    assert it["id"] == "42"
+    assert it["subject"] == "作业"
+    assert it["sender"] == "老师"
+    assert it["received"] == "2026-09-17T08:31:00+00:00"
+
+
+def test_header_item_survives_missing_headers():
+    it = mail_client.header_item("7", _msg())
+    assert it == {"id": "7", "subject": "", "sender": "", "received": ""}
+
+
+# --- select_scope：纯日期窗口，fail-open ---
+
+def test_select_scope_keeps_recent():
+    now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+    items = [{"received": "2026-09-16T00:00:00+00:00"},
+             {"received": "2026-09-01T00:00:00+00:00"}]
+    assert [i["received"] for i in mail_client.select_scope(items, now, 7)] == \
+        ["2026-09-16T00:00:00+00:00"]
+
+
+def test_select_scope_keeps_unparseable_fail_open():
+    """坏日期保留 —— 宁可多给一封，不要静默丢件。"""
+    now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+    items = [{"received": "???"}, {"received": ""}]
+    assert len(mail_client.select_scope(items, now, 7)) == 2
+
+
+def test_select_scope_has_no_unread_branch():
+    """未读不再影响结果：老邮件只要超出窗口就丢弃，不管它读没读。
+
+    （is_read 键已从契约删除；这里刻意塞一个 is_read=False 的老邮件证明它不再被保留。）
+    """
+    now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+    items = [{"received": "2026-01-01T00:00:00+00:00", "is_read": False}]
+    assert mail_client.select_scope(items, now, 7) == []
+
+
+# --- 正文抽取：MIME + charset + HTML ---
+
+def test_message_body_plain():
+    m = EmailMessage()
+    m.set_content("正文内容", subtype="plain", charset="utf-8")
+    assert "正文内容" in mail_client.message_body(m)
+
+
+def test_message_body_prefers_plain_in_alternative():
+    """multipart/alternative 里优先 text/plain，不取 HTML。"""
+    m = EmailMessage()
+    m.set_content("纯文本版", subtype="plain", charset="utf-8")
+    m.add_alternative("<p>HTML 版</p>", subtype="html", charset="utf-8")
+    body = mail_client.message_body(m)
+    assert "纯文本版" in body
+    assert "HTML 版" not in body
+
+
+def test_message_body_falls_back_to_html_as_text():
+    """只有 HTML 时转纯文本，标签不能留在正文里。"""
+    m = EmailMessage()
+    m.set_content("<p>段落一</p><p>段落二</p>", subtype="html", charset="utf-8")
+    body = mail_client.message_body(m)
+    assert "段落一" in body and "段落二" in body
+    assert "<p>" not in body
+
+
+def test_message_body_skips_attachments():
+    """附件内容绝不能混进正文。"""
+    m = EmailMessage()
+    m.set_content("正文", subtype="plain", charset="utf-8")
+    m.add_attachment(b"ATTACHMENT-BYTES", maintype="application",
+                     subtype="octet-stream", filename="a.bin")
+    body = mail_client.message_body(m)
+    assert "正文" in body
+    assert "ATTACHMENT-BYTES" not in body
+
+
+def test_message_body_decodes_base64_chinese():
+    """中文正文常是 base64 + utf-8。"""
+    import base64
+    m = EmailMessage()
+    m.set_content("你好世界", subtype="plain", charset="utf-8")
+    m.replace_header("Content-Transfer-Encoding", "base64")
+    m.set_payload(base64.b64encode("你好世界".encode()).decode())
+    assert "你好世界" in mail_client.message_body(m)
+
+
+def test_message_body_unknown_charset_does_not_raise():
+    m = EmailMessage()
+    m.set_content("x", subtype="plain", charset="utf-8")
+    m.set_param("charset", "no-such-charset")
+    assert isinstance(mail_client.message_body(m), str)
+
+
+def test_message_body_empty_message_is_empty_string():
+    assert mail_client.message_body(EmailMessage()) == ""
