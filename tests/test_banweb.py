@@ -670,13 +670,25 @@ def test_is_mail_url_matches_all_mail_hosts():
 
 def test_mail_hosts_stay_disjoint_from_aims_hosts():
     """`_find_page` 第一段循环里的邮件过滤之所以是「无操作」，全靠这条不变式：
-    MAIL_HOSTS 与 {BANWEB, LOGIN_HOST} 不相交。日后加邮件域时若撞上 AIMS 的域名，
-    这条会立刻炸 —— 那时第一段循环的过滤不但会咬合，还会把 AIMS 登录页一起跳过。
+    MAIL_HOSTS 与 {BANWEB, LOGIN_HOST} **前缀不相交**。日后加邮件域时若撞上 AIMS
+    的域名，这条会立刻炸 —— 那时第一段循环的过滤不但会咬合，还会把 AIMS 登录页
+    一起跳过。
+
+    **两个方向缺一不可**，因为 `_is_mail_url` 是拿 MAIL_HOSTS 去 `startswith`
+    页面 URL 的，两个方向都能让 AIMS 页被误判成邮件页：
+      · `h.startswith(AIMS)` —— 邮件域更长。误把 Okta 的 auth.cityu.edu.hk 加进来，
+        于是 AIMS 登录页自己变成「邮件页」。
+      · `AIMS.startswith(h)` —— 邮件域更短。写了 `https://banweb` 这种半截前缀，
+        效果一样。只钉前一个方向时，这一半出问题没有任何用例会红。
     这里也顺带钉住 LOGIN_HOST（Okta host）**不在** MAIL_HOSTS 里。"""
     assert not any(
         h.startswith(banweb.BANWEB) or h.startswith(banweb.LOGIN_HOST)
         for h in banweb.MAIL_HOSTS
-    )
+    ), "MAIL_HOSTS 里有以 AIMS host 为前缀的项：AIMS 页会被判成邮件页"
+    assert not any(
+        banweb.BANWEB.startswith(h) or banweb.LOGIN_HOST.startswith(h)
+        for h in banweb.MAIL_HOSTS
+    ), "MAIL_HOSTS 里有 AIMS host 的前缀：AIMS 页会被判成邮件页"
 
 
 def test_is_mail_url_covers_mail_login_relay_host():
