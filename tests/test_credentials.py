@@ -153,3 +153,73 @@ def test_delete_credentials_not_found(monkeypatch):
     calls = _patch(monkeypatch, acct_rc=44)
     assert credentials.delete_credentials() is False
     assert all(a[1] != "delete-generic-password" for a in calls)
+
+
+# --- Gmail 版（同一套逻辑，换 service）---
+
+def test_gmail_service_name_is_distinct():
+    """两个 service 必须不同 —— 否则 Gmail 密码会覆盖 AIMS 密码。"""
+    assert credentials.GMAIL_SERVICE != credentials.SERVICE
+    assert credentials.GMAIL_SERVICE == "cityu_gmail_imap"
+
+
+def test_save_gmail_uses_gmail_service(monkeypatch):
+    """service 用的是 Gmail 那个，不是 AIMS 的。"""
+    calls = _patch(monkeypatch)
+    credentials.save_gmail("me@gmail.com", "app-pw-16")
+    add = _add_call(calls)
+    assert add[add.index("-s") + 1] == credentials.GMAIL_SERVICE
+    assert add[add.index("-a") + 1] == "me@gmail.com"
+    assert add[add.index("-w") + 1] == "app-pw-16"
+
+
+def test_save_gmail_rejects_empty(monkeypatch):
+    calls = _patch(monkeypatch)
+    with pytest.raises(credentials.CredentialsError):
+        credentials.save_gmail("", "pw")
+    with pytest.raises(credentials.CredentialsError):
+        credentials.save_gmail("me@gmail.com", "")
+    assert not any(a[1] == "add-generic-password" for a in calls)
+
+
+def test_save_gmail_replaces_old_address(monkeypatch):
+    """与 AIMS 同款 M2 修复：换地址先删旧项。"""
+    calls = _patch(monkeypatch, acct="old@gmail.com")
+    credentials.save_gmail("new@gmail.com", "pw")
+    dele = next(a for a in calls if a[1] == "delete-generic-password")
+    assert dele[dele.index("-s") + 1] == credentials.GMAIL_SERVICE
+    assert dele[dele.index("-a") + 1] == "old@gmail.com"
+
+
+def test_get_gmail_returns_pair(monkeypatch):
+    _patch(monkeypatch, acct="me@gmail.com", pw="app-pw-16")
+    assert credentials.get_gmail() == ("me@gmail.com", "app-pw-16")
+
+
+def test_get_gmail_none_when_missing(monkeypatch):
+    _patch(monkeypatch, acct_rc=44)
+    assert credentials.get_gmail() is None
+
+
+def test_gmail_address_is_read_from_gmail_service(monkeypatch):
+    """get_gmail_address 查的是 Gmail 的 service。"""
+    calls = _patch(monkeypatch, acct="me@gmail.com")
+    assert credentials.get_gmail_address() == "me@gmail.com"
+    find = next(a for a in calls if a[1] == "find-generic-password" and "-w" not in a)
+    assert find[find.index("-s") + 1] == credentials.GMAIL_SERVICE
+
+
+def test_delete_gmail_scopes_account(monkeypatch):
+    calls = _patch(monkeypatch, acct="me@gmail.com")
+    assert credentials.delete_gmail() is True
+    dele = next(a for a in calls if a[1] == "delete-generic-password")
+    assert dele[dele.index("-s") + 1] == credentials.GMAIL_SERVICE
+    assert dele[dele.index("-a") + 1] == "me@gmail.com"
+
+
+def test_aims_save_still_uses_aims_service(monkeypatch):
+    """参数化之后 AIMS 那条路没被带偏。"""
+    calls = _patch(monkeypatch)
+    credentials.save_credentials("sc123456", "s3cret")
+    add = _add_call(calls)
+    assert add[add.index("-s") + 1] == credentials.SERVICE
