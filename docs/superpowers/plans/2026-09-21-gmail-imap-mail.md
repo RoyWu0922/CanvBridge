@@ -1072,6 +1072,7 @@ def select_scope(items: list[dict], now: datetime,
 |---|---|
 | `decode_mime_header` 改成 `return raw or ""`（不解码） | `test_decode_mime_header_decodes_base64_utf8`、`..._quoted_printable`、`..._joins_adjacent_encoded_words`、`test_sender_name_decodes_encoded_display_name` |
 | `sender_name` 改成 `return raw or ""` | `test_sender_name_prefers_display_name`、`..._falls_back_to_address` |
+| `_parse_ts` 改回 `fromisoformat`（不再吃 RFC 2822） | `test_parse_ts_converts_to_utc_aware`、`test_received_dt_reads_date_header` |
 | `_parse_ts` 去掉 `astimezone(timezone.utc)` | `test_parse_ts_converts_to_utc_aware` |
 | `_parse_ts` 的 `ts.tzinfo is None` 判断改成 `False`（接受 naive） | `test_parse_ts_rejects_naive` |
 | `_iso` 去掉 `astimezone` | `test_iso_keeps_timezone_offset` |
