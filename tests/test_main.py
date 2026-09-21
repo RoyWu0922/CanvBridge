@@ -1887,10 +1887,11 @@ def test_mail_summarize_joins_bodies_and_groups(monkeypatch):
     # 在 tests/test_mail_client.py。
     assert set(body) == {"ok", "mails", "groups", "warnings"}
     # 逐条邮件的键集合也要钉住：顶层白名单管不到元素，而 `mails` 正是前端的回指表。
-    # 用 `==` 而不是 `<=` —— 这是**刻意收紧**，不是笔误：白名单就是要在加字段时
-    # 变红，红了就来这里显式决定「这个字段该不该出现」，而不是让它静默通过。
-    # （原先用 `<=` 是子集断言，正是 Task 5 删掉 is_read 时没有任何用例变红的
-    # 原因 —— 声明强于断言，白名单得是相等而不是包含。）
+    # 用 `==` 而不是 `<=` —— 这是**刻意收紧**，不是笔误：`<=` 只在**多出白名单外的键**
+    # 时变红，**少了一个白名单内的键**它照样绿（子集仍成立）；红了就来这里显式决定
+    # 「这个字段该不该出现」，而不是让它静默通过。
+    # （原先用 `<=` 是子集断言，正是 Task 5 删掉 is_read 时没有任何用例变红的**原因**
+    # —— 那是**少键**。声明强于断言，白名单得是相等而不是包含。）
     assert all(set(m) == {"id", "subject", "sender", "received", "index", "body"}
                for m in body["mails"])
 
@@ -1954,8 +1955,9 @@ def test_mail_summarize_failure_is_200_json(monkeypatch):
 def test_mail_summarize_fetch_bodies_failure_reports_mail_phase(monkeypatch):
     """取信阶段（list_mail / fetch_bodies）炸了 → reason == "mail"。
 
-    前端据此才敢发手动登录问询：这一段失败多半是 Okta 会话失效。若把 phase 写死在
-    "llm" 上，用户会被指去查 API key —— 方向是错的。
+    前端据此显示对的文案：这一段失败是 Gmail 侧（认证失败要去设置页重填应用专用密码，
+    spec §11），而 AI 阶段失败是 API key / 模型服务的问题。若把 phase 写死在 "llm" 上，
+    用户会被指去查 API key —— 方向是错的。
     """
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
         {"id": "A", "subject": "作业", "sender": "", "received": ""}])

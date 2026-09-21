@@ -693,7 +693,16 @@ def test_fetch_bodies_uses_body_peek(monkeypatch):
     """取正文整封走 BODY.PEEK[] —— 裸 BODY[] 会置 \\Seen。
 
     筛选条件只认 `(uid, FETCH)`，断言钉的是**命令内容**，两者不同口径。
-    原先两句是同一个谓词（筛选按 `"BODY.PEEK[]" in c[-1]`，下一句又断言同一个
+    三句各守一件事，缺任何一句都丢一档分辨力（各配一条变异）：`assert fetches`
+    只管「发过 FETCH」；`all(...)` 管「发出去的每一条都不能是裸 `BODY[`」；
+    `any("BODY.PEEK[]")` 管「**正文**那一条确实发过」。
+    少了最后一句，本用例自己 `list_mail(7)` 发出的 header FETCH
+    （`BODY.PEEK[HEADER.FIELDS …]`）就会把 `fetches` 填满、并通过上面那句 `all(...)`
+    ——「正文一条都没取」于是全绿（把 `_do_bodies` 改成早退 `return {}` 照绿）。
+    **顺序是刻意的**：`any(...)` 放在 `all(...)` **之后**，两条变异才各红各的行 ——
+    正文改成裸 `BODY[]` 红在 `all(...)`（`BODY[` 被子串匹配抓到），
+    正文一条都不发红在 `any(...)`。反过来放会遮住前一条。
+    原先前两句是同一个谓词（筛选按 `"BODY.PEEK[]" in c[-1]`，下一句又断言同一个
     谓词）⇒ 第二句恒真，改成 `BODY[]` 时红的是 `assert fetches` 的空列表，
     第二句从未真正做过判断。
     """
@@ -705,6 +714,8 @@ def test_fetch_bodies_uses_body_peek(monkeypatch):
     assert fetches, "没发出任何 FETCH，下面的断言是空转的"
     assert all("BODY.PEEK" in str(c[-1]) and not re.search(r"BODY\[", str(c[-1]))
                for c in fetches), f"有 FETCH 不是 PEEK 取件：{fetches}"
+    assert any("BODY.PEEK[]" in str(c[-1]) for c in fetches), \
+        f"正文一条 FETCH 都没发（header FETCH 把列表填满了）：{fetches}"
 
 
 def test_fetch_bodies_empty_input_does_not_connect(monkeypatch):

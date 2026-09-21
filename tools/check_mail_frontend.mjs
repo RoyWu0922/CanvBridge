@@ -28,9 +28,12 @@
  *     --mutate-rm-filter   只把 reminders 那一路改成「先 filter 再 map」（下标重排）
  *     --mutate-no-esc      删掉 F4 那一行（Esc 不再关 confirmPrompt）
  *     --mutate-widx[=EXPR] 把取行写成 EXPR，默认 `arr[0]`（按下标取行 → 恒取第一条）
+ *     --mutate-mail-relogin[=SITE]  邮件失败路径改回「发 AIMS 手动登录问询」
+ *                          （SITE ∈ init / refresh / summarize，默认 all 三处一起）
  *     --mutate             = r2 + meta + map + widx **四个一起上**，红 8 条：
  *                          B1 B2 B4 B5 C2 E3 H1 H2
- *   `--mutate-rm-filter` 与 `--mutate-no-esc` **不在** `--mutate` 里，必须各自单独跑。
+ *   `--mutate-rm-filter`、`--mutate-no-esc`、`--mutate-mail-relogin` **不在** `--mutate` 里，
+ *   必须各自单独跑（`--mutate-mail-relogin` 逐 SITE 跑才能说清 I 段每条断言钉的是哪一处）。
  *   取行表达式带方括号，shell 下请加引号，否则会被当通配符：
  *     node tools/check_mail_frontend.mjs --mutate-widx='arr[1]'
  *     node tools/check_mail_frontend.mjs --mutate-widx='arr.at(-1)'
@@ -126,6 +129,17 @@ const WIDX_ARG  = process.argv.find(a => a === "--mutate-widx" || a.startsWith("
 const WIDX_EXPR = WIDX_ARG && WIDX_ARG.includes("=") ? WIDX_ARG.slice(WIDX_ARG.indexOf("=") + 1) : "arr[0]";
 const MUTATE_WIDX  = !!WIDX_ARG || MUTATE;
 if (MUTATE_WIDX && !WIDX_EXPR.trim()) throw new Error("--mutate-widx 的表达式为空");
+/* `--mutate-mail-relogin[=SITE]`：把邮件失败路径的 `offerManualLogin` 加回去（F4）。
+   逐 SITE 跑才能证明 I 段每条断言的判别对象是哪一处：只变异一处时，红的是它自己那一条，
+   另两处的断言必须仍绿 —— 否则「断言红」可能只是被别处的变异带红的。
+   三个锚点互不重叠，故 `all` 也只是三次替换的合取。 */
+const RELOGIN_ARG = process.argv.find(a => a === "--mutate-mail-relogin" || a.startsWith("--mutate-mail-relogin="));
+const RELOGIN_SITE = RELOGIN_ARG && RELOGIN_ARG.includes("=")
+  ? RELOGIN_ARG.slice(RELOGIN_ARG.indexOf("=") + 1) : "all";
+const MUTATE_MAIL_RELOGIN = !!RELOGIN_ARG;
+if (MUTATE_MAIL_RELOGIN && !["all", "init", "refresh", "summarize"].includes(RELOGIN_SITE))
+  throw new Error(`--mutate-mail-relogin 只认 all/init/refresh/summarize，实得 ${JSON.stringify(RELOGIN_SITE)}`);
+const relogin = site => MUTATE_MAIL_RELOGIN && (RELOGIN_SITE === "all" || RELOGIN_SITE === site);
 
 const mutate = (src, anchor, repl, label) => {
   const hits = src.split(anchor).length - 1;
@@ -187,6 +201,30 @@ for (const f of ["i18n.js", "util.js", "app.js", "shell.js"]) {
          表达式可覆盖：四种常量下标变异体（0 / 1 / at(-1) / length-1）都要能被钉住。 */
       src = mutate(src, "const row = arr[Number(b.dataset.e)];",
         `const row = ${WIDX_EXPR};`, "widx");
+    }
+    /* F4 回归：把邮件失败路径的「发 AIMS 手动登录问询」加回去。三处各一个锚点，
+       逐 SITE 跑 ⇒ 红的必须是 I 段里对应那一条。 */
+    if (relogin("init")) {
+      /* 变异体把 promise **返回**出去（修复前是浮动续延）—— 只为让探针能确定地等到它
+         跑完；它复现的仍是同一件事：取信失败去开 AIMS 登录窗。 */
+      src = mutate(src,
+        "  return loadMail();\n}",
+        "  return loadMail().then(ok => { if(!ok) return offerManualLogin(mailState.error); });\n}",
+        "mail-relogin/init");
+    }
+    if (relogin("refresh")) {
+      src = mutate(src,
+        `  await withBusy(t("mail.refresh"), $("btnMailRefresh"), loadMail);\n}`,
+        `  let err = "";\n  await withBusy(t("mail.refresh"), $("btnMailRefresh"), async () => {\n`
+        + `    if(!await loadMail()) err = mailState.error;\n  });\n  if(err) offerManualLogin(err);\n}`,
+        "mail-relogin/refresh");
+    }
+    if (relogin("summarize")) {
+      src = mutate(src,
+        "的问题，指去重登 AIMS 是另一种「指错方向」（同 memory 里 AIMS 那条坑）。 */\n}",
+        "的问题，指去重登 AIMS 是另一种「指错方向」（同 memory 里 AIMS 那条坑）。 */\n"
+        + "  if(failReason === \"mail\") await offerManualLogin(failMsg);\n}",
+        "mail-relogin/summarize");
     }
   }
   try {
@@ -470,6 +508,91 @@ ok(hObs[0] && hObs[0].stub.disabled === true,
 run(`globalThis.__hgrpAfter = JSON.stringify(mailState.groups);`);
 ok(sandbox.__hgrpBefore === sandbox.__hgrpAfter,
    "H5 两发点击之间 mailState.groups 逐字未变（写入处理器不污染状态）");
+
+/* I：邮件失败的**补救方向**（F4 回归守卫）。
+   邮件取信走 Gmail IMAP，**没有浏览器、不依赖 AIMS 登录态**；spec §11 要求认证失败时
+   「文案直接指向设置页重填；不重试」。而修复前三条邮件失败路径都去 `offerManualLogin()`
+   —— 弹「要打开 Chrome 窗口手动登录吗」→ `banweb/open_login`，把用户指向一个对邮件
+   无效的动作，还开出一个本设计刻意消灭的 AIMS 窗口。此前没有任何断言守着这件事。
+
+   三条路径各驱动一遍（首次进页 / 刷新 / AI 总结的取信阶段），每条都查两件事：
+     **正的**：后端那条 error 被呈现到用户看得见的地方（文案直达才是 spec 要的补救）；
+     **负的**：`#loginPrompt` 没被打开（没发手动登录问询）。
+   然后**再驱动 AIMS 那条路径**，断言它**仍然**发问询 —— `offerManualLogin` 被两条线
+   共用，只证明「邮件侧不问了」是不够的：把共用出口整个拆掉同样能让上面全绿。
+   最后一并断言整段探针期间没有任何 `banweb/open_login`。
+
+   **判据不是「没抛错」**：`offerManualLogin` 会先开弹层再 fetch，故 `loginPrompt.hidden`
+   是最直接的观测点；`banweb/open_login` 在下面的桩里**故意放行并记账**（不 throw），
+   这样「它没被调用」由账本断言直接给出，而不是由某个异常间接暗示。
+   载荷证明见文件头 `--mutate-mail-relogin[=SITE]`。 */
+const realFetch = sandbox.fetch;
+const ROUTED = {
+  "/api/mail/list":         { ok: false, error: "SYNTH-MAIL-AUTH-ERR" },
+  "/api/mail/summarize":    { ok: false, reason: "mail", error: "SYNTH-MAIL-AUTH-ERR" },
+  "/api/banweb/auto_login": { ok: false, error: "SYNTH-AIMS-AUTO-ERR" },
+  "/api/banweb/status":     { ok: false, error: "SYNTH-AIMS-STATUS-ERR" },
+  "/api/banweb/open_login": { ok: true },     // 放行 + 记账（见上）
+};
+const iLogStart = fetchLog.length;
+sandbox.fetch = (url, opts) => {
+  const u = String(url);
+  fetchLog.push({ url: u, body: JSON.parse((opts && opts.body) || "{}") });
+  if (!(u in ROUTED)) throw new Error("自检不该发起 fetch：" + u);
+  return { ok: true, status: 200, json: async () => ROUTED[u] };
+};
+const iLog = () => fetchLog.slice(iLogStart).map(f => f.url);
+
+/* 每发探针之前把弹层状态清干净。**这不是洁癖**：`offerManualLogin` 会一直挂到用户作答，
+   一发探针若把弹层留在打开态，`confirmManualLogin` 的并发语义（同一 promise）会让下一发
+   复用它 —— 那时下一发的负例断言就是被**上一发**带红的，逐 SITE 跑时分不清是谁干的
+   （`--mutate-mail-relogin=refresh` 会连带把 I7 也弄红）。故每发结束都按「取消」落地。 */
+const iDismiss = () => {
+  if (nodes["btnLoginPromptNo"] && nodes["btnLoginPromptNo"].onclick) nodes["btnLoginPromptNo"].onclick();
+};
+
+/* 前提断言：`mailState.error` 必须真的是**后端桩那条**（而不是 `status.backend_fail` 之类）。
+   少了它，桩没接上时下面几条会因为「压根没走到失败路径」而全绿。 */
+run(`mailState.mails = []; mailState.error = ""; mailState.groups = [];`);
+await settle(run(`globalThis.__iInit = initMailTab();`));
+run(`globalThis.__iErr1 = mailState.error;`);
+ok(sandbox.__iErr1 === "SYNTH-MAIL-AUTH-ERR",
+   `I1 前提：首次进页取信失败确实走了失败路径（实得 ${JSON.stringify(sandbox.__iErr1)}）`);
+ok(nodes["mailList"].innerHTML.includes("SYNTH-MAIL-AUTH-ERR"),
+   "I2 首次进页：后端那条文案呈现给了用户（spec §11 文案直达）");
+ok(nodes["loginPrompt"].hidden === true, "I3 首次进页取信失败**没有**发 AIMS 手动登录问询");
+iDismiss();
+
+run(`mailState.mails = []; mailState.error = "";`);
+await settle(run(`globalThis.__iRefresh = refreshMail();`));
+run(`globalThis.__iErr2 = mailState.error;`);
+ok(sandbox.__iErr2 === "SYNTH-MAIL-AUTH-ERR",
+   `I4 前提：刷新失败确实走了失败路径（实得 ${JSON.stringify(sandbox.__iErr2)}）`);
+ok(nodes["loginPrompt"].hidden === true, "I5 刷新失败**没有**发 AIMS 手动登录问询");
+iDismiss();
+
+run(`
+  mailState.error = ""; mailState.groups = [];
+  mailState.mails = [{ index: 0, subject: "SYNTH-MAIL-S", sender: "s0@example.invalid",
+                       received: "2026-09-01T00:00:00Z" }];
+`);
+await settle(run(`globalThis.__iSum = mailSummarize();`));
+ok(nodes["status"].textContent.includes("SYNTH-MAIL-AUTH-ERR"),
+   `I6 AI 总结的取信阶段失败也把后端文案呈现给用户（实得 ${JSON.stringify(nodes["status"].textContent)}）`);
+ok(nodes["loginPrompt"].hidden === true, "I7 AI 总结的取信阶段失败**没有**发 AIMS 手动登录问询");
+iDismiss();
+
+/* AIMS 侧：**仍然**发问询（同一条 `offerManualLogin`，改一处必须证明另一处没坏）。
+   走 `#btnBanwebLogin` 那条：它不经过 runAutoLogin 的成功分支，故不会碰 setInterval
+   （本沙箱没提供 setInterval —— 加了反而会把一条与本题无关的依赖引进来）。 */
+await settle(run(`globalThis.__iAims = document.getElementById("btnBanwebLogin").onclick();`));
+ok(nodes["loginPrompt"].hidden === false,
+   "I8 AIMS 失败路径**仍然**发手动登录问询（共用出口没被一起拆掉）");
+iDismiss();
+
+ok(!iLog().includes("/api/banweb/open_login"),
+   `I9 整段探针期间没有任何 banweb/open_login（实得 ${JSON.stringify(iLog())}）`);
+sandbox.fetch = realFetch;
 
 console.log(fails ? `\n✗ ${fails} 条未通过（共 ${total} 条断言）` : `\n✓ 全部通过（共 ${total} 条断言）`);
 process.exit(fails ? 1 : 0);

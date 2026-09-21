@@ -2413,8 +2413,9 @@ const LIBRARY_MAX_PAGES = 5;   /* 与后端 library_client.MAX_PAGES 一致；�
    本文件顶层的 `applyLang()` 会经 i18n.js 的钩子调用 renderMail()，而 renderMail
    是**函数声明**（提升），`typeof` 守门拦不住它；状态若压在文件末尾的 `let` 里，
    这一读就是 TDZ ReferenceError，会让本文件顶层余下代码全部不执行（`node --check` 查不出来）。
-   邮箱与 AIMS 共用同一个 Okta 会话；登录失败一律由调用方在 withBusy 之外走 offerManualLogin，
-   spec §9「登录失败即停，绝不自动重试」。 */
+   邮箱**不依赖 AIMS 登录态**：取信走 Gmail IMAP（应用专用密码存本机钥匙串），
+   因而失败路径既不发手动登录问询、也不开浏览器窗口 —— 后端返回的文案已指向设置页，
+   由 renderMail() 呈现。spec §11「认证失败文案直接指向设置页重填；不重试」。 */
 let mailState = { mails: [], groups: null, loading: false, error: "" };
 
 $("btnLang").onclick = () => {
@@ -3071,13 +3072,13 @@ function renderLibraryPager(r){
 
 function initMailTab(){
   if(mailState.mails.length || mailState.loading){ renderMail(); return; }
-  // 首次进页没有遮罩，失败了直接发问
-  loadMail().then(ok => { if(!ok) offerManualLogin(mailState.error); });
+  // 首次进页没有遮罩。取信失败**不发登录问询** —— 走的是 IMAP、没有浏览器，
+  // 后端那条 error（认证失败文案已指向设置页）由 renderMail() 原样呈现为错误卡。
+  return loadMail();
 }
 
-/* 返回布尔：是否成功。**不在这里发问** —— 点刷新时外面套着 withBusy，
-   而 #overlay 的 z-index(50) 高于弹层(40)，在遮罩里弹会被盖住。
-   发问一律由调用方在 withBusy 之外做（同 memory 里 AIMS 那条坑）。 */
+/* 返回布尔：是否成功。失败**不发登录问询**，只把后端给的 error 交给 renderMail()。
+   这里返回 promise 只是为了让调用方能等到它结束（首次进页那条续延要靠这个）。 */
 async function loadMail(){
   if(mailState.loading) return false;
   mailState.loading = true; mailState.error = ""; mailState.groups = null;
@@ -3087,20 +3088,18 @@ async function loadMail(){
   if(r.ok !== true){
     mailState.error = r.error || t("mail.load_failed");
     renderMail();
-    return false;          // 多半是 Okta 会话失效 —— 与 AIMS 同一个会话
+    return false;          // 后端文案（含认证失败的补救指引）已由 renderMail() 呈现
   }
   mailState.mails = r.mails || [];
   renderMail();
   return true;
 }
 
-/* 刷新的唯一出口：遮罩内干活，遮罩外发问（spec §9「登录失败即停，绝不自动重试」） */
+/* 刷新的唯一出口：遮罩内干活。**不在这里发问** —— 取信走 IMAP，没有浏览器、也不依赖
+   AIMS 登录态，所以失败时该做的是让用户看到后端那条文案（认证失败已指向设置页，
+   spec §11），而不是开一个 AIMS 登录窗。遮罩外不动弹，故也不再需要 withBusy 之外的续延。 */
 async function refreshMail(){
-  let err = "";
-  await withBusy(t("mail.refresh"), $("btnMailRefresh"), async () => {
-    if(!await loadMail()) err = mailState.error;
-  });
-  if(err) offerManualLogin(err);
+  await withBusy(t("mail.refresh"), $("btnMailRefresh"), loadMail);
 }
 
 function renderMail(){
@@ -3179,9 +3178,10 @@ function askConfirm(titleText, bodyText){
 /* AI 总结：取信 + 两级归类 + 摘要/DDL 都由后端一次做完（POST /api/mail/summarize）。
    失败一律是 HTTP 200 + `{ok:false,error,reason}`（`api()` 的契约），故只判 `ok`，不判状态码。
    `reason` 是后端在失败路径上多报的一个键（`"mail"` = 取信阶段、`"llm"` = AI 阶段）：
-   同一个 `except` 把两段合成一条失败通道时前端无法区分，于是「Okta 会话死了」会被
-   报成「AI 总结失败」—— 用户照着去查 API key，方向是错的。分流后取信失败才发登录问询，
-   **且必须发在 `withBusy` 之外**：`#overlay` 的 z-index(50) 高于弹层(40)，在遮罩里弹会被盖住。 */
+   同一个 `except` 把两段合成一条失败通道时前端无法区分，于是 Gmail 认证失败会被
+   报成「AI 总结失败」—— 用户照着去查 API key，方向是错的。分流是为了让两段各自
+   显示对的那条文案（下面是 setStatus 那一行）；**两段都不发登录问询** —— 取信走
+   IMAP、没有浏览器，失败时该看的是设置页，不是 AIMS 登录窗。 */
 async function mailSummarize(){
   if(!mailState.mails.length){ setStatus(t("mail.need_refresh"), "err"); return; }
   const s = settings();
@@ -3206,10 +3206,10 @@ async function mailSummarize(){
       setStatus(r.warnings.join(LANG() === "zh" ? "；" : "; "), "info", 8000);
     renderMail();
   });
-  /* 遮罩已收（withBusy 返回）：取信阶段失败多半是 Okta 会话失效 —— 与 AIMS 同一个会话，
-     给一次手动登录的机会。AI 阶段失败**不**问：那是 API key / 模型服务的问题，让用户去
-     重登 AIMS 是另一种「指错方向」（同 memory 里 AIMS 那条坑）。 */
-  if(failReason === "mail") await offerManualLogin(failMsg);
+  /* 两个阶段都**不**发登录问询：上面的 setStatus 已经把后端那条 error 呈现给用户了。
+     取信失败是 Gmail 侧的问题（认证失败文案已指向设置页重填，spec §11），开一个 AIMS
+     Chrome 窗口对邮件无效 —— 那正是这份设计要消灭的东西；AI 失败是 API key / 模型服务
+     的问题，指去重登 AIMS 是另一种「指错方向」（同 memory 里 AIMS 那条坑）。 */
 }
 
 /* 两级分组：课程 → 类型。还没点过 AI 总结（groups 为空）时退回 Task 7 的平铺列表。 */
