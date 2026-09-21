@@ -1073,9 +1073,8 @@ def select_scope(items: list[dict], now: datetime,
 | `decode_mime_header` 改成 `return raw or ""`（不解码） | `test_decode_mime_header_decodes_base64_utf8`、`..._quoted_printable`、`..._joins_adjacent_encoded_words`、`test_sender_name_decodes_encoded_display_name` |
 | `sender_name` 改成 `return raw or ""` | `test_sender_name_prefers_display_name`、`..._falls_back_to_address` |
 | `_parse_ts` 改回 `fromisoformat`（不再吃 RFC 2822） | `test_parse_ts_converts_to_utc_aware`、`test_received_dt_reads_date_header` |
-| `_parse_ts` 去掉 `astimezone(timezone.utc)` | `test_parse_ts_converts_to_utc_aware` |
 | `_parse_ts` 的 `ts.tzinfo is None` 判断改成 `False`（接受 naive） | `test_parse_ts_rejects_naive` |
-| `_iso` 去掉 `astimezone` | `test_iso_keeps_timezone_offset` |
+| `_iso` 改成 `dt.replace(tzinfo=None).isoformat()`（丢掉时区） | `test_iso_keeps_timezone_offset` |
 | `select_scope` 改回丢弃坏日期 | `test_select_scope_keeps_unparseable_fail_open` |
 | `select_scope` 加回 `if not it.get("is_read"):` 分支 | `test_select_scope_has_no_unread_branch` |
 | `message_body` 里把 `plains` 与 `htmls` 优先级对调 | `test_message_body_prefers_plain_in_alternative` |
@@ -1083,9 +1082,18 @@ def select_scope(items: list[dict], now: datetime,
 | `header_item` 加回 `"is_read": False` | `test_header_item_shape_exactly_four_keys` |
 | `header_item` 去掉 `or internaldate` 回退 | `test_header_item_falls_back_to_internaldate` |
 | `header_item` 改成 `_iso(internaldate or received_dt(msg))`（顺序反了） | `test_header_item_prefers_date_header_over_internaldate` |
-| `parse_internaldate` 去掉 `.astimezone(timezone.utc)` | `test_parse_internaldate_reads_imap_format` |
+| `parse_internaldate` 的格式串改成 `%Y-%m-%d %H:%M:%S %z`（写成 ISO 顺序） | `test_parse_internaldate_reads_imap_format` |
 
-> 最后一行原写作「改用 `parsedate_to_datetime`」—— 2026-09-21 实测：两者对同一输入产出**逐字相同**的 ISO 串（`parsedate_to_datetime` 本就吃得下 INTERNALDATE），用例照绿，**是退化变异**，故换成去掉 `astimezone` 这一刀（产出 `2026-09-17T16:31:00+08:00`，必红）。
+> **⚠️ 本表不要写「去掉 `astimezone`」类的变异 —— 它们全部退化。** 原因是一个结构性事实：
+> **UTC 归一本文件做了两遍** —— `_parse_ts`（`:950`）与 `parse_internaldate`（`:972`）各做一次
+> `astimezone(timezone.utc)`，`_iso`（`:981`）**再做一次**。而三条日期用例断言的都是 `_iso(dt)`，
+> 所以只改「表示形式」（去掉某一处的 `astimezone`）的变异，最终串逐字不变，**用例照绿**。
+> 2026-09-21 实测（三行全绿 ⇒ 全退化）：`parse_internaldate` 去掉 `astimezone` → `2026-09-17T08:31:00+00:00`（不变）；
+> `_parse_ts` 去掉 `astimezone` → 同上（不变）；`_iso` 去掉 `astimezone` → `+0000` 输入本已 UTC，亦不变。
+> ⇒ **能咬的只有两类**：**丢偏移**（`_iso` 那行）或**改错时刻/格式**（`_parse_ts` 的 `fromisoformat` 行、
+> `parse_internaldate` 的格式串行）。表已按此选行。
+> 历史：本行先写作「改用 `parsedate_to_datetime`」（实测等价，退化），改后被复审指出**替换后的
+> 「去掉 `astimezone`」同样退化**，遂换成现在这条 —— 它钉的是该用例 docstring 声称的性质（日月年短横线这个 IMAP 专有顺序）。
 
 - [ ] **Step 6: 提交**
 
