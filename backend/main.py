@@ -6,6 +6,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, StreamingResponse
@@ -54,6 +55,31 @@ class MailListRequest(BaseModel):
 class MailSummaryRequest(LLMConfig):
     days: int = 7
     language: str = "zh"
+
+
+class MailDetailRequest(BaseModel):
+    #: 字段一律 `Any` + 手写校验：`int` 会把 `"3"` 隐式转成 3、`str` 遇到 3 会抛 422
+    #: —— 两条都违反 spec §5（既不许隐式转换，也不许抛 HTTP 异常）。
+    id: Any = None
+
+
+class MailAttachmentRequest(BaseModel):
+    id: Any = None
+    index: Any = None
+    download_dir: Any = None
+
+
+def _mail_str(v) -> str | None:
+    """请求字段必须是非空**字符串**。不做任何隐式转换（spec §5）。"""
+    return v.strip() if isinstance(v, str) and v.strip() else None
+
+
+def _mail_index(v) -> int | None:
+    """必须是非负整数。`bool` 要**显式排掉**：`bool` 是 `int` 的子类，
+    `isinstance(True, int)` 为真，不排的话 `true` 会被当成 1。字符串同样拒。"""
+    if isinstance(v, bool) or not isinstance(v, int):
+        return None
+    return v if v >= 0 else None
 
 
 class SyncRequest(CanvasConfig):
@@ -1009,6 +1035,52 @@ def mail_list(req: MailListRequest = MailListRequest()):
     try:
         mails = mail_client.list_mail(req.days)
         return {"ok": True, "count": len(mails), "mails": mails}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/mail/detail")
+def mail_detail(req: MailDetailRequest = MailDetailRequest()):
+    """取一封的正文 + 附件清单。只读，不调 LLM、不改已读状态。
+
+    字段校验失败一律 HTTP 200 + `{ok:false, error}`（与 `/api/mail/list` 同一条通道）——
+    前端 `api()` 只判 `ok`，抛 HTTP 异常只会让用户看到 422 的解析失败文案。
+    `req` 带默认实例，FastAPI 据此把 body 判为**可选**（同 `/api/mail/list` 的理由）。
+
+    「一律」的**边界**（本轮实跑量过，写下来免得被读成疏漏）：`Any` + 默认实例只挡住
+    **字段层**的隐式转换与缺失；body 本身不是 JSON 对象（`"hello"`、`[1,2]`、`3`、
+    畸形 JSON）时，FastAPI 在进入本函数之前就答 **422** —— 与 `/api/mail/list` 逐格一致。
+    spec §5 的「不抛」只约束**字段**校验、并要求「沿用现 `/api/mail/list` 写法」，故**不修**；
+    前端 `api()` 只发对象或干脆不发 body，走不到这条路径。
+    """
+    uid = _mail_str(req.id)
+    if uid is None:
+        return {"ok": False, "error": "缺少邮件编号（id）"}
+    try:
+        return {"ok": True, "detail": mail_client.fetch_detail({"id": uid})}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/mail/attachment")
+def mail_attachment(req: MailAttachmentRequest = MailAttachmentRequest()):
+    """取单个附件并落盘。只读，不改已读状态。
+
+    落盘位置由 `mail_client.save_attachment` 决定（`<download_dir>/学校邮件/…`），
+    本路由只做请求校验与错误包装。
+    """
+    uid = _mail_str(req.id)
+    if uid is None:
+        return {"ok": False, "error": "缺少邮件编号（id）"}
+    index = _mail_index(req.index)
+    if index is None:
+        return {"ok": False, "error": "附件编号（index）必须是非负整数"}
+    download_dir = _mail_str(req.download_dir)
+    if download_dir is None:
+        return {"ok": False, "error": "缺少下载目录（download_dir）"}
+    try:
+        return {"ok": True,
+                "path": mail_client.save_attachment({"id": uid}, index, download_dir)}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 

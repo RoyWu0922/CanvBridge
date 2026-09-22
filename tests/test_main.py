@@ -1857,6 +1857,95 @@ def test_mail_list_failure_is_200_json(monkeypatch):
     assert r.json() == {"ok": False, "error": "邮箱会话已失效"}
 
 
+# --- 学校邮箱：详情与附件（spec §5）---
+
+def test_mail_detail_returns_detail(monkeypatch):
+    monkeypatch.setattr(mail_client, "fetch_detail", lambda item: {
+        "id": item["id"], "body": "正文",
+        "attachments": [{"index": 0, "name": "a.bin", "size": 4}]})
+    body = TestClient(main.app).post("/api/mail/detail", json={"id": "A"}).json()
+    assert body["ok"] is True
+    assert body["detail"]["body"] == "正文"
+    assert set(body) == {"ok", "detail"}
+
+
+def test_mail_detail_rejects_missing_or_bad_id(monkeypatch):
+    """`id` 必须是非空字符串；缺 / 数字 / 空串一律 `{ok:false}`，**HTTP 200、不抛**。"""
+    called = []
+    monkeypatch.setattr(mail_client, "fetch_detail",
+                        lambda item: called.append(item) or {"id": "", "body": "", "attachments": []})
+    for payload in ({}, {"id": ""}, {"id": "   "}, {"id": 3}, {"id": None}, {"id": ["A"]}):
+        r = TestClient(main.app).post("/api/mail/detail", json=payload)
+        assert r.status_code == 200, payload
+        assert r.json()["ok"] is False, payload
+    assert called == [], "校验没过就不许调到取信层"
+
+
+def test_mail_detail_tolerates_bodyless_request(monkeypatch):
+    """无 body 的 POST 也要走通（前端 api() 在 body 为 undefined 时不发 body）。"""
+    r = TestClient(main.app).post("/api/mail/detail")
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+    assert "detail" not in r.json()          # 不能是 FastAPI 的 422 错误体
+
+
+def test_mail_detail_failure_is_200_json(monkeypatch):
+    def boom(item):
+        raise mail_client.MailError("邮箱已被重建")
+    monkeypatch.setattr(mail_client, "fetch_detail", boom)
+    r = TestClient(main.app).post("/api/mail/detail", json={"id": "A"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": False, "error": "邮箱已被重建"}
+
+
+def test_mail_attachment_returns_path(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(mail_client, "save_attachment",
+                        lambda item, index, d: seen.update(item=item, index=index, d=d) or "/x/a.bin")
+    body = TestClient(main.app).post("/api/mail/attachment", json={
+        "id": "A", "index": 1, "download_dir": "/tmp"}).json()
+    assert body == {"ok": True, "path": "/x/a.bin"}
+    assert seen == {"item": {"id": "A"}, "index": 1, "d": "/tmp"}
+
+
+def test_mail_attachment_rejects_string_index(monkeypatch):
+    """**结论承重**：`"3"` 必须拒（spec §5「不许隐式转换」）。
+
+    Pydantic 的 lax `int` 会把 `"3"` 变成 `3` —— 实跑确认过。所以这里必须用
+    手写校验；`called == []` 是这条用例承重的一半：少了它，隐式转换能全绿。
+    """
+    called = []
+    monkeypatch.setattr(mail_client, "save_attachment",
+                        lambda item, index, d: called.append(index) or "/x")
+    for bad in ("1", "0", 1.0, True, False, None, -1, [0]):
+        r = TestClient(main.app).post("/api/mail/attachment", json={
+            "id": "A", "index": bad, "download_dir": "/tmp"})
+        assert r.status_code == 200, bad
+        assert r.json()["ok"] is False, bad
+    assert called == [], "隐式转换会走到这里 —— 这条是承重的一半"
+
+
+def test_mail_attachment_rejects_missing_fields(monkeypatch):
+    monkeypatch.setattr(mail_client, "save_attachment", lambda item, index, d: "/x")
+    for payload in ({}, {"id": "A"}, {"id": "A", "index": 0},
+                    {"id": "A", "index": 0, "download_dir": ""},
+                    {"id": "", "index": 0, "download_dir": "/tmp"}):
+        r = TestClient(main.app).post("/api/mail/attachment", json=payload)
+        assert r.status_code == 200, payload
+        assert r.json()["ok"] is False, payload
+
+
+def test_mail_attachment_failure_is_200_json(monkeypatch):
+    def boom(item, index, d):
+        raise mail_client.MailError("附件超过 20 MB，为避免占满磁盘已停止下载。（a.bin）")
+    monkeypatch.setattr(mail_client, "save_attachment", boom)
+    r = TestClient(main.app).post("/api/mail/attachment", json={
+        "id": "A", "index": 0, "download_dir": "/tmp"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+    assert "超过 20 MB" in r.json()["error"]
+
+
 def test_mail_summarize_joins_bodies_and_groups(monkeypatch):
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
         {"id": "A", "subject": "作业", "sender": "李老師",
