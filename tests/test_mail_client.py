@@ -1182,3 +1182,222 @@ def test_logout_error_does_not_escape_or_mask(monkeypatch):
     mail_client.list_mail(7)
     with pytest.raises(mail_client.MailError, match="读取邮件正文失败"):
         mail_client.fetch_detail({"id": "1"})
+
+
+# ============ 附件：净化、大小、单个取回（spec §4）============
+
+@pytest.mark.parametrize("raw,expect", [
+    ("../../etc/passwd", "____etc_passwd"),
+    ("..\\..\\x", "____x"),
+    ("a/b.txt", "a_b.txt"),
+    ("a\x00b.txt", "ab.txt"),
+    ("  .hidden.  ", "hidden"),
+    ("", "attachment-3"),
+    ("x" * 300, "x" * 200),
+])
+def test_safe_attachment_name(raw, expect):
+    """净化后**永不**含路径分隔符、`..` 段或 NUL，且非空、不过 200 字符。
+
+    ⚠️ 前两例的期望值是**实跑定的**，别按直觉往回改：净化顺序是「先 `/`、`\\` → `_`，
+    **再** `..` → `_`」，所以 `../../etc/passwd` 先变成 `.._.._etc_passwd`，那两个
+    `..` 随后各自被换成 `_`（连同夹在中间的 `_`），最终是 **`____etc_passwd`**（4 个下划线）。
+    写成 `".._.._etc_passwd"` 会与**本用例第二条断言** `".." not in out` 自相矛盾 ——
+    计划初稿就是这么错的，实跑 7 例抓出来的。
+    """
+    out = mail_client.safe_attachment_name(raw, 3)
+    assert out == expect
+    assert "/" not in out and "\\" not in out and "\x00" not in out and ".." not in out
+
+
+def test_att_name_survives_get_filename_raising():
+    """`_att_name` 的守卫：`get_filename()` **抛**时给 `attachment-<index>`，绝不往上抛。
+
+    这条补的是 Task 4 `test_fetch_detail_survives_broken_mime` **声称**覆盖、实测**没有**
+    覆盖的那一格（那份输入解出 0 个附件 part，`_att_name` 根本没被调用）。
+    守卫本身是 Task 5 加的（Task 4 的 `_att_name` 是朴素版、没有 try），所以这条只能落在 Task 5。
+    用替身而不是真 MIME：`compat32` 的 `get_filename()` 实际很难被喂到「抛」的形状，
+    而这里要钉的是**我们的守卫**，不是解析器的行为。
+    """
+    class _BadName:
+        def get_filename(self):
+            raise ValueError("boom")
+    assert mail_client._att_name(_BadName(), 4) == "attachment-4"
+
+
+def test_part_size_is_none_when_undecodable():
+    """解不出就是 `None`，**绝不编造 0**（spec §4）。"""
+    class _Bad:
+        def get_payload(self, decode=False):
+            raise ValueError("boom")
+    assert mail_client._part_size(_Bad()) is None
+
+
+def test_reject_if_too_big_boundary_and_message():
+    """边界与文案：`== MAX` 放行、`MAX+1` 抛，且文案逐字含「超过 20 MB」。"""
+    limit = mail_client.MAX_ATTACHMENT_BYTES
+    mail_client._reject_if_too_big(limit, "a.bin")          # 不抛
+    with pytest.raises(mail_client.MailError) as ei:
+        mail_client._reject_if_too_big(limit + 1, "a.bin")
+    assert "超过 20 MB" in str(ei.value)
+
+
+def test_fetch_attachment_returns_name_and_bytes(monkeypatch):
+    raw = _raw_mail([(_att_head(b"a.bin"), b"AAAA"), (_att_head(b"b.bin"), b"BB")])
+    _detail_install(monkeypatch, {b"1": raw})
+    mail_client.list_mail(7)
+    assert mail_client.fetch_attachment({"id": "1"}, 1) == ("b.bin", b"BB")
+
+
+def test_fetch_attachment_agrees_with_detail_index(monkeypatch):
+    """**组合绑定**：detail 报出的 index 拿回 `fetch_attachment`，取到的是**同一个**附件。"""
+    raw = _raw_mail([(_att_head(b"a.bin"), b"AAAA"), (_att_head(b"b.bin"), b"BB")])
+    _detail_install(monkeypatch, {b"1": raw})
+    mail_client.list_mail(7)
+    for a in mail_client.fetch_detail({"id": "1"})["attachments"]:
+        name, data = mail_client.fetch_attachment({"id": "1"}, a["index"])
+        assert name == a["name"]
+        assert len(data) == a["size"]
+
+
+def test_fetch_attachment_rejects_bad_index(monkeypatch):
+    """越界 / 负数 / 非 int（含 bool）一律抛，绝不「就近取一个」。"""
+    _detail_install(monkeypatch, {b"1": _raw_mail([(_att_head(b"a.bin"), b"AAAA")])})
+    mail_client.list_mail(7)
+    for bad in (-1, 1, 99, "0", None, True, 0.0):
+        with pytest.raises(mail_client.MailError):
+            mail_client.fetch_attachment({"id": "1"}, bad)
+
+
+def test_fetch_attachment_raises_when_uid_is_gone(monkeypatch):
+    _detail_install(monkeypatch, {b"1": _raw_mail([(_att_head(b"a.bin"), b"AAAA")])})
+    mail_client.list_mail(7)
+    with pytest.raises(mail_client.MailError):
+        mail_client.fetch_attachment({"id": "999"}, 0)
+
+
+def test_fetch_attachment_logout_error_does_not_escape(monkeypatch):
+    """`fetch_attachment` 的登出异常同样不许冒出去。
+
+    与 Task 4 `test_logout_error_does_not_escape_or_mask` **同源同形但不同点**：
+    那条钉 `fetch_detail` 的 `finally`，这条钉 `fetch_attachment` 的。
+    两处**各自承重** —— 只钉一处的话，另一处换回裸 `conn.logout()`
+    不会被任何用例发现（全仓此前没有任何用例让 `logout` 抛过）。
+    """
+    class _BadLogout(_BodyIMAP):
+        def logout(self):
+            self.sent.append(("logout",))
+            raise imaplib.IMAP4.error("socket already closed")
+
+    raw = _raw_mail([(_att_head(b"a.bin"), b"AAAA")])
+    _install(monkeypatch, _BadLogout(headers={b"1": _hdr()}, bodies={b"1": raw}))
+    mail_client.list_mail(7)
+    assert mail_client.fetch_attachment({"id": "1"}, 0) == ("a.bin", b"AAAA")
+
+
+def test_forwarded_message_attachment_round_trips(monkeypatch):
+    """「作为附件转发」的邮件（`message/rfc822`）：**列得出、下载得回、size 对得上**。
+
+    这是 Task 4 修好「静默丢掉」之后的**下半场**：`_part_bytes` 必须走
+    `as_bytes()` 那条分支，否则清单里有它、点下载却报「无法解码」。
+    断言刻意**不钉字节数与内容细节**（`as_bytes()` 是 stdlib 的再序列化，
+    换行/折行会被规范化 —— 钉死那些数字就是钉 stdlib 的行为，不是钉我们的）；
+    钉的是「内嵌正文确实在里面」+「下载长度 == 清单报的 size」这条组合绑定。
+    """
+    inner = (b"From: a@x.com\r\nTo: t@cityu.edu.hk\r\n"
+             b"Subject: inner\r\n\r\ninner body\r\n")
+    eml = (b"Content-Type: message/rfc822\r\n"
+           b'Content-Disposition: attachment; filename="fwd.eml"')
+    _detail_install(monkeypatch, {b"1": _raw_mail([(eml, inner)])})
+    mail_client.list_mail(7)
+    d = mail_client.fetch_detail({"id": "1"})
+    assert [a["name"] for a in d["attachments"]] == ["fwd.eml"]
+    name, data = mail_client.fetch_attachment({"id": "1"}, 0)
+    assert name == "fwd.eml"
+    assert b"inner body" in data, "内嵌那封邮件的正文必须在下载内容里"
+    assert len(data) == d["attachments"][0]["size"]
+
+
+# ============ 只读三件套：新路径也要**全流程**覆盖（spec §7）============
+# 既有的 `test_all_fetches_use_body_peek` / `test_never_issues_mutating_commands`
+# 只驱动 `list_mail` —— 症状是「取件那两条路有没有置已读」在整份测试里**没人问过**。
+# 单靠 Task 12 的 grep 不够：grep 查的是字面量，查不出「用了某个会置已读的别名」。
+
+def test_detail_and_attachment_paths_are_readonly(monkeypatch):
+    """详情与附件取回：全程 PEEK、无 STORE/COPY/MOVE/EXPUNGE。
+
+    **正例锚**（否定式断言的老毛病）：「一条命令都没发」时下面几条同时恒真，
+    所以先证明这次运行真走到了取件那段路。两次调用各连一次（不缓存，spec §4），
+    故 FETCH 至少两条 —— 一条 list_mail 的、两条取整封的。
+    """
+    raw = _raw_mail([(_att_head(b"a.bin"), b"AAAA")])
+    fake = _detail_install(monkeypatch, {b"1": raw})
+    mail_client.list_mail(7)
+    mail_client.fetch_detail({"id": "1"})
+    mail_client.fetch_attachment({"id": "1"}, 0)
+    fetches = [c for c in fake.sent if c[0] == "uid" and c[1] == "FETCH"]
+    assert len(fetches) >= 2, f"取件那两条路没真发 FETCH，下面的断言是空转的：{fetches}"
+    assert fake.sent.count(("select", "INBOX", True)) == 3, \
+        "三次调用各连一次，且每次都必须 EXAMINE（readonly=True）"
+    for c in fetches:
+        assert "BODY.PEEK" in c[-1], f"用了非 PEEK 取件：{c}"
+        assert not re.search(r"BODY\[", c[-1]), f"出现裸 BODY[]：{c}"
+    bad = [c for c in fake.sent
+           if c[0] == "uid" and str(c[1]).upper() in ("STORE", "COPY", "MOVE", "EXPUNGE")]
+    assert bad == [], f"取详情/附件时发了变更命令：{bad}"
+    assert not any(str(x).upper().startswith(("STORE", "EXPUNGE"))
+                   for c in fake.sent for x in c)
+
+
+# ============ 补：Task 5 两条**变异实测存活**的守卫（brief 未覆盖，实现者补）============
+# 两条都是「代码/注释声明了、brief 的用例却钉不住」的形状。判据是变异实测，不是直觉：
+# 把被钉的那一行改掉，下面两条各自变红（brief 的用例全绿）。
+
+def test_att_name_decodes_rfc2047_filename(monkeypatch):
+    """RFC 2047 编码字的附件名必须解成人话 —— 这是 `_att_name` 里 `decode_mime_header` 兜底**唯一的理由**。
+
+    **变异实测（M6）**：把 `_att_name` 改回 `safe_attachment_name(raw, index)`（去掉兜底），
+    brief 的整节用例**全绿**（106 passed）—— 因为 brief 里所有附件名都是纯 ASCII，
+    `get_filename()` 对它们给的就是可读名字，兜底那条路**一次都没走到**。
+    于是 Step 1 那趟实测（表里 rfc2047 一格：`get_filename()` 给的是**编码字原文**）
+    在用例层面**没有任何绑定**，删掉兜底不会有人发现。
+
+    钉的是**生产路径**（`message_from_bytes` 解出的 part → `_att_name`），不是探针的 str 路径。
+    """
+    raw = _raw_mail([(_att_head(b"=?utf-8?B?5L2c5LiaLnBkZg==?="), b"AAAA")])
+    _detail_install(monkeypatch, {b"1": raw})
+    mail_client.list_mail(7)
+
+    # 先证明这份输入**确实**落在兜底那一格（否则本用例是空转的：
+    # 若某天 stdlib 自己解开了编码字，兜底就成了死代码，这条会红在这里而不是名字上）。
+    part = mail_client._attachment_parts(email.message_from_bytes(raw))[0]
+    assert part.get_filename() == "=?utf-8?B?5L2c5LiaLnBkZg==?=", \
+        "get_filename() 已经自己能解编码字了 —— Step 1 表里 rfc2047 那一格的前提变了"
+
+    d = mail_client.fetch_detail({"id": "1"})
+    assert [a["name"] for a in d["attachments"]] == ["作业.pdf"]
+    assert mail_client.fetch_attachment({"id": "1"}, 0)[0] == "作业.pdf"
+
+
+def test_fetch_attachment_rejects_bool_index_even_when_in_range(monkeypatch):
+    """`bool` 必须**显式**排掉，不能靠越界兜住。
+
+    **变异实测（M5）**：把 `isinstance(index, bool) or ...` 里的 `isinstance(index, bool) or`
+    删掉，brief 的两条索引用例**全绿** —— 因为 brief 的 `test_fetch_attachment_rejects_bad_index`
+    用的是**单附件**的邮件，`True`（=1）在那里**恰好越界**，于是它红在范围的断言上，
+    `bool` 守卫**一次都没承重**。docstring 写的「（含 bool）」是关于**覆盖**的声明，
+    而实际覆盖是「范围顺带挡住」—— 声明强于断言。
+
+    换成**两个附件**（`True`=1 落在范围内）才咬得住：少了守卫时 `True` 会**静默取回第 1 个附件**，
+    正是本用例要禁的「就近取一个」。`False`=0 同样在范围内，故两个方向都钉。
+    """
+    raw = _raw_mail([(_att_head(b"a.bin"), b"AAAA"), (_att_head(b"b.bin"), b"BB")])
+    _detail_install(monkeypatch, {b"1": raw})
+    mail_client.list_mail(7)
+
+    # 正例锚：0/1 是**合法**的（否则下面的 raises 可能只是「一直抛」）
+    assert mail_client.fetch_attachment({"id": "1"}, 0)[0] == "a.bin"
+    assert mail_client.fetch_attachment({"id": "1"}, 1)[0] == "b.bin"
+
+    for bad in (True, False):
+        with pytest.raises(mail_client.MailError):
+            mail_client.fetch_attachment({"id": "1"}, bad)

@@ -50,6 +50,9 @@ HEADER_BATCH = 50          # 一次 UID FETCH 取几封的头
 BODY_BATCH = 5             # 一次 UID FETCH 取几封的整封（比旧值保守：见 spec §5.4）
 _THROTTLE = 0.5            # 批次间隔（秒），旧 spec §9「请求节流」
 MAX_BODY_CHARS = 200_000   # 单封正文上限，纯防病态巨型邮件
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024   # 单附件上限（spec §4；保守取值，非实测）
+#: 超限文案里的「20 MB」由它生成 —— 改限额时文案跟着改，两者不会对不上。
+MAX_ATTACHMENT_MB = MAX_ATTACHMENT_BYTES // (1024 * 1024)
 
 #: 判据用的学校域名（spec §2.1）。只此一处定义 —— 实现与用例都从它取。
 SCHOOL_DOMAIN = "cityu.edu.hk"
@@ -548,15 +551,81 @@ def _attachment_parts(msg) -> list:
             and (p.get_content_disposition() or "") == "attachment"]
 
 
+def safe_attachment_name(raw: str, index: int) -> str:
+    """把附件名净化成一个**安全文件名**（spec §4）。
+
+    去 NUL、去 `/` 与 `\\`、中和 `..`、去掉首尾空白与点；净化后为空 → `attachment-<index>`；
+    截断 200 字符。**落盘前另有一道独立的锚点断言**（`save_attachment`），
+    不靠「净化过了」这一步推理保证安全。
+    """
+    name = raw or ""
+    name = name.replace("\x00", "")
+    name = name.replace("/", "_").replace("\\", "_")
+    name = name.replace("..", "_")
+    name = name.strip().strip(".")
+    if not name:
+        name = f"attachment-{index}"
+    return name[:200]
+
+
 def _att_name(part, index: int) -> str:
-    """附件名。**朴素版**：Task 5 加净化与编解码兜底。"""
-    return part.get_filename() or f"attachment-{index}"
+    """附件名：`get_filename()`（覆盖 RFC 2047 与 RFC 2231）再过净化。
+
+    `get_filename()` 对某几种头给不出可读名字时由 `decode_mime_header` 兜底
+    （覆盖情况见 Task 5 Step 1 的实跑记录）。解不出一律给 `attachment-<index>`，
+    **绝不**编一个名字。
+    """
+    try:
+        raw = part.get_filename() or ""
+    except Exception:
+        raw = ""
+    return safe_attachment_name(decode_mime_header(raw), index)
+
+
+def _part_bytes(part) -> bytes | None:
+    """附件字节。**单一来源** —— `_part_size` 与 `fetch_attachment` 都走它。
+
+    这样「清单里报的 size」与「下载到的长度」**结构上**不可能对不上
+    （`fetch_attachment` 那条组合绑定用例因此是恒真的，但它是防线不是理由：
+    将来谁绕过 `_part_bytes` 直接 `get_payload`，它会立刻红）。
+
+    两种形状：
+      - 普通叶子部件 ⇒ `get_payload(decode=True)`；
+      - `message/rfc822`（「作为附件转发」的邮件）⇒ 它是 **multipart**，
+        `decode=True` 给 `None`，改用内嵌消息的 `as_bytes()`。
+        实测：该 part `is_multipart()` 为 True、`get_payload()` 是 `[内嵌 Message]`。
+        ⚠️ **如实登记**：`as_bytes()` 是 stdlib 的**再序列化**，不是发件人发来的原始字节
+        （换行与折行会被规范化）。这是 stdlib 能给的最接近的东西；别在文案/注释里
+        把它说成「原始字节」。
+    解不出给 `None`，**绝不编造 0**（spec §4）。
+    """
+    try:
+        if part.get_content_type() == "message/rfc822":
+            payload = part.get_payload()
+            if isinstance(payload, list) and payload:
+                return payload[0].as_bytes()
+            return None
+        data = part.get_payload(decode=True)
+    except Exception:
+        return None
+    return data if isinstance(data, bytes) else None
 
 
 def _part_size(part) -> int | None:
-    """附件字节数。**朴素版**：Task 5 加异常守卫（解不出必须给 `None`，不是抛）。"""
-    data = part.get_payload(decode=True)
-    return len(data) if isinstance(data, bytes) else None
+    """附件字节数 = `len(_part_bytes(part))`；解不出给 **`None`**，绝不编造 0（spec §4）。
+
+    代价（如实登记）：为了量大小要把该 part 解码一次，`fetch_attachment` 里还会再解一次。
+    Gmail 单封上限 25 MB，最坏情况是一次几十 MB 的内存峰值，换来的是「不编造数字」。
+    """
+    data = _part_bytes(part)
+    return len(data) if data is not None else None
+
+
+def _reject_if_too_big(size: int, name: str) -> None:
+    """超限即抛。抽成纯函数是为了能用小数字把边界钉死（20 MiB 的 fixture 又慢又占内存）。"""
+    if size > MAX_ATTACHMENT_BYTES:
+        raise MailError(
+            f"附件超过 {MAX_ATTACHMENT_MB} MB，为避免占满磁盘已停止下载。（{name}）")
 
 
 def fetch_detail(item: dict) -> dict:
@@ -584,6 +653,37 @@ def fetch_detail(item: dict) -> dict:
     atts = [{"index": i, "name": _att_name(p, i), "size": _part_size(p)}
             for i, p in enumerate(_attachment_parts(msg))]
     return {"id": uid, "body": body, "attachments": atts}
+
+
+def fetch_attachment(item: dict, index: int) -> tuple[str, bytes]:
+    """取第 `index` 个附件，返回 `(净化后的文件名, 原始字节)`。**BODY.PEEK[]**。
+
+    `index` 是 `fetch_detail` 报出的那个（**附件序**，不是 part 序）；越界、
+    不是附件、超过 `MAX_ATTACHMENT_BYTES` 都抛 `MailError`。
+    **不缓存**：每次下载重连一次、重解一次整封（spec §4）——
+    代价是 N 个附件 N 次连接，换来的是进程里不驻留邮件字节。
+    """
+    uid = item["id"]
+    conn, uidvalidity = _connect()
+    try:
+        _check_uidvalidity(uidvalidity)
+        rows = _fetch_raw_chunk(conn, [uid])
+    finally:
+        _logout_quietly(conn)
+    if not rows:
+        raise MailError(f"没有取到编号为 {uid} 的邮件（它可能已被移走或删除）")
+    msg = message_from_bytes(rows[0][1])
+    parts = _attachment_parts(msg)
+    # `bool` 是 `int` 的子类，必须显式排掉（`isinstance(True, int)` 为真）。
+    if isinstance(index, bool) or not isinstance(index, int) or not (0 <= index < len(parts)):
+        raise MailError("这封邮件里没有这个附件（清单可能已过期，请重新打开邮件）")
+    part = parts[index]
+    name = _att_name(part, index)
+    data = _part_bytes(part)
+    if data is None:
+        raise MailError(f"附件内容无法解码，未下载。（{name}）")
+    _reject_if_too_big(len(data), name)
+    return name, data
 
 
 def fetch_bodies(items: list[dict]) -> dict:
