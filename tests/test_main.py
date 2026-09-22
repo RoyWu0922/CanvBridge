@@ -1977,7 +1977,9 @@ def test_mail_attachment_rejects_string_index(monkeypatch):
 
 
 def test_mail_attachment_rejects_missing_fields(monkeypatch):
-    """每一个载荷缺的**正是**它想测的那个字段：`id` 一律给合法值，否则拒的是 id。"""
+    """载荷 ↔ **实际拒它的那道闸**（逐一实测 error 文案，非推断）：`{}` 三字段全缺 ⇒ id 闸；
+    缺 `index` ⇒ index 闸；缺/空 `download_dir` ⇒ download_dir 闸；最后一个反向对照 ——
+    三字段齐、只 `id` 空 ⇒ id 闸。本用例只断言 `ok is False`，**不**断言是哪道闸。"""
     monkeypatch.setattr(mail_client, "save_attachment", lambda item, index, d: "/x")
     for payload in ({}, {"id": "1"}, {"id": "1", "index": 0},
                     {"id": "1", "index": 0, "download_dir": ""},

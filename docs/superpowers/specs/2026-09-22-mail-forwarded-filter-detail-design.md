@@ -128,8 +128,9 @@ def fetch_detail(item: dict) -> dict
 
 def fetch_attachment(item: dict, index: int) -> tuple[str, bytes, str]
     # 返回 (净化后的文件名, 原始字节, 该邮件的 received)
-    # 第三个元素（`Date:` 头的 UTC ISO，解不出是 ""）是给前端用的：§5 那条落盘路径
-    # `<download_dir>/学校邮件/<YYYY-MM-DD>_…` 里的日期取自它，前端显示的就是这个路径
+    # 第三个元素（`Date:` 头的 UTC ISO，解不出是 ""）**不跨 API 边界**：它在服务端被
+    # `save_attachment` 消费，用来拼 §5 落盘路径 `<download_dir>/学校邮件/<YYYY-MM-DD>_…`
+    # 里的日期；成功路径只回 `{ok, path}`，前端显示的是那个路径本身
 ```
 
 - **index 承重不变式**：`index` = `msg.walk()` 中**满足附件条件**的序号；`fetch_detail` 与
