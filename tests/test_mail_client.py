@@ -863,6 +863,39 @@ def _body_msg(text, ctype="plain"):
     return head + text.encode("utf-8")
 
 
+_BOUND = b"SYNTHBOUNDARY"
+
+
+def _raw_mail(atts=(), text="正文", to=b"t@cityu.edu.hk"):
+    """一封 multipart/mixed 的**原始字节**。
+
+    atts 是 `[(头部块 bytes, 内容 bytes)]`，头部块自带 Content-Disposition。
+    附件序 = atts 的顺序（与 `msg.walk()` 的遍历顺序一致）。
+
+    理由同 `_body_msg` 的注释：stdlib 的 `add_attachment` 编码/换行行为要另花力气核，
+    原始字节把「正文恰好是 text」这件事钉死。`text` 也跟 `_body_msg` 同一惯例 ——
+    **str 进、内部 encode**。计划里那条 fixture 逐字抄下来是 `text=b"正文"`，那是
+    **SyntaxError**（bytes 字面量只能含 ASCII），连收集都过不去。
+    """
+    b = _BOUND
+    out = (b'Content-Type: multipart/mixed; boundary="' + b + b'"\r\n'
+           b"MIME-Version: 1.0\r\n"
+           b"To: " + to + b"\r\nFrom: T <t@cityu.edu.hk>\r\nSubject: S\r\n"
+           b"Date: Thu, 17 Sep 2026 16:31:00 +0800\r\n\r\n"
+           b"--" + b + b"\r\n"
+           b'Content-Type: text/plain; charset="utf-8"\r\n'
+           b"Content-Transfer-Encoding: 8bit\r\n\r\n" + text.encode("utf-8") + b"\r\n")
+    for head, data in atts:
+        out += b"--" + b + b"\r\n" + head + b"\r\n\r\n" + data + b"\r\n"
+    return out + b"--" + b + b"--\r\n"
+
+
+def _att_head(name=b"a.bin", ctype=b"application/octet-stream"):
+    return (b"Content-Type: " + ctype + b"\r\n"
+            b"Content-Disposition: attachment; filename=\"" + name + b"\"\r\n"
+            b"Content-Transfer-Encoding: 8bit")
+
+
 def test_fetch_bodies_returns_id_to_body(monkeypatch):
     _install(monkeypatch, _BodyIMAP(
         headers={b"1": _hdr(), b"2": _hdr()},
@@ -961,3 +994,110 @@ def test_fetch_bodies_ok_when_uidvalidity_matches(monkeypatch):
                                     bodies={b"1": _body_msg("x")}))
     mail_client.list_mail(7)
     assert mail_client.fetch_bodies([{"id": "1"}]) == {"1": "x"}
+
+
+# ============ 详情：正文 + 附件清单（spec §4）============
+
+def _detail_install(monkeypatch, raw_by_uid):
+    return _install(monkeypatch, _BodyIMAP(
+        headers={u: _hdr() for u in raw_by_uid}, bodies=raw_by_uid))
+
+
+def test_fetch_detail_returns_body_and_attachments(monkeypatch):
+    raw = _raw_mail([(_att_head(b"a.bin"), b"AAAA"),
+                     (_att_head(b"b.txt", b"text/plain"), b"BB")])
+    _detail_install(monkeypatch, {b"1": raw})
+    mail_client.list_mail(7)                       # 先记 uidvalidity
+    d = mail_client.fetch_detail({"id": "1"})
+    assert d["id"] == "1"
+    assert d["body"] == "正文"
+    assert [a["index"] for a in d["attachments"]] == [0, 1]
+    assert [a["name"] for a in d["attachments"]] == ["a.bin", "b.txt"]
+    assert [a["size"] for a in d["attachments"]] == [4, 2]
+
+
+def test_fetch_detail_index_is_stable_across_two_parses(monkeypatch):
+    """**承重不变式**：不缓存字节 ⇒ index 必须可复现。解析两次，清单逐字相同。"""
+    raw = _raw_mail([(_att_head(b"a.bin"), b"AAAA"), (_att_head(b"b.bin"), b"BB")])
+    _detail_install(monkeypatch, {b"1": raw})
+    mail_client.list_mail(7)
+    first = mail_client.fetch_detail({"id": "1"})
+    second = mail_client.fetch_detail({"id": "1"})
+    assert first["attachments"] == second["attachments"]
+
+
+def test_fetch_detail_ignores_inline_and_body_parts(monkeypatch):
+    """`inline` 部件既不算附件、也不进正文（spec §4）。"""
+    inline = (b"Content-Type: image/png\r\n"
+              b"Content-Disposition: inline\r\n"
+              b"Content-Transfer-Encoding: 8bit")
+    raw = _raw_mail([(inline, b"PNGDATA"), (_att_head(b"real.bin"), b"ZZ")])
+    _detail_install(monkeypatch, {b"1": raw})
+    mail_client.list_mail(7)
+    d = mail_client.fetch_detail({"id": "1"})
+    assert [a["name"] for a in d["attachments"]] == ["real.bin"]
+    assert "PNGDATA" not in d["body"]
+
+
+def test_fetch_detail_no_attachments_is_empty_list(monkeypatch):
+    _detail_install(monkeypatch, {b"1": _raw_mail()})
+    mail_client.list_mail(7)
+    assert mail_client.fetch_detail({"id": "1"})["attachments"] == []
+
+
+def test_fetch_detail_truncates_body(monkeypatch):
+    """正文套 `MAX_BODY_CHARS`（spec §4）。"""
+    _detail_install(monkeypatch, {b"1": _raw_mail(text="x" * 40)})
+    monkeypatch.setattr(mail_client, "MAX_BODY_CHARS", 10)
+    mail_client.list_mail(7)
+    assert mail_client.fetch_detail({"id": "1"})["body"] == "x" * 10
+
+
+def test_fetch_detail_survives_broken_mime(monkeypatch):
+    """坏 MIME 不抛（spec §7）：声明 `multipart/mixed` 却**没有分隔线**、附件段是坏 base64。
+
+    **判别力已实测界定（照实登记，别照抄旧说法）**：这份输入下 `msg.walk()` 解出
+    **0 个附件 part**（只产出它自己一个 part：`is_multipart()` 是 False、
+    `Content-Disposition` 是 None）⇒ `_attachment_parts()` 返回 `[]`、`_att_name` /
+    `_part_size` **一次都不会被调到**；`message_body` 返回的是那段原始头文本（是 str）。
+    也就是说这条用例钉的是「`fetch_detail` 在这份输入上不抛、且输出形状仍是 `str` + `list`」，
+    **不覆盖那两个函数的守卫** —— 那个守卫是 Task 5 才加的加固，覆盖也在 Task 5。
+    下面的 `all(...)` 在空清单上恒真，故它连「附件数量」也钉不住 —— 那是 index 用例的事。
+    """
+    raw = (b'Content-Type: multipart/mixed; boundary="NEVERAPPEARS"\r\n'
+           b"To: t@cityu.edu.hk\r\nFrom: T <t@cityu.edu.hk>\r\nSubject: S\r\n\r\n"
+           b"Content-Type: application/octet-stream\r\n"
+           b'Content-Disposition: attachment; filename="broken.bin"\r\n'
+           b"Content-Transfer-Encoding: base64\r\n\r\n"
+           b"!!!not-base64!!!\r\n")
+    _detail_install(monkeypatch, {b"1": raw})
+    mail_client.list_mail(7)
+    d = mail_client.fetch_detail({"id": "1"})
+    assert isinstance(d["body"], str)
+    assert isinstance(d["attachments"], list)
+    assert all(set(a) == {"index", "name", "size"} for a in d["attachments"])
+
+
+def test_fetch_detail_raises_when_uid_is_gone(monkeypatch):
+    """取不到就抛 —— 绝不返回一个空壳让前端显示「这封邮件没有正文」。"""
+    _detail_install(monkeypatch, {b"1": _raw_mail()})
+    mail_client.list_mail(7)
+    with pytest.raises(mail_client.MailError):
+        mail_client.fetch_detail({"id": "999"})
+
+
+def test_fetch_detail_checks_uidvalidity(monkeypatch):
+    """邮箱被重建 ⇒ 抛（复用 `_do_bodies` 的机制，spec §4）。
+
+    末句钉的是**顺序**：核对必须排在 `_fetch_raw_chunk` **之前** —— 重建后 UID 可能指向
+    别的邮件，先取再核对等于「按错的编号取了一封」。只断 `raises` 的话，把核对挪到取件
+    **之后**照样绿（仍然会抛），这一格就漏了；与 `fetch_bodies` 那条同一口径。
+    """
+    _detail_install(monkeypatch, {b"1": _raw_mail()})
+    mail_client.list_mail(7)
+    monkeypatch.setattr(mail_client, "_uidvalidity", "7")
+    fake = _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr()}, uidvalidity=b"8"))
+    with pytest.raises(mail_client.MailError, match="UIDVALIDITY"):
+        mail_client.fetch_detail({"id": "1"})
+    assert not [c for c in fake.sent if c[0] == "uid" and "BODY.PEEK[]" in str(c[-1])], \
+        "UIDVALIDITY 不符时不该取任何正文"

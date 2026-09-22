@@ -461,11 +461,23 @@ def list_mail(days: int = DEFAULT_DAYS) -> list[dict]:
     return _do_list(days)
 
 
-def _fetch_bodies_chunk(conn, uids: list[str]) -> list[tuple[str, str]]:
-    """批量取整封。**BODY.PEEK[]** —— 绝不置已读。
+def _check_uidvalidity(current: str) -> None:
+    """邮箱自上次刷新后是否被重建（UIDVALIDITY 变了）。
 
-    注意 IMAP 会把附件一起给你（没有「只要正文」的通用取法）；message_body
-    负责把附件排除在正文之外。更省的做法（BODYSTRUCTURE + 分段取）见 spec §11。
+    前提：同一次刷新里 `list_mail` 已经先跑过。进程内第一次就直接调时
+    `_uidvalidity` 还是空串，这里的核对会被跳过（生产路径不会这样调）。
+    """
+    if _uidvalidity and current != _uidvalidity:
+        raise MailError(
+            "邮箱自上次刷新后已被重建（UIDVALIDITY 变了），"
+            "邮件与编号的对应关系不再可靠。请重新点「刷新邮件」。")
+
+
+def _fetch_raw_chunk(conn, uids: list[str]) -> list[tuple[str, bytes]]:
+    """批量取整封**原始字节**。**BODY.PEEK[]** —— 绝不置已读。
+
+    `_fetch_bodies_chunk` 与 `fetch_detail`/`fetch_attachment` 共用这一条命令与这一套
+    解析：FETCH 响应的形状（`UID n` 元数据 + 字节）只有**一处**知识，正则也只写一遍。
     """
     typ, data = conn.uid("FETCH", ",".join(uids).encode(), "(BODY.PEEK[])")
     if typ != "OK":
@@ -479,23 +491,29 @@ def _fetch_bodies_chunk(conn, uids: list[str]) -> list[tuple[str, str]]:
         m = re.search(rb"UID\s+(\d+)", blob)
         if not m:
             continue
-        msg = message_from_bytes(raw if isinstance(raw, bytes) else b"")
-        body = message_body(msg)
+        out.append((m.group(1).decode(), raw if isinstance(raw, bytes) else b""))
+    return out
+
+
+def _fetch_bodies_chunk(conn, uids: list[str]) -> list[tuple[str, str]]:
+    """批量取整封。**BODY.PEEK[]** —— 绝不置已读（命令在 `_fetch_raw_chunk` 里）。
+
+    注意 IMAP 会把附件一起给你（没有「只要正文」的通用取法）；message_body
+    负责把附件排除在正文之外。
+    """
+    out = []
+    for uid, raw in _fetch_raw_chunk(conn, uids):
+        body = message_body(message_from_bytes(raw))
         if len(body) > MAX_BODY_CHARS:
             body = body[:MAX_BODY_CHARS]
-        out.append((m.group(1).decode(), body))
+        out.append((uid, body))
     return out
 
 
 def _do_bodies(items: list[dict]) -> dict:
     conn, uidvalidity = _connect()
     try:
-        # 前提：同一次刷新里 list_mail 已经先跑过。进程内第一次就直接调 fetch_bodies 时
-        # `_uidvalidity` 还是空串，这里的核对会被跳过（生产路径不会这样调）。
-        if _uidvalidity and uidvalidity != _uidvalidity:
-            raise MailError(
-                "邮箱自上次刷新后已被重建（UIDVALIDITY 变了），"
-                "邮件与编号的对应关系不再可靠。请重新点「刷新邮件」。")
+        _check_uidvalidity(uidvalidity)
         ids = [it["id"] for it in items]
         out: dict = {}
         for n, chunk in enumerate(_chunks(ids, BODY_BATCH)):
@@ -506,6 +524,57 @@ def _do_bodies(items: list[dict]) -> dict:
         return out
     finally:
         _logout_quietly(conn)
+
+
+def _attachment_parts(msg) -> list:
+    """附件 part，按 `msg.walk()` 的顺序（spec §4）。
+
+    「是附件」= `Content-Disposition: attachment`（与 `message_body` 同一口径）。
+    `inline` 部件（内嵌图）既不算附件、也不进正文 —— v1 不显示。
+    非 multipart 的整封也走 `walk()`（它会先产出自己），故「整封就是一份附件」
+    这种形状一样被抓到。
+    """
+    return [p for p in msg.walk()
+            if not p.is_multipart()
+            and (p.get_content_disposition() or "") == "attachment"]
+
+
+def _att_name(part, index: int) -> str:
+    """附件名。**朴素版**：Task 5 加净化与编解码兜底。"""
+    return part.get_filename() or f"attachment-{index}"
+
+
+def _part_size(part) -> int | None:
+    """附件字节数。**朴素版**：Task 5 加异常守卫（解不出必须给 `None`，不是抛）。"""
+    data = part.get_payload(decode=True)
+    return len(data) if isinstance(data, bytes) else None
+
+
+def fetch_detail(item: dict) -> dict:
+    """取一封的正文 + 附件清单。**BODY.PEEK[]** —— 绝不置已读（spec §4）。
+
+    返回 `{"id", "body", "attachments": [{"index", "name", "size"}]}`。
+    `index` = 该 part 在**附件序**中的位置（`_attachment_parts` 的下标），
+    `fetch_attachment` 用同一套判定、同一遍历顺序重新解析 —— **不缓存字节**，
+    故 index 可复现（有用例钉住「解析两次相同」）。
+    `size` 解不出是 `None`，**绝不编造 0**。
+    """
+    uid = item["id"]
+    conn, uidvalidity = _connect()
+    try:
+        _check_uidvalidity(uidvalidity)
+        rows = _fetch_raw_chunk(conn, [uid])
+    finally:
+        conn.logout()
+    if not rows:
+        raise MailError(f"没有取到编号为 {uid} 的邮件（它可能已被移走或删除）")
+    msg = message_from_bytes(rows[0][1])
+    body = message_body(msg)
+    if len(body) > MAX_BODY_CHARS:
+        body = body[:MAX_BODY_CHARS]
+    atts = [{"index": i, "name": _att_name(p, i), "size": _part_size(p)}
+            for i, p in enumerate(_attachment_parts(msg))]
+    return {"id": uid, "body": body, "attachments": atts}
 
 
 def fetch_bodies(items: list[dict]) -> dict:
