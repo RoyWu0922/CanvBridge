@@ -1062,7 +1062,8 @@ def test_fetch_detail_survives_broken_mime(monkeypatch):
     `_part_size` **一次都不会被调到**；`message_body` 返回的是那段原始头文本（是 str）。
     也就是说这条用例钉的是「`fetch_detail` 在这份输入上不抛、且输出形状仍是 `str` + `list`」，
     **不覆盖那两个函数的守卫** —— 那个守卫是 Task 5 才加的加固，覆盖也在 Task 5。
-    下面的 `all(...)` 在空清单上恒真，故它连「附件数量」也钉不住 —— 那是 index 用例的事。
+    末行钉的是**实测计数**（恰 0 条），不是原先那句在全清单上恒真的 `all(...)`；
+    解析器行为一变它就会红。
     """
     raw = (b'Content-Type: multipart/mixed; boundary="NEVERAPPEARS"\r\n'
            b"To: t@cityu.edu.hk\r\nFrom: T <t@cityu.edu.hk>\r\nSubject: S\r\n\r\n"
@@ -1075,7 +1076,7 @@ def test_fetch_detail_survives_broken_mime(monkeypatch):
     d = mail_client.fetch_detail({"id": "1"})
     assert isinstance(d["body"], str)
     assert isinstance(d["attachments"], list)
-    assert all(set(a) == {"index", "name", "size"} for a in d["attachments"])
+    assert d["attachments"] == []
 
 
 def test_fetch_detail_raises_when_uid_is_gone(monkeypatch):
@@ -1101,3 +1102,44 @@ def test_fetch_detail_checks_uidvalidity(monkeypatch):
         mail_client.fetch_detail({"id": "1"})
     assert not [c for c in fake.sent if c[0] == "uid" and "BODY.PEEK[]" in str(c[-1])], \
         "UIDVALIDITY 不符时不该取任何正文"
+
+
+def test_attachment_parts_include_forwarded_message():
+    """**作为附件转发的邮件**（`message/rfc822`）也算附件（spec §4）。
+
+    实测形状：该 part `get_content_type()` 为 `message/rfc822` 而 **`is_multipart()` 为 True**
+    —— 判据里多一条 `not is_multipart()` 就会把它**静默丢掉**（原实现即如此）。
+    **只钉名字，不碰 size**：size 归 Task 5 加固后再钉（那之前 `_part_size` 对它给 `None`）。
+    """
+    inner = (b"From: a@x.com\r\nTo: t@cityu.edu.hk\r\n"
+             b"Subject: inner\r\n\r\ninner body\r\n")
+    eml = (b"Content-Type: message/rfc822\r\n"
+           b'Content-Disposition: attachment; filename="fwd.eml"')
+    msg = email.message_from_bytes(_raw_mail([(eml, inner)]))
+    assert [p.get_filename() for p in mail_client._attachment_parts(msg)] == ["fwd.eml"]
+
+
+def test_fetch_detail_raises_when_fetch_fails(monkeypatch):
+    """服务端 FETCH 回非 OK ⇒ `MailError`（spec §7），不是把 imaplib 的错冒出去。
+
+    打的是 `_fetch_raw_chunk` 里 `typ != "OK"` 那条分支 —— 它被 `_do_bodies` 与
+    `fetch_detail` **共用**，抽出后却没人钉过（既有用例只覆盖 `status` 回非 OK）。
+
+    ⚠️ **门必须只挡取正文那条 FETCH**（`"BODY.PEEK[]" in str(args[-1])`，
+    与 `_BodyIMAP` 同一口径）。裸写 `if cmd == "FETCH"` 会**连取头一起挡**：
+    `_fetch_headers` 发的是 `BODY.PEEK[HEADER.FIELDS (…)]`，实测该串**不含**
+    `"BODY.PEEK[]"`（故两者可干净分开），于是 `list_mail(7)` 就先抛
+    「读取邮件头失败」—— 用例红在**别的错**上，跟 `_fetch_raw_chunk` 那条分支无关。
+    """
+
+    class _NoFetch(_FakeIMAP):
+        def uid(self, cmd, *args):
+            if cmd == "FETCH" and "BODY.PEEK[]" in str(args[-1]):
+                self.sent.append(("uid", cmd) + tuple(args))
+                return ("NO", [b"server said no"])
+            return super().uid(cmd, *args)
+
+    _install(monkeypatch, _NoFetch(headers={b"1": _hdr()}))
+    mail_client.list_mail(7)
+    with pytest.raises(mail_client.MailError, match="读取邮件正文失败"):
+        mail_client.fetch_detail({"id": "1"})

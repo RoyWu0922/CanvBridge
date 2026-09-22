@@ -529,13 +529,22 @@ def _do_bodies(items: list[dict]) -> dict:
 def _attachment_parts(msg) -> list:
     """附件 part，按 `msg.walk()` 的顺序（spec §4）。
 
-    「是附件」= `Content-Disposition: attachment`（与 `message_body` 同一口径）。
-    `inline` 部件（内嵌图）既不算附件、也不进正文 —— v1 不显示。
-    非 multipart 的整封也走 `walk()`（它会先产出自己），故「整封就是一份附件」
-    这种形状一样被抓到。
+    「是附件」= `Content-Disposition: attachment` —— **判据只有这一条**（spec §4 原话：
+    「部件有 `Content-Disposition: attachment`（沿用 `message_body` 现 `:193` 的口径）」，
+    唯一被排除的是 `inline`）。`inline` 部件（内嵌图）既不算附件、也不进正文 —— v1 不显示。
+
+    ⚠️ **不许再加 `not p.is_multipart()`**：那是从 `message_body` 的循环形状抄来的，
+    在**附件**判据上是错的。实测（`message_from_bytes` 解一封「作为附件转发」的邮件）：
+    `Content-Type: message/rfc822` + `Content-Disposition: attachment` 的部件
+    **`is_multipart()` 为 True**（它的 payload 是内嵌的那封 Message），
+    于是被静默丢掉 —— Gmail/Outlook 的「Forward as attachment」正是这个形状，
+    而它恰恰是最该被看到的那类转发件（正文常常只有一句「见附件」）。
+
+    这条例外只放行 `message/rfc822`：其余 multipart 部件（`multipart/*` 容器）仍然不算附件
+    ——容器本身不是可下载的文件。
     """
     return [p for p in msg.walk()
-            if not p.is_multipart()
+            if (not p.is_multipart() or p.get_content_type() == "message/rfc822")
             and (p.get_content_disposition() or "") == "attachment"]
 
 
@@ -565,7 +574,7 @@ def fetch_detail(item: dict) -> dict:
         _check_uidvalidity(uidvalidity)
         rows = _fetch_raw_chunk(conn, [uid])
     finally:
-        conn.logout()
+        _logout_quietly(conn)
     if not rows:
         raise MailError(f"没有取到编号为 {uid} 的邮件（它可能已被移走或删除）")
     msg = message_from_bytes(rows[0][1])
