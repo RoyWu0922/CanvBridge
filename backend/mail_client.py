@@ -562,7 +562,10 @@ def safe_attachment_name(raw: str, index: int) -> str:
     name = name.replace("\x00", "")
     name = name.replace("/", "_").replace("\\", "_")
     name = name.replace("..", "_")
-    name = name.strip().strip(".")
+    # 一次 strip 掉「空白与点」的**字符集合**，不要写 `.strip().strip(".")`：
+    # 那两下会把夹在点之间的空白重新露到两端（`" . . "` → `" "`，实测），
+    # 于是既不算空、又留着首尾空白，与上面 docstring 的承诺不符。
+    name = name.strip(" .")
     if not name:
         name = f"attachment-{index}"
     return name[:200]
