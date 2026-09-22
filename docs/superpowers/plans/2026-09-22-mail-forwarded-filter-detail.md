@@ -1028,7 +1028,8 @@ def test_safe_attachment_name(raw, expect):
     **再** `..` → `_`」，所以 `../../etc/passwd` 先变成 `.._.._etc_passwd`，那两个
     `..` 随后各自被换成 `_`（连同夹在中间的 `_`），最终是 **`____etc_passwd`**（4 个下划线）。
     写成 `".._.._etc_passwd"` 会与**本用例第二条断言** `".." not in out` 自相矛盾 ——
-    计划初稿就是这么错的，实跑 7 例抓出来的。
+    计划初稿就是这么错的，**当时**实跑 7 例抓出来的（**本表现在是 8 例** ——
+    第 8 行 `(" . . ", "attachment-3")` 是复审 Minor 4 之后补的，别把「7 例」读成当前行数）。
 
     ⚠️ **本表全是 ASCII，所以它绑不住 `_att_name` 的 RFC 2047 兜底** ——
     `get_filename()` 对 ASCII 名字本来就可读，兜底那条路一次都走不到。
@@ -2296,7 +2297,7 @@ git commit -m "feat(mail): 行可点开详情弹层（正文 linkify、附件清
 
 **Interfaces:**
 - Consumes: Task 8/9/10 的 `data-m` / `#mailDetail*` / `#mailDetailAtts` 处理器 / 空态文案 / `MAIL_DAYS`
-- Produces: 55 → **78** 条断言；两个新变异开关 `--mutate-kmap`、`--mutate-kread`
+- Produces: 55 → **79** 条断言（K 段 24 条）；两个新变异开关 `--mutate-kmap`、`--mutate-kread`
 
 - [ ] **Step 1: B 段切分改成容忍属性**
 
@@ -2509,7 +2510,11 @@ ok(sandbox.__kEmpty.includes(K_EMPTY) && !sandbox.__kEmpty.includes("没有需�
 - [ ] **Step 6: 跑（每个开关各自跑，逐条核对）**
 
 Run: `node tools/check_mail_frontend.mjs; echo "rc=$?"`
-Expected: `rc=0`，`✓ 全部通过（共 78 条断言）`
+Expected: `rc=0`，`✓ 全部通过（共 **79** 条断言）`
+（**79 = 基线 55 + K 段 24**。本行原先写 78 = 「55 + 23」，是本计划的计数错 ——
+ 数的办法：`grep -cF 'ok(' tools/check_mail_frontend.mjs` 现为 **55**，与本文件自报的
+ 「共 55 条断言」逐字相符；Task 11 的 K 段块内 `grep -cF 'ok('` 为 **24**（K0…K22 + K19b）。
+ **别按 78 去删断言凑数**：删掉任何一条都会让某条 finding 的网破掉。）
 Run: `node tools/check_mail_frontend.mjs --mutate-kmap; echo "rc=$?"`
 Expected: `rc=1`，**K0 红**（其余 K 条必须仍绿 —— 若 K2/K3/K4 也红了，说明这两个变异的作用域重叠，要回去查）
 Run: `node tools/check_mail_frontend.mjs --mutate-kread; echo "rc=$?"`
@@ -2566,7 +2571,9 @@ Task 4 修复轮后 = **568 passed**（566 + 本轮新增的 2 条），亦逐�
 - [ ] **Step 2: 四个自检器**
 
 Run: `node tools/check_mail_frontend.mjs; echo "rc=$?"`
-Expected: `rc=0`，**78 条**（基线 55 + 23）
+Expected: `rc=0`，**79 条**（基线 55 + K 段 24；原写「78 = 55 + 23」是计数的错，
+已按 Task 11 Step 6 的实测口径订正。本步是**核对**步：报出来的数若不是 79，
+先查清是 K 段少/多了一条，而不是把数字改成本步写的那样。）
 Run: `node tools/check_gmail_ui.mjs; echo "rc=$?"`
 Expected: `rc=0`，**44 条**（未改）
 Run: `node tools/check_dom_ids.mjs; echo "rc=$?"`
