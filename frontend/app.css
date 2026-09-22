@@ -550,3 +550,15 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 .mail-ddl-label { font-size: 12px; color: var(--muted, #888); }
 .mail-ddl { display: flex; align-items: center; justify-content: space-between;
             gap: 10px; padding: 3px 0; font-size: 13px; }
+
+/* 邮件详情弹层：正文与附件清单。行可点，故给指针与键盘焦点环。 */
+.mail-row[role="button"] { cursor: pointer; }
+.mail-item[data-m] { cursor: pointer; }
+.mail-detail-meta { color: var(--muted, #888); font-size: 12px; margin-bottom: 8px; }
+.mail-detail-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px;
+                    max-height: 46vh; overflow: auto; }
+.mail-detail-body a { color: inherit; text-decoration: underline; }
+.mail-detail-label { font-size: 12px; color: var(--muted, #888); margin: 10px 0 4px; }
+.mail-att { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 13px; }
+.mail-att-name { flex: 1; overflow-wrap: anywhere; }
+.mail-att-size { color: var(--muted, #888); font-size: 12px; }

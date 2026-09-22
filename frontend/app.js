@@ -344,6 +344,7 @@ document.addEventListener("keydown", e => {
      状态变量，与本处上两条同形，也避开晚声明的 `confirmResolve`。 */
   if (!$("confirmPrompt").hidden){ $("btnConfirmNo").onclick(); return; }
   if (!$("detailModal").hidden) closeDetail();
+  if(!$("mailDetail").hidden){ closeMailDetail(); return; }
 });
 
 /* 拉课程 Pages 列表（不含正文）。失败只影响该板块，不拖垮 Modules / 文件。 */
@@ -2418,7 +2419,23 @@ const LIBRARY_MAX_PAGES = 5;   /* 与后端 library_client.MAX_PAGES 一致；�
    邮箱**不依赖 AIMS 登录态**：取信走 Gmail IMAP（应用专用密码存本机钥匙串），
    因而失败路径既不发手动登录问询、也不开浏览器窗口 —— 后端返回的文案已指向设置页，
    由 renderMail() 呈现。spec §11「认证失败文案直接指向设置页重填；不重试」。 */
+/* 列表窗口的天数：列表请求、AI 总结、空态文案**共用这一个数** ——
+   三处各写一个 7 的话，改一处就会让「空态说 7 天、实际查了 14 天」这种错静默存在。 */
+const MAIL_DAYS = 7;
 let mailState = { mails: [], groups: null, loading: false, error: "" };
+
+/* 详情弹层「当前这一封」的状态（`id` + `detail`）。
+   **声明在这里、而不是末尾那段邮箱代码里**：与上面的 `mailState` 同一个道理，而且这一条
+   更要命 —— `renderMailDetail` 会被本文件顶层的 `applyLang()`（经 i18n.js 的钩子）**无参**
+   调用，而它第一件事就是读 `mailDetailState.detail` 判断要不要重渲（读状态在无参调用上也
+   会发生，`typeof` 守门拦不住）。状态若压在文件末尾的 `let` 里，那一读就是 TDZ
+   ReferenceError（`Cannot access 'mailDetailState' before initialization`），本文件顶层
+   余下代码**全部不执行** = 白屏级；`node --check` 查不出来 —— 这条是
+   `tools/check_mail_frontend.mjs` 逐文件 `runInContext` 的加载步骤实跑抓到的。
+   `detail` = 上一次渲染过的详情，供语言切换后的**无参**重渲取用；
+   **只在进程内存里**：不落盘、不进任何请求体、不跨会话（弹层关闭时也不清它 ——
+   早退条件里的 `el.hidden` 已经是那道闸，加了 `closeMailDetail` 反而会多一处状态改动）。 */
+let mailDetailState = { id: "", detail: null };
 
 $("btnLang").onclick = () => {
   localStorage.setItem("sc_lang", LANG() === "zh" ? "en" : "zh");
@@ -3085,7 +3102,7 @@ async function loadMail(){
   if(mailState.loading) return false;
   mailState.loading = true; mailState.error = ""; mailState.groups = null;
   renderMail();
-  const r = await api("mail/list", { days: 7 });
+  const r = await api("mail/list", { days: MAIL_DAYS });
   mailState.loading = false;
   if(r.ok !== true){
     mailState.error = r.error || t("mail.load_failed");
@@ -3124,16 +3141,26 @@ function renderMail(){
     return;
   }
   if(!mailState.mails.length){
-    box.innerHTML = `<div class="card mail-empty">${esc(t("mail.empty"))}</div>`;
+    box.innerHTML = `<div class="card mail-empty">${esc(t("mail.empty", { n: MAIL_DAYS }))}</div>`;
     return;
   }
   box.innerHTML = mailRenderGroups();
 }
 
+/* 行上的 `data-m` —— 点开详情时取行的锚（`mailState.mails` 的下标）。
+   **只在索引确实是整数时才写**：`groups` 是**模型输出**，`mail_index` 未必是整数
+   （后端只保证越界条目被过滤，前端再兜一层）。写成 `data-m="null"` 也能被读取侧的
+   `/^\d+$/` 挡住，但一个看起来像值的坏值放在 DOM 里，迟早有人去 `Number()` 它 ——
+   不给就是不给。 */
+function mailRowAttr(idx){
+  return Number.isInteger(idx) ? ` data-m="${idx}"` : "";
+}
+
 /* 不再渲染未读标记：来源改为 Gmail 转发件后，「已读」只反映转发账号的收件状态，
    与用户是否处理过无关 —— 一律显示未读是假信息。 */
-function mailRowHtml(m){
-  return `<div class="card mail-row">
+function mailRowHtml(m, i){
+  return `<div class="card mail-row"${mailRowAttr(i)} role="button" tabindex="0"
+      title="${escAttr(t("mail.detail_open"))}">
     <div class="mail-row-head"><span class="mail-subject">${esc(m.subject || t("mail.no_subject"))}</span></div>
     <div class="mail-row-sub">${esc(m.sender || "")} · ${esc(fmtLocal(m.received))}</div>
   </div>`;
@@ -3147,6 +3174,142 @@ function fmtLocal(iso){
   const p = n => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
+
+/* ---------- 学校邮箱：详情弹层 ---------- */
+
+/* `mailDetailState` 的 `id` 是「当前这一封」的凭据：**迟到的响应不许顶掉后打开的那一封**。
+   用户点了 A、又点了 B，A 的响应晚到（IMAP 一次往返可能好几秒）——
+   没有这道守卫，弹层会在 B 的标题下面显示 A 的正文，是**静默的错内容**。
+   （这个状态本身声明在文件上部 `applyLang();` **之前** —— 理由见那里的注释。） */
+
+function closeMailDetail(){
+  const el = $("mailDetail");
+  if(el) el.hidden = true;
+  mailDetailState.id = "";        // 关掉即作废
+}
+$("mailDetailClose").onclick = closeMailDetail;
+$("mailDetail").querySelector(".modal-backdrop").addEventListener("click", closeMailDetail);
+
+/* 行 → 详情。取行一律按 `data-m`（`mailState.mails` 的下标），**绝不**按渲染顺序或标题反推。 */
+function mailRowTarget(e){
+  const el = e.target && e.target.closest ? e.target.closest("[data-m]") : null;
+  if(!el) return null;
+  const raw = el.dataset.m;
+  /* 必须过 `/^\d+$/`：`Number("")` 是 0，一个空 `data-m` 会被静默当成第 0 封。 */
+  if(!/^\d+$/.test(raw || "")) return null;
+  return mailState.mails[Number(raw)] || null;
+}
+
+function openMailDetailFromEvent(e){
+  const m = mailRowTarget(e);
+  if(m) return openMailDetail(m);
+}
+
+async function openMailDetail(m){
+  if(!m || !m.id) return;
+  const id = m.id;
+  mailDetailState.id = id;
+  $("mailDetailTitle").textContent = m.subject || t("mail.no_subject");
+  $("mailDetailMeta").textContent = `${m.sender || ""} · ${fmtLocal(m.received)}`;
+  $("mailDetailBody").innerHTML = `<div class="mail-empty">…</div>`;
+  $("mailDetailAtts").innerHTML = "";
+  $("mailDetail").hidden = false;
+  const r = await api("mail/detail", { id });
+  if(mailDetailState.id !== id) return;      // 期间又开了别的 / 已关掉 ⇒ 丢弃
+  if(r.ok !== true){
+    $("mailDetailBody").innerHTML =
+      `<div class="card mail-error">${esc(t("mail.detail_failed") + (r.error || ""))}</div>`;
+    $("mailDetailAtts").innerHTML = "";
+    return;
+  }
+  renderMailDetail(r.detail || {});
+}
+
+/* ---------- 学校邮箱：详情渲染 + 单个附件下载 ---------- */
+
+/* 正文 → 安全 HTML：**先按原始文本切开，再逐段转义**，最后把链接那几段换成 <a>。
+
+   顺序不能反：先 `esc()` 再切，`&` 变成 `&amp;` 会让 `?a=1&b=2` 在 `https?://\S+`
+   里断在 `&` 前（链接只剩前半截），而 `&amp;` 里的分号也会被当成正文；
+   两次转义还会把 `&amp;amp;` 这类东西显出来。**绝不能把未转义的正文直接塞进 innerHTML。**
+
+   只认 `https?://`：`javascript:` / `data:` 一律不成为链接。三道守卫是**独立**的：
+   ① 这里的正则；② `href` 走 `escAttr`；③ 点击走既有的 `openExternal`（自带 /^https?:/i）。 */
+function mailLinkify(text){
+  if(!text) return "";
+  const s = String(text);
+  const re = /https?:\/\/[^\s<>"']+/g;      // 局部：带 /g 的正则不能跨调用共享 lastIndex
+  let out = "", last = 0;
+  for(let m; (m = re.exec(s)); ){
+    /* 句末标点不算链接的一部分（`见 https://x.edu/a.` 的句号）——
+       不剥的话 href 会带上它，链接照开但落到 404。只剥尾部这些，不做别的解读。 */
+    const url = m[0].replace(/[.,;:!?)\]}]+$/, "");
+    if(!url) continue;                       // 整段是标点 ⇒ 不是链接（exec 已前进，不会死循环）
+    out += esc(s.slice(last, m.index));
+    out += `<a href="${escAttr(url)}" rel="noreferrer">${esc(url)}</a>`;
+    last = m.index + url.length;             // 剥掉的那几个标点留在原地，下一轮回正文
+  }
+  return out + esc(s.slice(last));
+}
+
+/* 字节数 → 人读串。`null` / 非数字**留白**，**绝不显示「0 B」** ——
+   显示 0 B 是把「不知道」说成「是空的」（spec §4：size 解不出给 None）。 */
+function fmtBytes(n){
+  if(typeof n !== "number" || !isFinite(n) || n < 0) return "";
+  if(n < 1024) return `${n} B`;
+  if(n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/* 附件清单。`index` 取自条目自己（`a.index`），**不是**渲染序号：
+   后端按同一把锚取附件，渲染序号在清单被重排时会与它对不上。取不到就早退，绝不编一个。 */
+function mailAttsHtml(atts){
+  const label = `<div class="mail-detail-label">${esc(t("mail.attachments"))}</div>`;
+  if(!atts.length){
+    return `${label}<div class="mail-empty">${esc(t("mail.no_attachments"))}</div>`;
+  }
+  const rows = atts.map(a => {
+    const idx = a && a.index;
+    if(!Number.isInteger(idx) || idx < 0) return "";
+    return `<div class="mail-att">
+      <span class="mail-att-name">${esc(a.name || "")}</span>
+      <span class="mail-att-size">${esc(fmtBytes(a.size))}</span>
+      <button type="button" class="btn btn-xs" data-att="${idx}"
+        >${esc(t("mail.download"))}</button></div>`;
+  }).join("");
+  return label + rows;
+}
+
+/* `detail` 省略时沿用上一次的 —— 语言切换后 `i18n.js` 的 `applyLang` 钩子就**无参**调它
+   （范式同 `renderDetail`）。弹层没开、或还没有任何详情 ⇒ 纯 no-op。 */
+function renderMailDetail(detail){
+  if(detail) mailDetailState.detail = detail;
+  const d = mailDetailState.detail;
+  const el = $("mailDetail");
+  if(!d || !el || el.hidden) return;
+  const body = d.body || "";
+  $("mailDetailBody").innerHTML = body
+    ? `<div class="mail-detail-body">${mailLinkify(body)}</div>`
+    : `<div class="mail-empty">${esc(t("mail.empty_body"))}</div>`;
+  $("mailDetailAtts").innerHTML = mailAttsHtml(d.attachments || []);
+}
+
+/* 单个下载。防重入由 `withBusy` 负责（它在**第一个 await 之前**同步置灰按钮，与写入路径
+   同一条纪律）；`index` 与 `id` 都取自**点中的那个按钮与当前打开的那一封**。 */
+$("mailDetailAtts").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-att]");
+  if(!b) return;
+  const raw = b.dataset.att;
+  if(!/^\d+$/.test(raw || "")) return;
+  const id = mailDetailState.id;
+  if(!id) return;
+  await withBusy(t("mail.download"), b, async () => {
+    const r = await api("mail/attachment",
+      { id, index: Number(raw), download_dir: downloadDir() });
+    if(r.ok === true) setStatus(t("mail.saved_to", { path: r.path || "" }), "ok");
+    else setStatus(t("mail.download_failed") + (r.error || ""), "err");
+  });
+});
 
 $("btnMailRefresh").onclick = () => refreshMail();
 
@@ -3191,7 +3354,7 @@ async function mailSummarize(){
   await withBusy(t("mail.summarize"), $("btnMailSummary"), async () => {
     const r = await api("mail/summarize", {
       llm_base_url: s.llm_base_url, llm_api_key: s.llm_api_key, llm_model: s.llm_model,
-      days: 7, language: LANG() });
+      days: MAIL_DAYS, language: LANG() });
     if(r.ok !== true){
       failReason = r.reason || "llm";        // 老后端不带 reason：当 AI 阶段（下面据此选显示哪段文案）
       failMsg = r.error || "";
@@ -3266,7 +3429,15 @@ function mailItemHtml(it, m, gi, ti, ii){
   const ddl = (evs || rms)
     ? `<div class="mail-ddls"><div class="mail-ddl-label">${esc(t("mail.ddl"))}</div>${evs}${rms}</div>`
     : "";
-  return `<div class="mail-item">
+  const rowAttr = mailRowAttr(it.mail_index);
+  /* `tabindex` 与 `data-m` 同生共死：没有锚的行点不开详情，也就不该是键盘的焦点停靠点
+     （聚焦了按 `Enter` 什么都不会发生，纯粹多一个 Tab 停靠）。 */
+  const rowTab = Number.isInteger(it.mail_index) ? ` tabindex="0"` : "";
+  /* 分组行**刻意不给** `role="button"`：ARIA 的 button 角色带 presentational children 语义，
+     会把行内既有的「写入日历/提醒」`<button data-w=…>` 从辅助技术里抹平 —— 那是拿既有功能
+     换新语义。`tabindex` 只给可达性、没有这个副作用，故只给它。磁贴行（`.mail-row`）内部
+     没有交互后代，所以它带 `role="button"` 是对的。 */
+  return `<div class="mail-item"${rowAttr}${rowTab}>
     <div class="mail-item-subject">${esc(m.subject || t("mail.no_subject"))}</div>
     <div class="mail-item-sum">${esc(it.summary || "")}</div>${ddl}</div>`;
 }
@@ -3277,7 +3448,10 @@ $("btnMailSummary").onclick = () => mailSummarize();
    邮件里的日期比公告更容易被 AI 提取错，绝不自动批量写。 */
 $("mailList").addEventListener("click", async e => {
   const b = e.target.closest("button[data-w]");
-  if(!b) return;
+  /* 不是写入按钮 ⇒ 可能是点在某一「行」上（打开详情）。**必须留在同一个监听器里**：
+     tools/check_mail_frontend.mjs 的 H0b 断言 `#mailList` 上**恰好一个** click 处理器，
+     而它守的是「写入按钮的 data-* 取自它自己那一行」。 */
+  if(!b) return openMailDetailFromEvent(e);
   const g  = (mailState.groups || [])[Number(b.dataset.g)];
   const ty = g && (g.types || [])[Number(b.dataset.t)];
   const it = ty && (ty.items || [])[Number(b.dataset.i)];
@@ -3323,4 +3497,19 @@ $("mailList").addEventListener("click", async e => {
         due_date: row.due_date, notes: row.notes || "" });
   if(r.ok === true) setStatus(t("mail.wrote", { n: 1 }), "ok");    // 写成 → 保持置灰
   else { setStatus(t("status.write_fail") + (r.error || ""), "err"); b.disabled = false; }
+});
+
+/* 键盘可达：`Enter`/`Space` 与点击同路（spec §6）。
+   `preventDefault` **只在命中行时**调用 —— 无条件吞掉 Space 会让邮件页没法用空格滚动。 */
+$("mailList").addEventListener("keydown", e => {
+  if(e.key !== "Enter" && e.key !== " ") return;
+  /* 行内的交互元素（写入日历/提醒按钮）自己吃 `Enter`/`Space` —— 与 click 路径的
+     `closest("button[data-w]")` 早退同一条规矩。少了这行，键盘激活按钮会被本监听器
+     劫持：`preventDefault` 吞掉按钮的合成 click，同时弹出邮件详情（`#mailList` 的 click
+     处理器有这道排他，键路径**曾经漏了**）。 */
+  if(e.target && e.target.closest && e.target.closest("button, a, input, select, textarea")) return;
+  const m = mailRowTarget(e);
+  if(!m) return;
+  e.preventDefault();
+  openMailDetail(m);
 });

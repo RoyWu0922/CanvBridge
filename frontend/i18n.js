@@ -12,7 +12,7 @@ const I18N = {
     "nav.mail": "邮件",
     "mail.refresh": "刷新邮件",
     "mail.summarize": "AI 总结",
-    "mail.empty": "没有需要处理的邮件",
+    "mail.empty": "最近 {n} 天没有转发过来的邮件",
     "mail.count": "共 {n} 封",
     "mail.group_other": "其他",
     "mail.uncategorized": "未分类",
@@ -25,6 +25,14 @@ const I18N = {
     "mail.need_refresh": "请先刷新邮件",
     "mail.wrote": "已写入 {n} 条",
     "mail.ddl_incomplete": "这条待办缺少标题或时间，无法写入",
+    "mail.detail_open": "查看详情",
+    "mail.detail_failed": "打不开这封邮件：",
+    "mail.empty_body": "（这封邮件没有正文）",
+    "mail.attachments": "附件",
+    "mail.no_attachments": "这封邮件没有附件",
+    "mail.download": "下载",
+    "mail.download_failed": "下载失败：",
+    "mail.saved_to": "已存到 {path}",
     "confirm.cancel": "取消",
     "confirm.ok": "确认",
     "nav.settings": "设置",
@@ -428,7 +436,7 @@ const I18N = {
     "nav.mail": "Mail",
     "mail.refresh": "Refresh mail",
     "mail.summarize": "AI summary",
-    "mail.empty": "Nothing needs your attention",
+    "mail.empty": "No forwarded mail in the last {n} days",
     "mail.count": "{n} messages",
     "mail.group_other": "Other",
     "mail.uncategorized": "Uncategorized",
@@ -441,6 +449,14 @@ const I18N = {
     "mail.need_refresh": "Refresh mail first",
     "mail.wrote": "Wrote {n}",
     "mail.ddl_incomplete": "This item has no title or time, so nothing was written",
+    "mail.detail_open": "View details",
+    "mail.detail_failed": "Could not open this message: ",
+    "mail.empty_body": "(no body text)",
+    "mail.attachments": "Attachments",
+    "mail.no_attachments": "No attachments",
+    "mail.download": "Download",
+    "mail.download_failed": "Download failed: ",
+    "mail.saved_to": "Saved to {path}",
     "confirm.cancel": "Cancel",
     "confirm.ok": "Confirm",
     "nav.settings": "Settings",
@@ -863,6 +879,7 @@ function applyLang() {
   if (typeof renderGrades === "function") renderGrades();
   if (typeof renderDiscussions === "function") renderDiscussions();
   if (typeof renderDetail === "function") renderDetail();   // 详情弹层语言切换后重渲
+  if (typeof renderMailDetail === "function") renderMailDetail();   // 邮件详情弹层语言切换后重渲
   if (typeof renderQuizzes === "function") renderQuizzes();   // 语言切换后重渲测验分组
   /* 首页三张卡：上面那轮 data-i18n 重设会把它们的行内容打回 home.loading 占位，
      必须重渲（均只在内存数据上工作，不触发网络）。 */
