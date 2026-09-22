@@ -548,11 +548,15 @@ fixture 用**原始字节**造 multipart（理由同 `_body_msg` 的注释：std
 _BOUND = b"SYNTHBOUNDARY"
 
 
-def _raw_mail(atts=(), text=b"正文", to=b"t@cityu.edu.hk"):
+def _raw_mail(atts=(), text="正文", to=b"t@cityu.edu.hk"):
     """一封 multipart/mixed 的**原始字节**。
 
     atts 是 `[(头部块 bytes, 内容 bytes)]`，头部块自带 Content-Disposition。
     附件序 = atts 的顺序（与 `msg.walk()` 的遍历顺序一致）。
+
+    `text` 收 **str**、内部 `encode("utf-8")`：与本文件既有的 `_body_msg`
+    同一惯例（`_body_msg("第一封正文")`），并且整类消掉「非 ASCII 的 bytes 字面量」
+    这个坑 —— `b"正文"` 是 **SyntaxError**（bytes 字面量只能含 ASCII）。
     """
     b = _BOUND
     out = (b'Content-Type: multipart/mixed; boundary="' + b + b'"\r\n'
@@ -561,7 +565,7 @@ def _raw_mail(atts=(), text=b"正文", to=b"t@cityu.edu.hk"):
            b"Date: Thu, 17 Sep 2026 16:31:00 +0800\r\n\r\n"
            b"--" + b + b"\r\n"
            b'Content-Type: text/plain; charset="utf-8"\r\n'
-           b"Content-Transfer-Encoding: 8bit\r\n\r\n" + text + b"\r\n")
+           b"Content-Transfer-Encoding: 8bit\r\n\r\n" + text.encode("utf-8") + b"\r\n")
     for head, data in atts:
         out += b"--" + b + b"\r\n" + head + b"\r\n\r\n" + data + b"\r\n"
     return out + b"--" + b + b"--\r\n"
@@ -627,7 +631,7 @@ def test_fetch_detail_no_attachments_is_empty_list(monkeypatch):
 
 def test_fetch_detail_truncates_body(monkeypatch):
     """正文套 `MAX_BODY_CHARS`（spec §4）。"""
-    _detail_install(monkeypatch, {b"1": _raw_mail(text=b"x" * 40)})
+    _detail_install(monkeypatch, {b"1": _raw_mail(text="x" * 40)})
     monkeypatch.setattr(mail_client, "MAX_BODY_CHARS", 10)
     mail_client.list_mail(7)
     assert mail_client.fetch_detail({"id": "1"})["body"] == "x" * 10
@@ -636,9 +640,14 @@ def test_fetch_detail_truncates_body(monkeypatch):
 def test_fetch_detail_survives_broken_mime(monkeypatch):
     """坏 MIME 不抛（spec §7）：声明 `multipart/mixed` 却**没有分隔线**、附件段是坏 base64。
 
-    解析器（compat32）本身很宽容、不会抛；会抛的是**我们**在 part 上取文件名/payload 的那一步
-    —— 故这条实际钉的是 `_att_name`/`_part_size` 的守卫。**判别力有限，如实登记**：
-    它抓得住「抛了」，抓不住「附件少了一个/多了一个」，后者由上面的 index 用例管。
+    **判别力已实测界定（照实登记，别照抄旧说法）**：这份输入下 `msg.walk()` 解出
+    **0 个附件 part**、`message_body` 返回的是那段原始头文本（是 str）。也就是说
+    这条用例**根本不会调用 `_att_name` / `_part_size`** —— 它钉的是「`fetch_detail`
+    在这份输入上不抛、且输出形状仍是 `str` + `list`」，**不覆盖那两个函数的守卫**
+    （后者是 Task 5 才加的加固，见 Task 5「`_att_name` 守卫」那条）。
+    末行是**实测形状**（`== []`）—— 它**是**钉住数量的。旧稿写的是
+    `all(set(a) == {"index","name","size"} for a in d["attachments"])`，那句在空清单上
+    恒真、**什么都没钉**（复审 M6 量出来的），已换成这一条；别照旧稿改回去。
     """
     raw = (b'Content-Type: multipart/mixed; boundary="NEVERAPPEARS"\r\n'
            b"To: t@cityu.edu.hk\r\nFrom: T <t@cityu.edu.hk>\r\nSubject: S\r\n\r\n"
@@ -651,7 +660,7 @@ def test_fetch_detail_survives_broken_mime(monkeypatch):
     d = mail_client.fetch_detail({"id": "1"})
     assert isinstance(d["body"], str)
     assert isinstance(d["attachments"], list)
-    assert all(set(a) == {"index", "name", "size"} for a in d["attachments"])
+    assert d["attachments"] == []
 
 
 def test_fetch_detail_raises_when_uid_is_gone(monkeypatch):
@@ -663,12 +672,101 @@ def test_fetch_detail_raises_when_uid_is_gone(monkeypatch):
 
 
 def test_fetch_detail_checks_uidvalidity(monkeypatch):
-    """邮箱被重建 ⇒ 抛（复用 `_do_bodies` 的机制，spec §4）。"""
+    """邮箱被重建 ⇒ 抛（复用 `_do_bodies` 的机制，spec §4）。
+
+    末两行是**排序**断言，不是重复断言：只写 `pytest.raises` 的话，
+    把 `_check_uidvalidity` 挪到取件**之后**这条用例**照样绿**
+    （`_FakeIMAP.uid` 的 FETCH 分支对已知 uid 会回一行，`fetch_detail` 于是拿到东西、
+    不抛）。口径与既有 `test_fetch_bodies_raises_on_uidvalidity_change` 的
+    「一条 `BODY.PEEK[]` 都不许发」一致。
+    """
     _detail_install(monkeypatch, {b"1": _raw_mail()})
     mail_client.list_mail(7)
     monkeypatch.setattr(mail_client, "_uidvalidity", "7")
-    _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr()}, uidvalidity=b"8"))
+    fake = _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr()}, uidvalidity=b"8"))
     with pytest.raises(mail_client.MailError, match="UIDVALIDITY"):
+        mail_client.fetch_detail({"id": "1"})
+    assert not [c for c in fake.sent if c[0] == "uid" and "BODY.PEEK[]" in str(c[-1])], \
+        "UIDVALIDITY 不符时不该取任何正文"
+
+
+def test_attachment_parts_include_forwarded_message():
+    """**作为附件转发的邮件**（`message/rfc822`）也算附件（spec §4）。
+
+    实测形状：该 part `get_content_type()` 为 `message/rfc822` 而 **`is_multipart()` 为 True**
+    —— 判据里多一条 `not is_multipart()` 就会把它**静默丢掉**（原实现即如此）。
+    **只钉名字，不碰 size**：size 归 Task 5 加固后再钉（那之前 `_part_size` 对它给 `None`）。
+    """
+    inner = (b"From: a@x.com\r\nTo: t@cityu.edu.hk\r\n"
+             b"Subject: inner\r\n\r\ninner body\r\n")
+    eml = (b"Content-Type: message/rfc822\r\n"
+           b'Content-Disposition: attachment; filename="fwd.eml"')
+    msg = email.message_from_bytes(_raw_mail([(eml, inner)]))
+    assert [p.get_filename() for p in mail_client._attachment_parts(msg)] == ["fwd.eml"]
+
+
+def test_fetch_detail_raises_when_fetch_fails(monkeypatch):
+    """服务端 FETCH 回非 OK ⇒ `MailError`（spec §7），不是把 imaplib 的错冒出去。
+
+    打的是 `_fetch_raw_chunk` 里 `typ != "OK"` 那条分支 —— 它被 `_do_bodies` 与
+    `fetch_detail` **共用**，抽出后却没人钉过（既有用例只覆盖 `status` 回非 OK）。
+
+    ⚠️ **门必须只挡取正文那条 FETCH**（`"BODY.PEEK[]" in str(args[-1])`，
+    与 `_BodyIMAP` 同一口径）。裸写 `if cmd == "FETCH"` 会**连取头一起挡**：
+    `_fetch_headers` 发的是 `BODY.PEEK[HEADER.FIELDS (…)]`，实测该串**不含**
+    `"BODY.PEEK[]"`（故两者可干净分开），于是 `list_mail(7)` 就先抛
+    「读取邮件头失败」—— 用例红在**别的错**上，跟 `_fetch_raw_chunk` 那条分支无关。
+    """
+
+    class _NoFetch(_FakeIMAP):
+        def uid(self, cmd, *args):
+            if cmd == "FETCH" and "BODY.PEEK[]" in str(args[-1]):
+                self.sent.append(("uid", cmd) + tuple(args))
+                return ("NO", [b"server said no"])
+            return super().uid(cmd, *args)
+
+    _install(monkeypatch, _NoFetch(headers={b"1": _hdr()}))
+    mail_client.list_mail(7)
+    with pytest.raises(mail_client.MailError, match="读取邮件正文失败"):
+        mail_client.fetch_detail({"id": "1"})
+
+
+def test_logout_error_does_not_escape_or_mask(monkeypatch):
+    """登出抛异常时：**不许**冒出 `fetch_detail`，也**不许**盖住真正的错。
+
+    这条钉的是 `_logout_quietly`（`backend/mail_client.py:320`）存在的**唯一理由** ——
+    它的 docstring 逐字：「登出，异常吞掉 —— **不能让它盖住真正的错**」。
+    **变异已验证它承重**（实现者实测 M10）：把这个调用换回裸 `conn.logout()`，
+    形状一立刻红 —— 登出的异常会直接冒出 `fetch_detail`。
+
+    为什么必须有用例：全仓测试此前**只有** `("logout",) in fake.sent` 这类断言
+    （`tests/test_mail_client.py:149,:159`），它们钉的是「登出被调用了」，
+    **不是**「登出的异常被吞了」。裸 `logout()` 同样会让那两条绿 ——
+    于是 I1 这处修复曾完全靠人眼守。两个形状各钉一件事：
+    形状一钉「吞掉」，形状二钉「不盖住」。
+    """
+    class _BadLogout(_BodyIMAP):
+        def logout(self):
+            self.sent.append(("logout",))
+            raise imaplib.IMAP4.error("socket already closed")
+
+    # 形状一：取件成功、登出抛 ⇒ 结果照常返回，异常不许冒出去
+    _install(monkeypatch, _BadLogout(headers={b"1": _hdr()},
+                                     bodies={b"1": _raw_mail()}))
+    mail_client.list_mail(7)
+    assert mail_client.fetch_detail({"id": "1"})["body"] == "正文"
+
+    # 形状二：取件失败、登出也抛 ⇒ 冒出来的必须是**取件**那个错
+    class _BadFetch(_BadLogout):
+        def uid(self, cmd, *args):
+            if cmd == "FETCH" and "BODY.PEEK[]" in str(args[-1]):
+                self.sent.append(("uid", cmd) + tuple(args))
+                return ("NO", [b"server said no"])
+            return super().uid(cmd, *args)
+
+    _install(monkeypatch, _BadFetch(headers={b"1": _hdr()}))
+    mail_client.list_mail(7)
+    with pytest.raises(mail_client.MailError, match="读取邮件正文失败"):
         mail_client.fetch_detail({"id": "1"})
 ```
 
@@ -743,13 +841,22 @@ def _fetch_bodies_chunk(conn, uids: list[str]) -> list[tuple[str, str]]:
 def _attachment_parts(msg) -> list:
     """附件 part，按 `msg.walk()` 的顺序（spec §4）。
 
-    「是附件」= `Content-Disposition: attachment`（与 `message_body` 同一口径）。
-    `inline` 部件（内嵌图）既不算附件、也不进正文 —— v1 不显示。
-    非 multipart 的整封也走 `walk()`（它会先产出自己），故「整封就是一份附件」
-    这种形状一样被抓到。
+    「是附件」= `Content-Disposition: attachment` —— **判据只有这一条**（spec §4 原话：
+    「部件有 `Content-Disposition: attachment`（沿用 `message_body` 现 `:193` 的口径）」，
+    唯一被排除的是 `inline`）。`inline` 部件（内嵌图）既不算附件、也不进正文 —— v1 不显示。
+
+    ⚠️ **不许再加 `not p.is_multipart()`**：那是从 `message_body` 的循环形状抄来的，
+    在**附件**判据上是错的。实测（`message_from_bytes` 解一封「作为附件转发」的邮件）：
+    `Content-Type: message/rfc822` + `Content-Disposition: attachment` 的部件
+    **`is_multipart()` 为 True**（它的 payload 是内嵌的那封 Message），
+    于是被静默丢掉 —— Gmail/Outlook 的「Forward as attachment」正是这个形状，
+    而它恰恰是最该被看到的那类转发件（正文常常只有一句「见附件」）。
+
+    这条例外只放行 `message/rfc822`：其余 multipart 部件（`multipart/*` 容器）仍然不算附件
+    ——容器本身不是可下载的文件。
     """
     return [p for p in msg.walk()
-            if not p.is_multipart()
+            if (not p.is_multipart() or p.get_content_type() == "message/rfc822")
             and (p.get_content_disposition() or "") == "attachment"]
 
 
@@ -768,7 +875,7 @@ def fetch_detail(item: dict) -> dict:
         _check_uidvalidity(uidvalidity)
         rows = _fetch_raw_chunk(conn, [uid])
     finally:
-        conn.logout()
+        _logout_quietly(conn)
     if not rows:
         raise MailError(f"没有取到编号为 {uid} 的邮件（它可能已被移走或删除）")
     msg = message_from_bytes(rows[0][1])
@@ -801,7 +908,11 @@ def _part_size(part) -> int | None:
 - [ ] **Step 4: 跑一遍确认它绿**
 
 Run: `.venv/bin/python -m pytest tests/test_mail_client.py -q -k fetch_detail`
-Expected: PASS（8 条）
+Expected: PASS（**8 条** —— 本步骤执行时树上的状态）
+⚠️ **条数是相对树状态说的，别当成常量**：这一节跑在**修复轮之前**，那时名字里带
+`fetch_detail` 的是 8 条。修复轮各加 1 条后，同一个选择器给 **9 条**；再加
+`-k "fetch_detail or attachment_parts or logout"` 给 **11 条**（两个新用例的名字里
+**不含** `fetch_detail`，`-k` 选不到它们 —— **选择器本身也是断言**，改用例名就会失效）。
 Run: `.venv/bin/python -m pytest tests/test_mail_client.py -q -k fetch_bodies`
 Expected: PASS（既有正文用例**一条都不许红** —— 这条证明重构没改行为）
 Run: `.venv/bin/python -m pytest -q`
@@ -869,8 +980,8 @@ PY
 # ============ 附件：净化、大小、单个取回（spec §4）============
 
 @pytest.mark.parametrize("raw,expect", [
-    ("../../etc/passwd", ".._.._etc_passwd"),
-    ("..\\..\\x", ".._.._x"),
+    ("../../etc/passwd", "____etc_passwd"),
+    ("..\\..\\x", "____x"),
     ("a/b.txt", "a_b.txt"),
     ("a\x00b.txt", "ab.txt"),
     ("  .hidden.  ", "hidden"),
@@ -878,10 +989,32 @@ PY
     ("x" * 300, "x" * 200),
 ])
 def test_safe_attachment_name(raw, expect):
-    """净化后**永不**含路径分隔符、`..` 段或 NUL，且非空、不过 200 字符。"""
+    """净化后**永不**含路径分隔符、`..` 段或 NUL，且非空、不过 200 字符。
+
+    ⚠️ 前两例的期望值是**实跑定的**，别按直觉往回改：净化顺序是「先 `/`、`\\` → `_`，
+    **再** `..` → `_`」，所以 `../../etc/passwd` 先变成 `.._.._etc_passwd`，那两个
+    `..` 随后各自被换成 `_`（连同夹在中间的 `_`），最终是 **`____etc_passwd`**（4 个下划线）。
+    写成 `".._.._etc_passwd"` 会与**本用例第二条断言** `".." not in out` 自相矛盾 ——
+    计划初稿就是这么错的，实跑 7 例抓出来的。
+    """
     out = mail_client.safe_attachment_name(raw, 3)
     assert out == expect
     assert "/" not in out and "\\" not in out and "\x00" not in out and ".." not in out
+
+
+def test_att_name_survives_get_filename_raising():
+    """`_att_name` 的守卫：`get_filename()` **抛**时给 `attachment-<index>`，绝不往上抛。
+
+    这条补的是 Task 4 `test_fetch_detail_survives_broken_mime` **声称**覆盖、实测**没有**
+    覆盖的那一格（那份输入解出 0 个附件 part，`_att_name` 根本没被调用）。
+    守卫本身是 Task 5 加的（Task 4 的 `_att_name` 是朴素版、没有 try），所以这条只能落在 Task 5。
+    用替身而不是真 MIME：`compat32` 的 `get_filename()` 实际很难被喂到「抛」的形状，
+    而这里要钉的是**我们的守卫**，不是解析器的行为。
+    """
+    class _BadName:
+        def get_filename(self):
+            raise ValueError("boom")
+    assert mail_client._att_name(_BadName(), 4) == "attachment-4"
 
 
 def test_part_size_is_none_when_undecodable():
@@ -933,6 +1066,48 @@ def test_fetch_attachment_raises_when_uid_is_gone(monkeypatch):
     mail_client.list_mail(7)
     with pytest.raises(mail_client.MailError):
         mail_client.fetch_attachment({"id": "999"}, 0)
+
+
+def test_fetch_attachment_logout_error_does_not_escape(monkeypatch):
+    """`fetch_attachment` 的登出异常同样不许冒出去。
+
+    与 Task 4 `test_logout_error_does_not_escape_or_mask` **同源同形但不同点**：
+    那条钉 `fetch_detail` 的 `finally`，这条钉 `fetch_attachment` 的。
+    两处**各自承重** —— 只钉一处的话，另一处换回裸 `conn.logout()`
+    不会被任何用例发现（全仓此前没有任何用例让 `logout` 抛过）。
+    """
+    class _BadLogout(_BodyIMAP):
+        def logout(self):
+            self.sent.append(("logout",))
+            raise imaplib.IMAP4.error("socket already closed")
+
+    raw = _raw_mail([(_att_head(b"a.bin"), b"AAAA")])
+    _install(monkeypatch, _BadLogout(headers={b"1": _hdr()}, bodies={b"1": raw}))
+    mail_client.list_mail(7)
+    assert mail_client.fetch_attachment({"id": "1"}, 0) == ("a.bin", b"AAAA")
+
+
+def test_forwarded_message_attachment_round_trips(monkeypatch):
+    """「作为附件转发」的邮件（`message/rfc822`）：**列得出、下载得回、size 对得上**。
+
+    这是 Task 4 修好「静默丢掉」之后的**下半场**：`_part_bytes` 必须走
+    `as_bytes()` 那条分支，否则清单里有它、点下载却报「无法解码」。
+    断言刻意**不钉字节数与内容细节**（`as_bytes()` 是 stdlib 的再序列化，
+    换行/折行会被规范化 —— 钉死那些数字就是钉 stdlib 的行为，不是钉我们的）；
+    钉的是「内嵌正文确实在里面」+「下载长度 == 清单报的 size」这条组合绑定。
+    """
+    inner = (b"From: a@x.com\r\nTo: t@cityu.edu.hk\r\n"
+             b"Subject: inner\r\n\r\ninner body\r\n")
+    eml = (b"Content-Type: message/rfc822\r\n"
+           b'Content-Disposition: attachment; filename="fwd.eml"')
+    _detail_install(monkeypatch, {b"1": _raw_mail([(eml, inner)])})
+    mail_client.list_mail(7)
+    d = mail_client.fetch_detail({"id": "1"})
+    assert [a["name"] for a in d["attachments"]] == ["fwd.eml"]
+    name, data = mail_client.fetch_attachment({"id": "1"}, 0)
+    assert name == "fwd.eml"
+    assert b"inner body" in data, "内嵌那封邮件的正文必须在下载内容里"
+    assert len(data) == d["attachments"][0]["size"]
 
 
 # ============ 只读三件套：新路径也要**全流程**覆盖（spec §7）============
@@ -1015,17 +1190,43 @@ def _att_name(part, index: int) -> str:
     return safe_attachment_name(decode_mime_header(raw), index)
 
 
+def _part_bytes(part) -> bytes | None:
+    """附件字节。**单一来源** —— `_part_size` 与 `fetch_attachment` 都走它。
+
+    这样「清单里报的 size」与「下载到的长度」**结构上**不可能对不上
+    （`fetch_attachment` 那条组合绑定用例因此是恒真的，但它是防线不是理由：
+    将来谁绕过 `_part_bytes` 直接 `get_payload`，它会立刻红）。
+
+    两种形状：
+      - 普通叶子部件 ⇒ `get_payload(decode=True)`；
+      - `message/rfc822`（「作为附件转发」的邮件）⇒ 它是 **multipart**，
+        `decode=True` 给 `None`，改用内嵌消息的 `as_bytes()`。
+        实测：该 part `is_multipart()` 为 True、`get_payload()` 是 `[内嵌 Message]`。
+        ⚠️ **如实登记**：`as_bytes()` 是 stdlib 的**再序列化**，不是发件人发来的原始字节
+        （换行与折行会被规范化）。这是 stdlib 能给的最接近的东西；别在文案/注释里
+        把它说成「原始字节」。
+    解不出给 `None`，**绝不编造 0**（spec §4）。
+    """
+    try:
+        if part.get_content_type() == "message/rfc822":
+            payload = part.get_payload()
+            if isinstance(payload, list) and payload:
+                return payload[0].as_bytes()
+            return None
+        data = part.get_payload(decode=True)
+    except Exception:
+        return None
+    return data if isinstance(data, bytes) else None
+
+
 def _part_size(part) -> int | None:
-    """附件字节数 = `len(解码后字节)`；解不出给 **`None`**，绝不编造 0（spec §4）。
+    """附件字节数 = `len(_part_bytes(part))`；解不出给 **`None`**，绝不编造 0（spec §4）。
 
     代价（如实登记）：为了量大小要把该 part 解码一次，`fetch_attachment` 里还会再解一次。
     Gmail 单封上限 25 MB，最坏情况是一次几十 MB 的内存峰值，换来的是「不编造数字」。
     """
-    try:
-        data = part.get_payload(decode=True)
-    except Exception:
-        return None
-    return len(data) if isinstance(data, bytes) else None
+    data = _part_bytes(part)
+    return len(data) if data is not None else None
 
 
 def _reject_if_too_big(size: int, name: str) -> None:
@@ -1049,7 +1250,7 @@ def fetch_attachment(item: dict, index: int) -> tuple[str, bytes]:
         _check_uidvalidity(uidvalidity)
         rows = _fetch_raw_chunk(conn, [uid])
     finally:
-        conn.logout()
+        _logout_quietly(conn)
     if not rows:
         raise MailError(f"没有取到编号为 {uid} 的邮件（它可能已被移走或删除）")
     msg = message_from_bytes(rows[0][1])
@@ -1059,11 +1260,8 @@ def fetch_attachment(item: dict, index: int) -> tuple[str, bytes]:
         raise MailError("这封邮件里没有这个附件（清单可能已过期，请重新打开邮件）")
     part = parts[index]
     name = _att_name(part, index)
-    try:
-        data = part.get_payload(decode=True)
-    except Exception as exc:
-        raise MailError(f"附件解码失败：{exc}") from exc
-    if not isinstance(data, bytes):
+    data = _part_bytes(part)
+    if data is None:
         raise MailError(f"附件内容无法解码，未下载。（{name}）")
     _reject_if_too_big(len(data), name)
     return name, data
@@ -2149,9 +2347,26 @@ git commit -m "test(mail): 自检新增 K 段（详情弹层）与两个变异�
 - [ ] **Step 1: 全量测试**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 全绿（基线 546 + 本轮新增 **50** 个 test item）；**没有新增 skip/xfail**
-按任务的账面数（= 用例**条数**，参数化那条按展开后 7 个 item 计）：
-Task 2 = 9、Task 3 = 3、Task 4 = 8、Task 5 = 15（8 + 参数化 7）、Task 6 = 7、Task 7 = 8，合计 **50**。
+Expected: 全绿（基线 546 + 本轮新增 **55** 个 test item）；**没有新增 skip/xfail**
+按任务的账面数（= 用例**条数**，参数化那条**按展开后的 item 数计一次**）：
+Task 2 = 9、Task 3 = 3、Task 4 = **11**、Task 5 = **17**、Task 6 = 7、Task 7 = 8，合计 **55**。
+**已核实的中间量**：Task 4 实现后全量 = **566 passed**（546 + 9 + 3 + 8），与逐任务账面**逐位吻合**；
+Task 4 修复轮后 = **568 passed**（566 + 本轮新增的 2 条），亦逐位吻合。
+⛔ 计划初稿写的 `Task 5 = 15（8 + 参数化 7）` 是**重复计数**：那 8 个 def 里**已经含**参数化那一个，
+展开后应为 7 个 plain + 7 个 item = 14，不是 15（初稿的合计 50 因此也虚高 1）。
+若再看到「def 数 + 展开数」这种写法，先确认两者是否重叠。
+**账面数的三处增补**（都由实跑或复审触发，见各自用例的 docstring）：
+- Task 4 加 2 条：`test_attachment_parts_include_forwarded_message`（`message/rfc822` 被
+  `not is_multipart()` **静默丢掉**，实测该 part `is_multipart()` 为 True）、
+  `test_fetch_detail_raises_when_fetch_fails`（`_fetch_raw_chunk` 的 `typ != "OK"` 分支原先无人钉）。
+- Task 5 加 2 条：`test_att_name_survives_get_filename_raising`（Task 4 那条
+  `survives_broken_mime` 实测解出 0 个附件 part、根本不调用 `_att_name`，守卫改由 Task 5 直接钉）、
+  `test_forwarded_message_attachment_round_trips`（`_part_bytes` 的 rfc822 分支）。
+- **Task 4 与 Task 5 各再加 1 条登出用例**（`test_logout_error_does_not_escape_or_mask` /
+  `test_fetch_attachment_logout_error_does_not_escape`）：复审 I1 的修复**曾被实测证明完全无覆盖**
+  （实现者 M10：换回裸 `conn.logout()` 后 16/16 照绿）。全仓此前**没有任何用例让 `logout` 抛过** ——
+  `("logout",) in fake.sent` 那两条只钉「被调用」，裸 `logout()` 同样让它们绿。
+  两个调用点各钉一条：只钉一处，另一处回退不会被发现。
 账面数与实跑数对不上时，**以实跑为准，但必须先把差额查清**（多半是某条用例名里带了筛选词、
 或某条被 `-k` 漏掉），不要把账面数改大去凑。
 
