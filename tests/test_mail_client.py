@@ -1575,8 +1575,11 @@ def test_save_attachment_refuses_path_escaping_the_root(tmp_path, monkeypatch):
     本用例**照样绿**（`-k refuses_path_escaping` ⇒ 1 passed）—— 因为逃逸路径的中间那一级
     `<root>/学校邮件/2026-09-17_..` 不存在，`write_bytes` 先以 ENOENT 失败，抛的是
     `MailError("保存附件失败：…")`：**两个不同的失败，被同一个 `pytest.raises(MailError)` 接住**。
-    把这一级**先建出来**，逃逸路径就变成真正可写的 ⇒ 删掉锚点后 `evil.bin` 会**真的落在根外**，
-    本用例随即变红（实测两条红：`DID NOT RAISE` + 末尾那句不存在断言）。
+    把这一级**先建出来**，逃逸路径就变成真正可写的 ⇒ 删掉锚点后 `evil.bin` 会**真的落在根外**
+    （实测：`b"x"` 落在 `<root>/../evil.bin`，根内 `学校邮件/` 只剩那个预建的目录），
+    本用例随即变红。**红的是 `pytest.raises` 那一行（`Failed: DID NOT RAISE MailError`），
+    末尾那句不存在断言根本不会执行**（`raises` 失败即中止本函数）—— 所以这里是
+    「一条红」而不是「两条红」，别照直觉写成两条（本条实测输出见 task-6-report.md）。
     这样钉的是**危害**（文件跑到根外），而不是错误文案 —— 断言文案会把用例绑死在字句上。
     （`_unique_path` 用的是**不 resolve** 的 `target.exists()`：预建这一级不会让它以为目标已存在
     而改落 `-1` 后缀；实测落点仍是 `2026-09-17_evil.bin` 那一支。）
