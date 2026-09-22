@@ -2424,7 +2424,7 @@ const LIBRARY_MAX_PAGES = 5;   /* 与后端 library_client.MAX_PAGES 一致；�
 const MAIL_DAYS = 7;
 let mailState = { mails: [], groups: null, loading: false, error: "" };
 
-/* 详情弹层「当前这一封」的状态（`id` + `detail`）。
+/* 详情弹层「当前这一封」的状态（`id` + `detail` + `detailId`）。
    **声明在这里、而不是末尾那段邮箱代码里**：与上面的 `mailState` 同一个道理，而且这一条
    更要命 —— `renderMailDetail` 会被本文件顶层的 `applyLang()`（经 i18n.js 的钩子）**无参**
    调用，而它第一件事就是读 `mailDetailState.detail` 判断要不要重渲（读状态在无参调用上也
@@ -2433,9 +2433,13 @@ let mailState = { mails: [], groups: null, loading: false, error: "" };
    余下代码**全部不执行** = 白屏级；`node --check` 查不出来 —— 这条是
    `tools/check_mail_frontend.mjs` 逐文件 `runInContext` 的加载步骤实跑抓到的。
    `detail` = 上一次渲染过的详情，供语言切换后的**无参**重渲取用；
-   **只在进程内存里**：不落盘、不进任何请求体、不跨会话（弹层关闭时也不清它 ——
-   早退条件里的 `el.hidden` 已经是那道闸，加了 `closeMailDetail` 反而会多一处状态改动）。 */
-let mailDetailState = { id: "", detail: null };
+   `detailId` 是「缓存里这份详情属于哪一封」：`id` 会被 `openMailDetail` 在**发请求之前**改掉，
+   而详情要等响应回来才有。失败与在途两种情况下缓存里留的都是**上一封** ——
+   `renderMailDetail` 的无参入口（i18n 钩子）必须靠这个比对才知道该不该画。
+   三个字段**只在进程内存里**：不落盘、不进任何请求体、不跨会话（弹层关闭时也不清缓存 ——
+   读到旧缓存不会画错内容：`el.hidden` 与 `detailId !== id` 两道闸各自拦得住；加清理反而会多
+   一处「每个改 `id` 的地方都得记得清」的状态改动，那正是本缺陷的成因形态）。 */
+let mailDetailState = { id: "", detail: null, detailId: "" };
 
 $("btnLang").onclick = () => {
   localStorage.setItem("sc_lang", LANG() === "zh" ? "en" : "zh");
@@ -3283,10 +3287,17 @@ function mailAttsHtml(atts){
 /* `detail` 省略时沿用上一次的 —— 语言切换后 `i18n.js` 的 `applyLang` 钩子就**无参**调它
    （范式同 `renderDetail`）。弹层没开、或还没有任何详情 ⇒ 纯 no-op。 */
 function renderMailDetail(detail){
-  if(detail) mailDetailState.detail = detail;
+  if(detail){
+    mailDetailState.detail = detail;
+    mailDetailState.detailId = mailDetailState.id;   // 记下这份详情属于哪一封
+  }
   const d = mailDetailState.detail;
   const el = $("mailDetail");
-  if(!d || !el || el.hidden) return;
+  /* 第四条早退：**缓存必须属于当前打开的那一封**。只看 `el.hidden` 不够 ——
+     `openMailDetail` 的失败分支从不写缓存，在途期间也还没写，两种情况下缓存里都是上一封，
+     照画就会把上一封的正文与附件清单挂在这一封的标题下（点它的下载按钮 = 用这一封的 id
+     去取上一封的 index，静默落盘一个与按钮名字无关的文件）。与 `openMailDetail` 那道迟到守卫同一条规矩。 */
+  if(!d || !el || el.hidden || mailDetailState.detailId !== mailDetailState.id) return;
   const body = d.body || "";
   $("mailDetailBody").innerHTML = body
     ? `<div class="mail-detail-body">${mailLinkify(body)}</div>`
