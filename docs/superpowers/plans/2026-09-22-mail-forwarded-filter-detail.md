@@ -1380,12 +1380,23 @@ def test_save_attachment_uses_utc_date_of_received(tmp_path, monkeypatch):
 
 
 def test_save_attachment_falls_back_to_today_on_bad_date(tmp_path, monkeypatch):
-    """`received` 解不出 / 是 naive 时用**当天 UTC**，绝不猜一个日期。"""
+    """`received` 解不出 / 是 naive 时用**当天 UTC**，绝不猜一个日期。
+
+    ⚠️ 每个坏值必须用**各自的子目录**：初稿在同一个 `tmp_path` 里连落三次同名文件，
+    第二、三次会被 `_unique_path` 加上 `-1`/`-2`，而 `f"{today}_a.bin" in out`
+    在 `2026-09-22_a-1.bin` 上**恒假**（实测：`'_a.bin'` 不是 `'_a-1.bin'` 的子串）
+    ⇒ 初稿从第二次迭代起必然红。`-1` 后缀本身是 `never_overwrites` 那条的职责，别在这儿重复测。
+    另：跨 UTC 午夜时 `today` 会在调用前后不同，取**调用前后两个日期都接受**，
+    否则这条用例每天有极小概率无故变红。（naive 那条实测 `tzinfo is None`，
+    正是 `_received_date` 判为「解不出」的依据。）
+    """
     _fake_attachment(monkeypatch, "a.bin", b"x")
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    for bad in ("", "not-a-date", "2026-09-17T08:31:00"):
-        out = mail_client.save_attachment({"id": "1", "received": bad}, 0, str(tmp_path))
-        assert f"{today}_a.bin" in out
+    for i, bad in enumerate(("", "not-a-date", "2026-09-17T08:31:00")):
+        before = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        out = mail_client.save_attachment({"id": "1", "received": bad}, 0,
+                                          str(tmp_path / str(i)))
+        after = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        assert any(f"{d}_a.bin" in out for d in {before, after}), out
 
 
 def test_save_attachment_rejects_empty_download_dir(monkeypatch):
@@ -1400,9 +1411,19 @@ def test_save_attachment_refuses_path_escaping_the_root(tmp_path, monkeypatch):
 
     用变异注入一个逃逸名来证明这道守卫不是装饰（净化正常时它永不触发 ——
     那正是「永不触发的守卫」最容易被后来者当成冗余删掉的原因）。
+
+    ⚠️ 注入名必须是 **四个** `..`，不是两个 —— **实测定死的**，别按直觉改回去：
+    落点被拼成 `f"{日期}_{名}"`，那个 `_` 把第一段 `2026-09-17_..` 变成**普通目录名**
+    （不是父引用），于是它先吃掉一个 `..`：
+      - `../../evil.bin`     ⇒ `<root>/学校邮件/evil.bin` —— **仍在根内**，锚点放行；
+      - `../../../evil.bin`  ⇒ `<root>/evil.bin`        —— **仍在根内**，锚点放行；
+      - `../../../../evil.bin` ⇒ `<root>/../evil.bin`    —— 才真逃出去，锚点抛。
+    初稿写两个 `..` ⇒ 锚点根本不触发 ⇒ 本用例**必然红**；而末尾那句
+    `not (tmp_path.parent / "evil.bin").exists()` 恰好对应四个 `..`
+    —— 作者本意就是四个，只是少写了两个。
     """
     monkeypatch.setattr(mail_client, "fetch_attachment",
-                        lambda item, index: ("../../evil.bin", b"x"))
+                        lambda item, index: ("../../../../evil.bin", b"x"))
     with pytest.raises(mail_client.MailError):
         mail_client.save_attachment({"id": "1", "received": ""}, 0, str(tmp_path))
     assert not (tmp_path.parent / "evil.bin").exists()
