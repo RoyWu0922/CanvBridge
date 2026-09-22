@@ -1860,13 +1860,16 @@ def test_mail_list_failure_is_200_json(monkeypatch):
 # --- 学校邮箱：详情与附件（spec §5）---
 
 def test_mail_detail_returns_detail(monkeypatch):
-    monkeypatch.setattr(mail_client, "fetch_detail", lambda item: {
+    seen = {}
+    monkeypatch.setattr(mail_client, "fetch_detail", lambda item: seen.update(item=item) or {
         "id": item["id"], "body": "正文",
         "attachments": [{"index": 0, "name": "a.bin", "size": 4}]})
     body = TestClient(main.app).post("/api/mail/detail", json={"id": "A"}).json()
     assert body["ok"] is True
     assert body["detail"]["body"] == "正文"
     assert set(body) == {"ok", "detail"}
+    # 出站句柄逐字钉住：路由只能发 {"id": uid}，不许转发客户端的其它字段。
+    assert seen == {"item": {"id": "A"}}
 
 
 def test_mail_detail_rejects_missing_or_bad_id(monkeypatch):
@@ -1942,8 +1945,9 @@ def test_mail_attachment_failure_is_200_json(monkeypatch):
     r = TestClient(main.app).post("/api/mail/attachment", json={
         "id": "A", "index": 0, "download_dir": "/tmp"})
     assert r.status_code == 200
-    assert r.json()["ok"] is False
-    assert "超过 20 MB" in r.json()["error"]
+    # 整字典相等（与 detail 失败体同形）：键集被钉死，多出一个键就红。
+    assert r.json() == {"ok": False,
+                        "error": "附件超过 20 MB，为避免占满磁盘已停止下载。（a.bin）"}
 
 
 def test_mail_summarize_joins_bodies_and_groups(monkeypatch):

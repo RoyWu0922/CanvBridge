@@ -70,7 +70,12 @@ class MailAttachmentRequest(BaseModel):
 
 
 def _mail_str(v) -> str | None:
-    """请求字段必须是非空**字符串**。不做任何隐式转换（spec §5）。"""
+    """请求字段必须是非空**字符串**。不做任何隐式转换（spec §5）。
+
+    返回的是 **strip 过** 的值（`"  A  "` → `"A"`），所以 `id` / `download_dir` 会被静默
+    去掉首尾空白。这是**有意的归一化**，不是漏网的转换：前者要当 IMAP UID、后者要当目录名，
+    两边都不该因为前端多敲了一个空格而失败。非字符串（`3`、`None`、`["A"]` …）照拒。
+    """
     return v.strip() if isinstance(v, str) and v.strip() else None
 
 
@@ -1044,14 +1049,22 @@ def mail_detail(req: MailDetailRequest = MailDetailRequest()):
     """取一封的正文 + 附件清单。只读，不调 LLM、不改已读状态。
 
     字段校验失败一律 HTTP 200 + `{ok:false, error}`（与 `/api/mail/list` 同一条通道）——
-    前端 `api()` 只判 `ok`，抛 HTTP 异常只会让用户看到 422 的解析失败文案。
+    前端 `util.js` 的 `api()` 不看状态码，直接把响应 `r.json()` 交给调用方；而 FastAPI 的 422 体
+    （`{"detail": [...]}`）是**合法 JSON**，它那条 `catch`（「响应无法解析」）根本走不到，调用方拿到
+    的是一个既没有 `ok` 也没有 `error` 的字典，只能回落成 `loadMail()` 里
+    `r.error || t("mail.load_failed")` 那种通用文案，具体原因丢失 —— 所以字段问题必须走 200 这条通道。
     `req` 带默认实例，FastAPI 据此把 body 判为**可选**（同 `/api/mail/list` 的理由）。
 
-    「一律」的**边界**（本轮实跑量过，写下来免得被读成疏漏）：`Any` + 默认实例只挡住
-    **字段层**的隐式转换与缺失；body 本身不是 JSON 对象（`"hello"`、`[1,2]`、`3`、
-    畸形 JSON）时，FastAPI 在进入本函数之前就答 **422** —— 与 `/api/mail/list` 逐格一致。
-    spec §5 的「不抛」只约束**字段**校验、并要求「沿用现 `/api/mail/list` 写法」，故**不修**；
-    前端 `api()` 只发对象或干脆不发 body，走不到这条路径。
+    「一律」的**边界**（本轮实跑量过）：body 缺省 / body 为空 / body 为 JSON `null`，这三种
+    FastAPI 都读作「body 未提供」，于是回落到本函数签名里的**默认实例**（`MailDetailRequest()`），
+    **照常进函数**、答 200（字段全 `None`，`_mail_str` 判空后返回 `{ok:false, error}`）；其余非对象值
+    （`"hello"`、`[1,2]`、`3`、`true`、`[]`、`""`）与畸形 JSON 则在进入本函数之前就答 **422**。
+    方向别读反：默认实例在这条边界上**不是**拦住隐式转换的那道闸（那是 `Any` + `_mail_str` /
+    `_mail_index` 的活），它恰恰**把 200 的口子多开了一格**。反证：`/api/mail/summarize` 的 body
+    没有默认实例，实测对 `null` 答 422；除 `null` 这一格外，本路由与 `/api/mail/list` **逐格一致**。
+    spec §5 的「不抛」只约束**字段**校验，并要求「与既有 `/api/mail/*` 同形」——既有两条即
+    `/api/mail/list` 与 `/api/mail/summarize`（spec 原文按行号 `:1001`/`:1016` 指称；行号会漂移，
+    故这里按名字写）；前端只发对象或干脆不发 body，走不到上面那条 422 路径，故**不修**。
     """
     uid = _mail_str(req.id)
     if uid is None:
