@@ -1569,9 +1569,25 @@ def test_save_attachment_refuses_path_escaping_the_root(tmp_path, monkeypatch):
     初稿写两个 `..` ⇒ 锚点根本不触发 ⇒ 本用例**必然红**；而末尾那句
     `not (tmp_path.parent / "evil.bin").exists()` 恰好对应四个 `..`
     —— 作者本意就是四个，只是少写了两个。
+
+    ⚠️ **那个 `mkdir` 是承重的，别当它是清场代码删掉。** 修复轮 1 实测（复审独立复现过）：
+    不建这一级时，把整个锚点块 `target.resolve().relative_to(root.resolve())` 删掉，
+    本用例**照样绿**（`-k refuses_path_escaping` ⇒ 1 passed）—— 因为逃逸路径的中间那一级
+    `<root>/学校邮件/2026-09-17_..` 不存在，`write_bytes` 先以 ENOENT 失败，抛的是
+    `MailError("保存附件失败：…")`：**两个不同的失败，被同一个 `pytest.raises(MailError)` 接住**。
+    把这一级**先建出来**，逃逸路径就变成真正可写的 ⇒ 删掉锚点后 `evil.bin` 会**真的落在根外**，
+    本用例随即变红（实测两条红：`DID NOT RAISE` + 末尾那句不存在断言）。
+    这样钉的是**危害**（文件跑到根外），而不是错误文案 —— 断言文案会把用例绑死在字句上。
+    （`_unique_path` 用的是**不 resolve** 的 `target.exists()`：预建这一级不会让它以为目标已存在
+    而改落 `-1` 后缀；实测落点仍是 `2026-09-17_evil.bin` 那一支。）
+
+    第三个元素钉**固定日期**（不是 `""`）：目录名必须确定，否则预建的那一级与真实落点
+    会对不上（`""` 走「当天 UTC」，跨 UTC 午夜时预建的目录名与实际落点分属两天 ⇒ 无故变红）。
     """
     monkeypatch.setattr(mail_client, "fetch_attachment",
-                        lambda item, index: ("../../../../evil.bin", b"x", ""))
+                        lambda item, index: ("../../../../evil.bin", b"x",
+                                             "2026-09-17T08:31:00+00:00"))
+    (tmp_path / "学校邮件" / "2026-09-17_..").mkdir(parents=True)
     with pytest.raises(mail_client.MailError):
         mail_client.save_attachment({"id": "1"}, 0, str(tmp_path))
     assert not (tmp_path.parent / "evil.bin").exists()
