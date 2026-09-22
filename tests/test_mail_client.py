@@ -1555,9 +1555,17 @@ def test_save_attachment_falls_back_to_today_on_bad_date(tmp_path, monkeypatch):
 def test_save_attachment_rejects_empty_download_dir(monkeypatch):
     """空 / 纯空白的下载目录必须在**任何取件之前**就拒。
 
-    `called == []` 是承重的一半：只断言 `pytest.raises(MailError)` 时，
-    守卫被删掉后 `Path("")` 就是 CWD，`mkdir` 成功、文件写进 CWD、没有异常
-    ⇒ 什么都不会红（本仓在逃逸用例上已栽过同一个族：两个不同的失败回答同一个断言）。
+    `called == []` 是承重的一半。只断言 `pytest.raises(MailError)` 时，**删掉守卫能不能红
+    取决于 CWD 可不可写**（两态都实测过）：
+      - CWD **可写** ⇒ `Path("")` 就是 CWD，`mkdir` 成功、文件写进 CWD（实测返回值
+        `学校邮件/2026-09-22_a.bin`）、**没有**异常 ⇒ `pytest.raises` 以 `DID NOT RAISE` 失败；
+      - CWD **不可写** ⇒ `mkdir` 抛 `PermissionError`（errno 13 EACCES），在 `无法创建下载目录`
+        那一处被包成**另一个** `MailError`（实测文案：`无法创建下载目录 学校邮件：
+        [Errno 13] Permission denied: '学校邮件'`）⇒ `pytest.raises` **被满足**，
+        只用 `pytest.raises` 的旧形式**照绿**，那样的套件一条都不会红。
+    这正是「两个不同的失败回答同一个断言」（本仓在逃逸用例上已栽过同一个族）。
+    另：`assert called == []` 抓的是**另一种**变异 —— 守卫还在、只是挪到了取件**之后**：
+    那时 `MailError` 照抛、`pytest.raises` 照绿，只有这一行会红。
     """
     called = []
     monkeypatch.setattr(mail_client, "fetch_attachment",
