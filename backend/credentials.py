@@ -64,6 +64,26 @@ def _find_account(service: str = SERVICE) -> str:
     return _parse_acct(r)
 
 
+def _scrub_secret(msg: str, password: str) -> str:
+    """把消息里可能出现的密码洗成 `***`。**按构造闭合**，不靠「`security` 不会回显 `-w`」这条证据。
+
+    `_run` 已经堵住了超时那条路（`subprocess.TimeoutExpired.__str__` 会渲染整个 argv，
+    里面就有 `-w <password>`）。剩下的是**真的失败**这条路：`add-generic-password` 回非 0
+    时，它的 stderr 会被拼进 `CredentialsError` → 端点的 `str(exc)` → 浏览器。没观测到
+    `security` 回显 `-w` 的值，但也**没能证伪** —— 凭据回传这种事要么按构造闭合，要么不闭合。
+
+    两个形态都洗：原样，以及**去掉全部空白**后的形态（Gmail 应用专用密码是
+    「abcd efgh ijkl mnop」四组带空格的形状，上游任何一层做过 `get_gmail` 那种归一化，
+    回显出来的就会是第二种形态）。空值直接返回 —— `str.replace("", …)` 会在每个字符之间插 `***`。
+    """
+    if not password:
+        return msg
+    for form in {password, "".join(password.split())}:
+        if form:
+            msg = msg.replace(form, "***")
+    return msg
+
+
 def _save(service: str, username: str, password: str, empty_msg: str) -> None:
     """把账号密码写入钥匙串（-U 已存在则覆盖）。
 
@@ -78,8 +98,11 @@ def _save(service: str, username: str, password: str, empty_msg: str) -> None:
     r = _run(["security", "add-generic-password", "-s", service,
               "-a", username, "-w", password, "-U"])
     if r.returncode != 0:
+        # stderr/stdout 仍照传（它是「钥匙串已锁」这类诊断的唯一来源），但先过洗白：
+        # 这是全仓**最后一条**未由构造闭合的凭据通道。
         raise CredentialsError("保存到钥匙串失败：" +
-                               (r.stderr.strip() or r.stdout.strip() or "未知错误"))
+                               _scrub_secret(r.stderr.strip() or r.stdout.strip() or "未知错误",
+                                             password))
 
 
 def _load(service: str) -> tuple[str, str] | None:

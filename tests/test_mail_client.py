@@ -16,6 +16,23 @@ from backend import credentials, mail_client
 _INTERNALDATE = b"17-Sep-2026 20:00:00 +0000"
 
 
+def _reject_non_digit_uids(raw: bytes) -> None:
+    """假件只认**纯 ASCII 数字** UID（逗号分隔的批次可以 —— 它本来就是数字的列表）。
+
+    以前这里什么都不查：`args[0].split(b",")` 后按**字面** uid 查表，查不到就静默当成
+    「没有这封」。于是 `1:3,99` 这类 **UID 集合**在用例里表现成空列表（「邮件已被移走」），
+    坏输入在整个用例集里**完全不可见** —— M-1 就是这么从旁边走过去的。真服务器对它回的是
+    **多封**，而调用方取 `rows[0]` ⇒ 静默取错邮件。假件宁可**大声**报错，也不静默。
+
+    ASCII 那半是承重的：`"²"`、`"٣"` 的 `isdigit()` 都是真，但拿去当 IMAP UID 不是数字串。
+    """
+    for u in raw.split(b","):
+        if not (u.isascii() and u.isdigit()):
+            raise AssertionError(
+                f"假件只认纯数字 UID，实得 {raw!r} —— 真服务器会把它当 UID 集合"
+                f"（返回多封、而调用方取 rows[0] ⇒ 静默取错邮件）")
+
+
 class _FakeIMAP:
     """替身，记录**发出的每一条命令**。绝不真连网（netguard 兜底）。"""
 
@@ -54,6 +71,7 @@ class _FakeIMAP:
             return ("OK", [b" ".join(self.headers) if self.headers else b""])
         if cmd == "FETCH":
             uids = args[0] if isinstance(args[0], bytes) else str(args[0]).encode()
+            _reject_non_digit_uids(uids)
             out = []
             for u in uids.split(b","):
                 if u in self.headers:
@@ -104,6 +122,20 @@ def _hdr(subject="S", sender="T <t@cityu.edu.hk>",
 
 
 # ============ 只读三件套（spec §5.2，本设计的要害）============
+
+def test_fake_imap_rejects_non_digit_uid(monkeypatch):
+    """N-3：假件对非数字 UID **大声**报错，不静默当「查不到」。
+
+    这条钉的是**假件自己**（不是产品代码，产品侧那条在 `test_main.py` 的路由用例里）。
+    理由：假件以前静默回空列表 ⇒ 坏输入在整套 I/O 用例里不可见（M-1 正是从这儿过去的）。
+    谁要是把 `_reject_non_digit_uids` 去掉，它会退回「坏输入不可见」而**其余用例照旧全绿** ——
+    所以这道判据必须自己也有一条。
+    """
+    _install(monkeypatch, _BodyIMAP(headers={b"1": _hdr()}, bodies={b"1": _body_msg("x")}))
+    mail_client.list_mail(7)
+    with pytest.raises(AssertionError, match="只认纯数字 UID"):
+        mail_client.fetch_detail({"id": "1:3,99"})
+
 
 def test_select_is_readonly(monkeypatch):
     """readonly=True 才发 EXAMINE。改成 False 就静默置已读。"""
@@ -839,6 +871,7 @@ class _BodyIMAP(_FakeIMAP):
         if cmd == "FETCH" and "BODY.PEEK[]" in str(args[-1]):
             self.sent.append(("uid", cmd) + tuple(args))
             uids = args[0] if isinstance(args[0], bytes) else str(args[0]).encode()
+            _reject_non_digit_uids(uids)     # 与基类同一条口径（详情/正文那条 FETCH 走这里）
             return ("OK", [(b"1 (UID %s BODY[] {%d}" % (u, len(self.bodies[u])),
                             self.bodies[u]) for u in uids.split(b",") if u in self.bodies])
         return super().uid(cmd, *args)

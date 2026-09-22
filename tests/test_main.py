@@ -1864,20 +1864,26 @@ def test_mail_detail_returns_detail(monkeypatch):
     monkeypatch.setattr(mail_client, "fetch_detail", lambda item: seen.update(item=item) or {
         "id": item["id"], "body": "正文",
         "attachments": [{"index": 0, "name": "a.bin", "size": 4}]})
-    body = TestClient(main.app).post("/api/mail/detail", json={"id": "A"}).json()
+    body = TestClient(main.app).post("/api/mail/detail", json={"id": "1"}).json()
     assert body["ok"] is True
     assert body["detail"]["body"] == "正文"
     assert set(body) == {"ok", "detail"}
     # 出站句柄逐字钉住：路由只能发 {"id": uid}，不许转发客户端的其它字段。
-    assert seen == {"item": {"id": "A"}}
+    assert seen == {"item": {"id": "1"}}
 
 
 def test_mail_detail_rejects_missing_or_bad_id(monkeypatch):
-    """`id` 必须是非空字符串；缺 / 数字 / 空串一律 `{ok:false}`，**HTTP 200、不抛**。"""
+    """`id` 必须是**非空数字串**；缺 / 数字 / 空串 / 非数字 / UID 集合一律 `{ok:false}`，
+    **HTTP 200、不抛**。
+
+    形状那几格（`"1:3,99"` / `"1:*"` / `"1,2"` / `"abc"`）由 M-1 补：`_mail_str` 只要求
+    「非空字符串」，`1:3,99` 会被 imaplib 原样拼进 `UID FETCH` 当**集合**用。
+    """
     called = []
     monkeypatch.setattr(mail_client, "fetch_detail",
                         lambda item: called.append(item) or {"id": "", "body": "", "attachments": []})
-    for payload in ({}, {"id": ""}, {"id": "   "}, {"id": 3}, {"id": None}, {"id": ["A"]}):
+    for payload in ({}, {"id": ""}, {"id": "   "}, {"id": 3}, {"id": None}, {"id": ["A"]},
+                    {"id": "1:3,99"}, {"id": "1:*"}, {"id": "1,2"}, {"id": "abc"}):
         r = TestClient(main.app).post("/api/mail/detail", json=payload)
         assert r.status_code == 200, payload
         assert r.json()["ok"] is False, payload
@@ -1896,7 +1902,7 @@ def test_mail_detail_failure_is_200_json(monkeypatch):
     def boom(item):
         raise mail_client.MailError("邮箱已被重建")
     monkeypatch.setattr(mail_client, "fetch_detail", boom)
-    r = TestClient(main.app).post("/api/mail/detail", json={"id": "A"})
+    r = TestClient(main.app).post("/api/mail/detail", json={"id": "1"})
     assert r.status_code == 200
     assert r.json() == {"ok": False, "error": "邮箱已被重建"}
 
@@ -1906,9 +1912,47 @@ def test_mail_attachment_returns_path(monkeypatch):
     monkeypatch.setattr(mail_client, "save_attachment",
                         lambda item, index, d: seen.update(item=item, index=index, d=d) or "/x/a.bin")
     body = TestClient(main.app).post("/api/mail/attachment", json={
-        "id": "A", "index": 1, "download_dir": "/tmp"}).json()
+        "id": "1", "index": 1, "download_dir": "/tmp"}).json()
     assert body == {"ok": True, "path": "/x/a.bin"}
-    assert seen == {"item": {"id": "A"}, "index": 1, "d": "/tmp"}
+    assert seen == {"item": {"id": "1"}, "index": 1, "d": "/tmp"}
+
+
+def test_mail_id_shape_is_validated_at_both_routes(monkeypatch):
+    """**M-1 的门禁**：`id` 必须是非空**数字串**，两条路由都在**用点**校验。
+
+    `"1:3,99"` / `"1:*"` / `"1,2"` 是合法的 IMAP **UID 集合**，会被 imaplib 原样拼进
+    命令行（`_command` 只加空格、不转义）：`1:3,99` ⇒ 真服务器回 1、2、3 三封，而
+    `fetch_detail` / `fetch_attachment` 取 `rows[0]` ⇒ 200 + `{ok:true}` 但正文/附件是
+    **另一封**邮件的（静默错内容）；`1:*` ⇒ 整箱进内存（`MAX_BODY_CHARS` /
+    `MAX_ATTACHMENT_BYTES` 都在读完/解析之后才生效）。
+
+    **`called == []` 是承重的一半**：只断言 `ok is False` 的话，「原样转发、由取信层报错」
+    的实现照样绿 —— 而真服务器对 `1:3,99` 回的不是错，是**别的邮件**。所以这里钉的是
+    「根本没走到取信层」。
+
+    正例（纯数字照常放行）必须成对写上：少了它，上面那半可以靠「一律拒」平凡成立。
+    """
+    called = []
+    monkeypatch.setattr(mail_client, "fetch_detail",
+                        lambda item: called.append(("detail", item)) or {
+                            "id": item["id"], "body": "", "attachments": []})
+    monkeypatch.setattr(mail_client, "save_attachment",
+                        lambda item, index, d: called.append(("att", item)) or "/x")
+    # `"٣"`（阿拉伯-印度数字）与 `"²"`（上标）的 `str.isdigit()` 都是**真** ——
+    # 光用 `isdigit()` 会放它们进 UID FETCH，所以这一层必须同时要求 ASCII。
+    for bad in ("1:3,99", "1:*", "1,2", "abc", "   ", "", "1.0", "-1", "1 2", "٣", "²", 1, None):
+        for path, payload in (("/api/mail/detail", {"id": bad}),
+                              ("/api/mail/attachment",
+                               {"id": bad, "index": 0, "download_dir": "/tmp"})):
+            r = TestClient(main.app).post(path, json=payload)
+            assert r.status_code == 200, (bad, path)
+            assert r.json()["ok"] is False, (bad, path)
+            assert set(r.json()) == {"ok", "error"}, (bad, path)
+    assert called == [], "形状不对的 id 必须拦在路由层，不许原样进 UID FETCH"
+
+    ok = TestClient(main.app).post("/api/mail/detail", json={"id": "1"})
+    assert ok.json()["ok"] is True
+    assert called == [("detail", {"id": "1"})]
 
 
 def test_mail_attachment_rejects_string_index(monkeypatch):
@@ -1916,22 +1960,27 @@ def test_mail_attachment_rejects_string_index(monkeypatch):
 
     Pydantic 的 lax `int` 会把 `"3"` 变成 `3` —— 实跑确认过。所以这里必须用
     手写校验；`called == []` 是这条用例承重的一半：少了它，隐式转换能全绿。
+
+    `id` 用 `"1"`（合法数字串）是**承重的**：换成 `"A"` 的话，每条载荷都会先被 id 那道
+    校验拦下 —— 用例照样全绿，却**再也没测到 `index`**（这正是 M-1 那一族「红/绿都对、
+    但判别对象换了」的形态）。
     """
     called = []
     monkeypatch.setattr(mail_client, "save_attachment",
                         lambda item, index, d: called.append(index) or "/x")
     for bad in ("1", "0", 1.0, True, False, None, -1, [0]):
         r = TestClient(main.app).post("/api/mail/attachment", json={
-            "id": "A", "index": bad, "download_dir": "/tmp"})
+            "id": "1", "index": bad, "download_dir": "/tmp"})
         assert r.status_code == 200, bad
         assert r.json()["ok"] is False, bad
     assert called == [], "隐式转换会走到这里 —— 这条是承重的一半"
 
 
 def test_mail_attachment_rejects_missing_fields(monkeypatch):
+    """每一个载荷缺的**正是**它想测的那个字段：`id` 一律给合法值，否则拒的是 id。"""
     monkeypatch.setattr(mail_client, "save_attachment", lambda item, index, d: "/x")
-    for payload in ({}, {"id": "A"}, {"id": "A", "index": 0},
-                    {"id": "A", "index": 0, "download_dir": ""},
+    for payload in ({}, {"id": "1"}, {"id": "1", "index": 0},
+                    {"id": "1", "index": 0, "download_dir": ""},
                     {"id": "", "index": 0, "download_dir": "/tmp"}):
         r = TestClient(main.app).post("/api/mail/attachment", json=payload)
         assert r.status_code == 200, payload
@@ -1943,7 +1992,7 @@ def test_mail_attachment_failure_is_200_json(monkeypatch):
         raise mail_client.MailError("附件超过 20 MB，为避免占满磁盘已停止下载。（a.bin）")
     monkeypatch.setattr(mail_client, "save_attachment", boom)
     r = TestClient(main.app).post("/api/mail/attachment", json={
-        "id": "A", "index": 0, "download_dir": "/tmp"})
+        "id": "1", "index": 0, "download_dir": "/tmp"})
     assert r.status_code == 200
     # 整字典相等（与 detail 失败体同形）：键集被钉死，多出一个键就红。
     assert r.json() == {"ok": False,

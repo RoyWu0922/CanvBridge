@@ -102,6 +102,26 @@ def test_save_credentials_raises_on_cli_error(monkeypatch):
     assert "denied" in str(ei.value)
 
 
+def test_save_error_message_never_carries_the_password(monkeypatch):
+    """`add-generic-password` 真的失败时，stderr 会被拼进 `CredentialsError`、端点再
+    `str(exc)` 给浏览器 —— 这是全仓**最后一条**未由构造闭合的凭据通道（`_run` 只堵了超时那条）。
+
+    两个形态都试：原样，以及去掉空白后的形态（Gmail 应用专用密码是「abcd efgh …」四组
+    带空格的形状，任何一层做过 `get_gmail` 那种归一化，回显就会是第二种）。
+    本用例**在修复前会红**（密码原样出现在消息里）；不这么写，洗白函数写成恒等也照样绿。
+    """
+    for stored, echoed in (("s3cret", "usage: … -w s3cret (denied)"),
+                           ("abcd efgh ijkl mnop",
+                            "denied: could not write abcdefghijklmnop")):
+        _patch(monkeypatch, acct_rc=44, add_rc=1, add_err=echoed)
+        with pytest.raises(credentials.CredentialsError) as ei:
+            credentials.save_credentials("u", stored)
+        msg = str(ei.value)
+        for form in {stored, "".join(stored.split())}:
+            assert form not in msg, msg
+        assert "denied" in msg, "诊断文本不该被整段丢掉（只洗密码那一段）"
+
+
 def test_get_credentials_none_when_missing(monkeypatch):
     """security 返回非 0（未找到）→ None。"""
     calls = _patch(monkeypatch, acct_rc=44)

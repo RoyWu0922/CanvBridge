@@ -360,6 +360,14 @@ const settle = async p => {
 let fails = 0, total = 0;
 const ok = (cond, label) => { total++; console.log((cond ? "✓ " : "✗ ") + label); if (!cond) fails++; };
 
+/* 捕获到的处理器**一律经这里调用**（K/L 段）。缘由是实测过的失败形态：处理器没被捕获到时
+   `list[0](…)` 抛的是**未捕获的 TypeError** ⇒ 没有汇总行，其后那截断言一条都不执行。
+   （实测三个调用点各自截掉的条数：附件点击 26、列表 keydown 22、L 段那条 8 —— 越靠前截得越多。）
+   那不是「红」，是**截断** —— 只看 stdout 上断言计数的用法读到的会是「跑完了」。
+   守卫成**干净的红**：不调用，让下游断言各自变红（调用点旁边那条「捕获到…」的计数断言
+   是正例锚，会指出是谁没被捕获到）。处理器若是 async，返回值照旧交回给 `await settle(…)`。 */
+const callCaptured = (list, ev) => (list.length ? list[0](ev) : undefined);
+
 /* ---- 合成数据（全为占位串，绝不含真实邮件内容） ---- */
 run(`
   mailState.mails = [
@@ -812,8 +820,7 @@ kAnswer(0, K_DETAIL["SYNTH-K-ID-0"]);  // 先点的**晚**回 —— 不许顶�
 await settle(kOpenA);
 run(`globalThis.__kTitle = document.getElementById("mailDetailTitle").textContent;
      globalThis.__kBody  = document.getElementById("mailDetailBody").innerHTML;
-     globalThis.__kAtts  = document.getElementById("mailDetailAtts").innerHTML;
-     globalThis.__kOpen  = document.getElementById("mailDetail").hidden;`);
+     globalThis.__kAtts  = document.getElementById("mailDetailAtts").innerHTML;`);
 const kDetailLog = kLog.filter(f => f.url === "/api/mail/detail");
 ok(kDetailLog.length === 2, `K1 两次点击各发一次 /api/mail/detail（实得 ${kDetailLog.length} 次）`);
 ok(kDetailLog[0].body.id === "SYNTH-K-ID-0" && kDetailLog[1].body.id === "SYNTH-K-ID-1",
@@ -838,7 +845,7 @@ ok(!sandbox.__kAtts.includes("0 B"), "K10 size 为 null 时留白，绝不显示
 const kAttClickers = (elListeners["mailDetailAtts"] || {}).click || [];
 ok(kAttClickers.length === 1, `K11 捕获到 #mailDetailAtts 上的点击处理器（实得 ${kAttClickers.length} 个）`);
 const kAttStub = att => ({ dataset: { att }, disabled: false });
-await settle(kAttClickers[0]({ target: {
+await settle(callCaptured(kAttClickers, { target: {
   closest: sel => (sel === "button[data-att]" ? kAttStub("1") : null) } }));
 const kAttLog = kLog.filter(f => f.url === "/api/mail/attachment");
 ok(kAttLog.length === 1 && kAttLog[0].body.index === 1,
@@ -853,20 +860,27 @@ ok(nodes["status"].textContent.includes("SYNTH-DIR"),
    正的 —— Enter 也能打开详情；负的 —— **不是行上的按键不许吞**（无条件 preventDefault
    会让邮件页没法用空格滚动）。 */
 const kKeydowns = (elListeners["mailList"] || {}).keydown || [];
-ok(kKeydowns.length === 1, `K15 捕获到 #mailList 上的 keydown 处理器（实得 ${kKeydowns.length} 个）`);
+const kKeyReady = kKeydowns.length === 1;
+ok(kKeyReady, `K15 捕获到 #mailList 上的 keydown 处理器（实得 ${kKeydowns.length} 个）`);
 const kBeforeKey = kLog.length;
 let kPrevented = 0;
-kKeydowns[0]({ key: "Enter", preventDefault(){ kPrevented++; },
+callCaptured(kKeydowns, { key: "Enter", preventDefault(){ kPrevented++; },
                target: { closest: sel => (sel === "[data-m]" ? { dataset: { m: "1" } } : null) } });
 ok(kLog.length === kBeforeKey + 1 && kLog[kLog.length - 1].url === "/api/mail/detail"
    && kLog[kLog.length - 1].body.id === "SYNTH-K-ID-1",
    "K16 Enter 也能打开详情（键盘可达）");
 ok(kPrevented === 1, "K17 命中行时 preventDefault（Space 不滚页面）");
 kPrevented = 0;
-kKeydowns[0]({ key: "Enter", preventDefault(){ kPrevented++; }, target: { closest: () => null } });
-ok(kPrevented === 0, "K18 不是行上的按键不吞（preventDefault 只在命中行时调用）");
+callCaptured(kKeydowns, { key: "Enter", preventDefault(){ kPrevented++; }, target: { closest: () => null } });
+/* `kKeyReady &&`：处理器没捕获到时 `kPrevented` 恒为 0 ⇒ 这条会**空断言变绿**
+   （K16/K17 会红，但那是别的判据；本条自身必须也能失败）。 */
+ok(kKeyReady && kPrevented === 0, "K18 不是行上的按键不吞（preventDefault 只在命中行时调用）");
 
-ok(sandbox.__kOpen === false, "K19 前提：详情弹层处于打开态");
+/* 弹层是否开着**当场读**，不用前面那段 `run()` 里存下的快照：快照与这里隔了几十行，
+   中途任何一次 `closeMailDetail()` 都会让它变成**过期值** —— 那时 K19 照样绿（快照说「开着」），
+   而 K20 会因为「它本来就关着」而变绿 ⇒ Esc 那条断言被**静默架空**（实测：在旧写法下插一发
+   `closeMailDetail()`，93/93 照旧全绿）。`nodes[…]` 是沙箱里那个真元素的活引用。 */
+ok(nodes["mailDetail"].hidden === false, "K19 前提：详情弹层处于打开态");
 /* **按 Esc 之前必须把前面几段留下的弹层状态清干净**（这不是洁癖）：
    app.js 的 Esc 链是**顺序 if**，`#loginPrompt` 那一条排在 `#mailDetail` **前面**
    —— I 段（I8 那发）会把 `#loginPrompt` 打开，`iDismiss()` 走的是
@@ -982,12 +996,17 @@ ok(JSON.stringify(sandbox.__lBytes) === JSON.stringify(L_BYTES),
 /* 键盘正例：**Space 与 Enter 两个键都要**（K16/K17 钉的是 Enter，这里补 Space）。
    条件与 K16 同形：`e.target` 就是行自己、`closest("button, a, …")` 为 null。 */
 const lKeydowns = (elListeners["mailList"] || {}).keydown || [];
+/* K 段那两个处理器各有「捕获到…」的计数断言（K11/K15）兜着，**这一段一个都没有** ——
+   所以把「抓没抓到」并进 L6/L7 的判据里。不并的话，拆掉注册之后 L6 会红（它断言日志变了），
+   而 L7 会**空断言变绿**：没有处理器 ⇒ 既不吞键也不发请求，`prev`/`added` 两个分量都平凡为 0，
+   而 L7 恰是本段最重要的那道门禁。不新增断言条数，只让它不再空转。 */
+const lKeyReady = lKeydowns.length === 1;
 let lSpacePrev = 0;
 const lBeforeSpace = fetchLog.length;
-lKeydowns[0]({ key: " ", preventDefault(){ lSpacePrev++; },
+callCaptured(lKeydowns, { key: " ", preventDefault(){ lSpacePrev++; },
   target: { closest: sel => (sel === "[data-m]" ? { dataset: { m: "1" } } : null) } });
 const lSpaceLog = fetchLog.slice(lBeforeSpace).filter(f => f.url === "/api/mail/detail");
-ok(lSpacePrev === 1 && lSpaceLog.length === 1 && lSpaceLog[0].body.id === "SYNTH-L-ID-1",
+ok(lKeyReady && lSpacePrev === 1 && lSpaceLog.length === 1 && lSpaceLog[0].body.id === "SYNTH-L-ID-1",
    `L6 行上按 Space 也能打开详情且 preventDefault（与 K16/K17 的 Enter 配对；实得 preventDefault ${lSpacePrev} 次 / ${JSON.stringify(lSpaceLog.map(f => f.body.id))}）`);
 
 /* **缺陷 1 的门禁（本段最重要的一条）**：`e.target` 是行内**后代**、`closest("button, a,
@@ -998,12 +1017,12 @@ ok(lSpacePrev === 1 && lSpaceLog.length === 1 && lSpaceLog[0].body.id === "SYNTH
 const lHijack = ["Enter", " "].map(key => {
   let prev = 0;
   const before = fetchLog.length;
-  lKeydowns[0]({ key, preventDefault(){ prev++; },
+  callCaptured(lKeydowns, { key, preventDefault(){ prev++; },
     target: { closest: sel => (sel === "button, a, input, select, textarea"
       ? { dataset: {} } : sel === "[data-m]" ? { dataset: { m: "1" } } : null) } });
   return { key, prev, added: fetchLog.slice(before).filter(f => f.url === "/api/mail/detail").length };
 });
-ok(lHijack.every(o => o.prev === 0 && o.added === 0),
+ok(lKeyReady && lHijack.every(o => o.prev === 0 && o.added === 0),
    `L7 行内交互元素（写入按钮）自己吃 Enter/Space：不吞键、也不开详情（缺陷 1 的门禁；实得 ${JSON.stringify(lHijack)}）`);
 
 /* 空的 `data-m` 不取行：`Number("")` 是 0，少一道守卫就会把「没有锚」静默说成「第 0 封」。
@@ -1014,8 +1033,14 @@ const lBeforeEmpty = fetchLog.length;
 await settle(clickers[0]({ target: {
   closest: sel => (sel === "[data-m]" ? { dataset: { m: "" } } : null) } }));
 const lEmptyLog = fetchLog.slice(lBeforeEmpty).filter(f => f.url === "/api/mail/detail");
-ok(lEmptyLog.length === 0 && nodes["mailDetailTitle"].textContent === lTitleBefore,
-   `L8 空的 data-m 不取行（守卫挡住 Number("") 是 0；实得 ${lEmptyLog.length} 个详情请求 / 标题未动）`);
+/* 标签里那个「标题怎么样」**必须插值**：`--mutate-kguard` 下标题**真的会变**
+   （`Number("")` 是 0 ⇒ 打开了第 0 封，`SYNTH-L-SUBJ-1` → `…-0`），写死一句「标题未动」
+   会在红的那一行上主动误导下一个跑变异的人 —— 探针的标签也是断言。 */
+const lTitleAfter = nodes["mailDetailTitle"].textContent;
+ok(lEmptyLog.length === 0 && lTitleAfter === lTitleBefore,
+   `L8 空的 data-m 不取行（守卫挡住 Number("") 是 0；实得 ${lEmptyLog.length} 个详情请求 / 标题 ${
+     lTitleAfter === lTitleBefore ? "未动"
+       : `动了：${JSON.stringify(lTitleBefore)} → ${JSON.stringify(lTitleAfter)}`}）`);
 
 /* M：**详情缓存必须属于当前打开的那一封**（Task 10 复审缺陷 1 的门禁）。
    要构造的是「缓存非空、且属于**另一封**、弹层还**开着**」这一态 —— 只写「加载期无参调用

@@ -72,11 +72,34 @@ class MailAttachmentRequest(BaseModel):
 def _mail_str(v) -> str | None:
     """请求字段必须是非空**字符串**。不做任何隐式转换（spec §5）。
 
-    返回的是 **strip 过** 的值（`"  A  "` → `"A"`），所以 `id` / `download_dir` 会被静默
-    去掉首尾空白。这是**有意的归一化**，不是漏网的转换：前者要当 IMAP UID、后者要当目录名，
+    返回的是 **strip 过** 的值（`"  A  "` → `"A"`），所以字段会被静默去掉首尾空白。
+    这是**有意的归一化**，不是漏网的转换：`download_dir` 要当目录名、`id` 要当 IMAP UID，
     两边都不该因为前端多敲了一个空格而失败。非字符串（`3`、`None`、`["A"]` …）照拒。
+
+    `id` 另加一层形状校验（`_mail_uid`），但它**不在这里**：本函数同时服务
+    `download_dir`（目录名合法地不是数字），把形状塞进来会连带掐掉下载路径。
     """
     return v.strip() if isinstance(v, str) and v.strip() else None
+
+
+def _mail_uid(v) -> str | None:
+    """邮件编号（`id`）：必须是**非空的全 ASCII 数字串**。spec §5 只写「非空字符串」，
+    那是**下界** —— 这里收紧，不违反它。
+
+    为什么必须在**用点**卡形状：这个值被 imaplib **原样**拼进命令行（`_command` 只加空格、
+    不转义），而 IMAP 里 `1:3,99` / `1:*` / `1,2` 都是合法的 **UID 集合**。
+      · `1:3,99` ⇒ 真服务器回 1、2、3 三封，而 `fetch_detail` / `fetch_attachment` 取
+        `rows[0]` ⇒ HTTP 200 + `{ok:true}`，正文与附件却是**另一封**邮件的（静默错内容）。
+      · `1:*` ⇒ 把整个邮箱拉进内存；`MAX_BODY_CHARS` 与 `MAX_ATTACHMENT_BYTES` 都在
+        **读完 / 解析之后**才生效，拦不住这一步。
+    前端**不**保证这一点：它发的是后端回给它的 `id`（`mailDetailState.id`），行上那个
+    `/^\\d+$/` 守的是 `data-m`（下标），是**另一个**字段。所以安全不能靠别处的不变式。
+
+    `isascii() and isdigit()` 而不是光 `isdigit()`：`"²"`、`"٣"`、`"１２"` 的 `isdigit()`
+    都是真（Unicode 数字类），拿去当 IMAP UID 不是数字串 —— ASCII 那半是承重的。
+    """
+    s = _mail_str(v)
+    return s if s is not None and s.isascii() and s.isdigit() else None
 
 
 def _mail_index(v) -> int | None:
@@ -1057,18 +1080,19 @@ def mail_detail(req: MailDetailRequest = MailDetailRequest()):
 
     「一律」的**边界**：body 缺省 / body 零字节 / body 为 JSON `null`，这三种
     FastAPI 都读作「body 未提供」，于是回落到本函数签名里的**默认实例**（`MailDetailRequest()`），
-    **照常进函数**、答 200（字段全 `None`，`_mail_str` 判空后返回 `{ok:false, error}`）；其余非对象值
+    **照常进函数**、答 200（字段全 `None`，`_mail_uid` / `_mail_index` 判空后返回
+    `{ok:false, error}`）；其余非对象值
     （`"hello"`、`[1,2]`、`3`、`true`、`[]`、`""`）与畸形 JSON 则在进入本函数之前就答 **422**。
-    方向别读反：默认实例在这条边界上**不是**拦住隐式转换的那道闸（那是 `Any` + `_mail_str` /
+    方向别读反：默认实例在这条边界上**不是**拦住隐式转换的那道闸（那是 `Any` + `_mail_uid` /
     `_mail_index` 的活），它恰恰**把 200 的口子多开了一格**。反证：`/api/mail/summarize` 的 body
     没有默认实例，实测对 `null` 答 422。
     spec §5 的「不抛」在「与既有 `/api/mail/*` 同形」那一条里——既有两条即
     `/api/mail/list` 与 `/api/mail/summarize`（spec 原文按行号 `:1001`/`:1016` 指称；行号会漂移，
     故这里按名字写）；前端只发对象或干脆不发 body，走不到上面那条 422 路径，故**不修**。
     """
-    uid = _mail_str(req.id)
+    uid = _mail_uid(req.id)
     if uid is None:
-        return {"ok": False, "error": "缺少邮件编号（id）"}
+        return {"ok": False, "error": "邮件编号（id）必须是非空数字串"}
     try:
         return {"ok": True, "detail": mail_client.fetch_detail({"id": uid})}
     except Exception as exc:
@@ -1082,9 +1106,9 @@ def mail_attachment(req: MailAttachmentRequest = MailAttachmentRequest()):
     落盘位置由 `mail_client.save_attachment` 决定（`<download_dir>/学校邮件/…`），
     本路由只做请求校验与错误包装。
     """
-    uid = _mail_str(req.id)
+    uid = _mail_uid(req.id)
     if uid is None:
-        return {"ok": False, "error": "缺少邮件编号（id）"}
+        return {"ok": False, "error": "邮件编号（id）必须是非空数字串"}
     index = _mail_index(req.index)
     if index is None:
         return {"ok": False, "error": "附件编号（index）必须是非负整数"}
