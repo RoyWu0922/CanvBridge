@@ -1511,14 +1511,19 @@ def test_save_attachment_never_overwrites(tmp_path, monkeypatch):
 def test_save_attachment_uses_utc_date_of_received(tmp_path, monkeypatch):
     """日期取 `received` 的 **UTC** 日（spec §5；代价见 §9）。
 
-    ⚠️ 输入必须选一个 **UTC 日 ≠ 本地日** 的时刻，否则这条用例**分不出** UTC 与本地。
-    初稿用的是 `2026-09-17T23:30:00+08:00`，**它的本地日与 UTC 日都是 17 号**
+    ⚠️ 输入必须选一个 **UTC 日 ≠ 偏移墙钟日** 的时刻，否则这条用例**分不出** UTC 与
+    「去掉 `astimezone` 后 `strftime` 读出的那个日」。
+    初稿用的是 `2026-09-17T23:30:00+08:00`，**它解析出的 +08:00 墙钟日与 UTC 日都是 17 号**
     ⇒ 把 `_received_date` 的 `astimezone(utc)` 去掉、直接 `dt.strftime("%Y-%m-%d")`
-    （= 本地日），这条用例**照绿**（实测：两种实现都得到 `2026-09-17_a.bin`）
+    （= **解析出来的那个偏移的墙钟日**，**不是宿主本地日** —— 实测
+    `fromisoformat("2026-09-17T23:00:00-05:00")` 去掉 `astimezone` 得 `09-17`，宿主 TZ 取
+    HKT / EDT / +14 都不变；会随宿主走的是宿主本地日，`23:30+08:00` 在 +14 宿主上就读成 `09-18`），
+    这条用例**照绿**（实测：两种实现都得到 `2026-09-17_a.bin`）—— 那个 +08:00 的宿主
+    上两种读法**恰好同日**，错标成「本地日」才一直没被看出来
     —— 「声明 UTC 的用例」在那种输入下根本没有在测 UTC。本仓对这类
     「声明强于断言」的盲区已有多次记录，所以这里换成一个能分开两者的输入。
     对 +0800 而言**唯一**能分开的是**凌晨**那一侧（晚间两侧相同，实测）：
-    `03:00+08:00` = 前一日 `19:00Z` ⇒ **UTC 日是 16 号、本地日是 17 号**。
+    `03:00+08:00` = 前一日 `19:00Z` ⇒ **UTC 日是 16 号、偏移墙钟日是 17 号**。
     """
     _fake_attachment(monkeypatch, "a.bin", b"x", "2026-09-17T03:00:00+08:00")
     out = mail_client.save_attachment({"id": "1"}, 0, str(tmp_path))
@@ -1548,10 +1553,19 @@ def test_save_attachment_falls_back_to_today_on_bad_date(tmp_path, monkeypatch):
 
 
 def test_save_attachment_rejects_empty_download_dir(monkeypatch):
-    _fake_attachment(monkeypatch, "a.bin", b"x", "")
+    """空 / 纯空白的下载目录必须在**任何取件之前**就拒。
+
+    `called == []` 是承重的一半：只断言 `pytest.raises(MailError)` 时，
+    守卫被删掉后 `Path("")` 就是 CWD，`mkdir` 成功、文件写进 CWD、没有异常
+    ⇒ 什么都不会红（本仓在逃逸用例上已栽过同一个族：两个不同的失败回答同一个断言）。
+    """
+    called = []
+    monkeypatch.setattr(mail_client, "fetch_attachment",
+                        lambda item, index: called.append(index) or ("a.bin", b"x", ""))
     for bad in ("", "   "):
         with pytest.raises(mail_client.MailError):
             mail_client.save_attachment({"id": "1"}, 0, bad)
+    assert called == [], "空目录必须在取件之前就拒 —— 守卫挪到取件之后时，红的是这一行"
 
 
 def test_save_attachment_refuses_path_escaping_the_root(tmp_path, monkeypatch):
@@ -1582,7 +1596,11 @@ def test_save_attachment_refuses_path_escaping_the_root(tmp_path, monkeypatch):
     「一条红」而不是「两条红」，别照直觉写成两条（本条实测输出见 task-6-report.md）。
     这样钉的是**危害**（文件跑到根外），而不是错误文案 —— 断言文案会把用例绑死在字句上。
     （`_unique_path` 用的是**不 resolve** 的 `target.exists()`：预建这一级不会让它以为目标已存在
-    而改落 `-1` 后缀；实测落点仍是 `2026-09-17_evil.bin` 那一支。）
+    而改落 `-1` 后缀。判据是**末位分量**：`exists()` 把整串交给内核 `stat`，内核在路径遍历里
+    自己解析 `..` —— 拼出来的目标是 `学校邮件/2026-09-17_../../../../evil.bin`，去掉锚点后
+    文件落在 `<root>/../evil.bin`（即末尾那个 `evil.bin`），而它**不存在** ⇒ 走不带后缀的那一支。
+    预建的 `2026-09-17_..` 只是让遍历能走过那一级，**不是**判定依据：真正会让它落到 `-1`
+    的是 `<root>/../evil.bin` **本来就在**，那要求 `_unique_path` 之前就有东西写出去 —— 本用例里没有。）
 
     第三个元素钉**固定日期**（不是 `""`）：目录名必须确定，否则预建的那一级与真实落点
     会对不上（`""` 走「当天 UTC」，跨 UTC 午夜时预建的目录名与实际落点分属两天 ⇒ 无故变红）。

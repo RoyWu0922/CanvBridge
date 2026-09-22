@@ -685,10 +685,6 @@ def fetch_attachment(item: dict, index: int) -> tuple[str, bytes, str]:
     if not rows:
         raise MailError(f"没有取到编号为 {uid} 的邮件（它可能已被移走或删除）")
     msg = message_from_bytes(rows[0][1])
-    # 落盘日期**从这封邮件自己取**（spec §5「该邮件 received」）——解析已在这里发生，
-    # 顺手带出去，免得调用方为了一个日期再连一次 IMAP。`_iso(None)` 是 `""`。
-    # 与 `header_item` 的差别：这里**没有 INTERNALDATE 可退**（`_fetch_raw_chunk` 只回
-    # `(uid, bytes)`），`Date:` 头解不出的邮件就是 `""` ⇒ 落盘走「当天 UTC」回退。
     received = _iso(received_dt(msg))
     parts = _attachment_parts(msg)
     # `bool` 是 `int` 的子类，必须显式排掉（`isinstance(True, int)` 为真）。
