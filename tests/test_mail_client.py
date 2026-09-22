@@ -1143,3 +1143,42 @@ def test_fetch_detail_raises_when_fetch_fails(monkeypatch):
     mail_client.list_mail(7)
     with pytest.raises(mail_client.MailError, match="读取邮件正文失败"):
         mail_client.fetch_detail({"id": "1"})
+
+
+def test_logout_error_does_not_escape_or_mask(monkeypatch):
+    """登出抛异常时：**不许**冒出 `fetch_detail`，也**不许**盖住真正的错。
+
+    这条钉的是 `_logout_quietly`（`backend/mail_client.py:320`）存在的**唯一理由** ——
+    它的 docstring 逐字：「登出，异常吞掉 —— **不能让它盖住真正的错**」。
+    **变异已验证它承重**（实现者实测 M10）：把这个调用换回裸 `conn.logout()`，
+    形状一立刻红 —— 登出的异常会直接冒出 `fetch_detail`。
+
+    为什么必须有用例：全仓测试此前**只有** `("logout",) in fake.sent` 这类断言
+    （`tests/test_mail_client.py:149,:159`），它们钉的是「登出被调用了」，
+    **不是**「登出的异常被吞了」。裸 `logout()` 同样会让那两条绿 ——
+    于是 I1 这处修复曾完全靠人眼守。两个形状各钉一件事：
+    形状一钉「吞掉」，形状二钉「不盖住」。
+    """
+    class _BadLogout(_BodyIMAP):
+        def logout(self):
+            self.sent.append(("logout",))
+            raise imaplib.IMAP4.error("socket already closed")
+
+    # 形状一：取件成功、登出抛 ⇒ 结果照常返回，异常不许冒出去
+    _install(monkeypatch, _BadLogout(headers={b"1": _hdr()},
+                                     bodies={b"1": _raw_mail()}))
+    mail_client.list_mail(7)
+    assert mail_client.fetch_detail({"id": "1"})["body"] == "正文"
+
+    # 形状二：取件失败、登出也抛 ⇒ 冒出来的必须是**取件**那个错
+    class _BadFetch(_BadLogout):
+        def uid(self, cmd, *args):
+            if cmd == "FETCH" and "BODY.PEEK[]" in str(args[-1]):
+                self.sent.append(("uid", cmd) + tuple(args))
+                return ("NO", [b"server said no"])
+            return super().uid(cmd, *args)
+
+    _install(monkeypatch, _BadFetch(headers={b"1": _hdr()}))
+    mail_client.list_mail(7)
+    with pytest.raises(mail_client.MailError, match="读取邮件正文失败"):
+        mail_client.fetch_detail({"id": "1"})
