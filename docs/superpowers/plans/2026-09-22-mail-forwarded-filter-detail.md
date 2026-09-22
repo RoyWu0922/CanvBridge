@@ -2157,14 +2157,24 @@ Task 10 Step 4 一次性提交 Task 8 + 9 + 10 三份改动。
 - [ ] **Step 1: 实现**
 
 **先看清一件事：正文里的链接不需要、也不许再加点击处理器。** spec §6 说「点击
-`e.preventDefault()` 后走既有 `openExternal`」—— 那条路**已经存在**：`app.js:27-39`
-是一个 **document 级、捕获阶段**的 `a[href]` 委托，它算 `abs` 与 `location.origin` 比对，
+`e.preventDefault()` 后走既有 `openExternal`」—— 那条路**已经存在**：`app.js:26-37`
+（监听器开在 `:26`、`}, true);` 收在 `:37`）是一个 **document 级、捕获阶段**的
+`a[href]` 委托，它算 `abs` 与 `location.origin` 比对，
 外部链接就交给 `window.CanvBridgeShell.openExternal`（有桥 ⇒ 系统浏览器 + `preventDefault`；
 无桥 ⇒ 放行，保持原浏览器行为，与本应用其他所有链接一致）。
 **再加一个 handler 会变成双重处理**（两个 handler 各自 preventDefault / 各自调 openExternal），
 所以这里只负责把 `<a>` 渲染对：**href 必须是绝对的 `https://`** ——
 `new URL(href, location.href).origin !== location.origin` 才成立；href 若退化成相对路径，
-链接会在**应用窗口内部**跳转（静默地把用户带离界面）。K6 逐字钉住绝对 href，就是钉这件事。
+链接会在**应用窗口内部**跳转（静默地把用户带离界面）。
+
+三道守卫**目前各自的落点**（本轮逐条实跑/开文件核过，别照抄印象）：
+① 本任务的 `/https?:\/\/[^\s<>"']+/g` —— **本任务新增**；
+② `href` 走 `escAttr`（`util.js:64`）—— 既有；
+③ 点击走 `window.CanvBridgeShell.openExternal`，其内 `if (a && url && /^https?:/i.test(url))`
+（`app.js:17`）—— 既有，**核过确实在**。
+**但「绝对 href」这件事此刻还没有任何断言在钉** —— 计划 Task 11 的 **K6**（`:2412`）才会
+逐字钉住它，本轮它**尚不存在**（`grep -cF 'K6' tools/check_mail_frontend.mjs` = 0，
+`mailLinkify` 同样 = 0）。所以这一步必须**自己看住** href 的形态，别把 K6 当成本轮已有的网。
 
 ```js
 /* 正文 → 安全 HTML：**先按原始文本切开，再逐段转义**，最后把链接那几段换成 <a>。
