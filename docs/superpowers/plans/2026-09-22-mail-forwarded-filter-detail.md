@@ -1536,6 +1536,21 @@ Pydantic 2.13.5 的 lax `int` 会把 `"3"` 强转成 `3`、`3.0` 成 `3`、`True
 spec §5 的「JSON 里来的是字符串也要拒，不许隐式转换」；而 `str` 字段遇到 `3` 会抛
 `ValidationError`，FastAPI 把它变成 **422**，违反「不抛」。
 
+判据值不止上面三个 —— `test_mail_attachment_rejects_string_index` 的坏值表是 8 个，
+把 8 个全跑一遍（`.venv/bin/python`，pydantic 2.13.5）才敢说 `called == []` 成立：
+
+| 传入 `index` | `index: int` 字段 | `index: Any` + `_mail_index` |
+|---|---|---|
+| `"1"` / `"0"` | **静默转成 1 / 0** | 拒 |
+| `1.0` | **静默转成 1** | 拒 |
+| `True` / `False` | **静默转成 1 / 0** | 拒 |
+| `-1` | 收下 −1 | 拒 |
+| `None` / `[0]` | 抛 `ValidationError` ⇒ **422** | 拒（200）|
+
+**两处错互相抵消**：若有人把 `Any` 「简化」回 `int`，`"1"`/`1.0`/`True` 会静默放行
+（`called == []` 那半会红）、而 `None`/`[0]` 会变成 422（`status_code == 200` 那半会红）——
+两半各自抓住不同的错，缺一半就只剩一半的防护。这也是这条用例两个断言都写的原因。
+
 - [ ] **Step 1: 写失败用例**
 
 ```python
@@ -1675,9 +1690,15 @@ def _mail_index(v) -> int | None:
 def mail_detail(req: MailDetailRequest = MailDetailRequest()):
     """取一封的正文 + 附件清单。只读，不调 LLM、不改已读状态。
 
-    失败一律 HTTP 200 + `{ok:false, error}`（与 `/api/mail/list` 同一条通道）——
+    字段校验失败一律 HTTP 200 + `{ok:false, error}`（与 `/api/mail/list` 同一条通道）——
     前端 `api()` 只判 `ok`，抛 HTTP 异常只会让用户看到 422 的解析失败文案。
     `req` 带默认实例，FastAPI 据此把 body 判为**可选**（同 `/api/mail/list` 的理由）。
+
+    「一律」的**边界**（本轮实跑量过，写下来免得被读成疏漏）：`Any` + 默认实例只挡住
+    **字段层**的隐式转换与缺失；body 本身不是 JSON 对象（`"hello"`、`[1,2]`、`3`、
+    畸形 JSON）时，FastAPI 在进入本函数之前就答 **422** —— 与 `/api/mail/list` 逐格一致。
+    spec §5 的「不抛」只约束**字段**校验、并要求「沿用现 `:1001` 写法」，故**不修**；
+    前端 `api()` 只发对象或干脆不发 body，走不到这条路径。
     """
     uid = _mail_str(req.id)
     if uid is None:
