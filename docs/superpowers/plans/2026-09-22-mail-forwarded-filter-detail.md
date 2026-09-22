@@ -240,7 +240,7 @@ def test_recipient_is_school_rejects_school_domain_in_the_middle():
 
 def test_recipient_is_school_reads_cc_too():
     """To 不命中、Cc 命中 ⇒ 命中（判据是 To **或** Cc）。"""
-    assert mail_client.recipient_is_school(_recip("a@example.invalid", cc="b@cityu.edu.hk"))
+    assert mail_client.recipient_is_school(_recip("a@example.invalid", cc=("b@cityu.edu.hk",)))
 
 
 def test_recipient_is_school_false_without_recipient_headers():
@@ -356,10 +356,14 @@ git commit -m "feat(mail): 转发件判据 recipient_is_school（域名后缀判
 的默认值一并救回（它们的语义本来就是「一封转发过来的学校邮件」）；**只有
 `test_list_mail_uses_internaldate_when_date_header_missing`（`:202`）自造邮件**，必须单独补。
 
-其中 `test_do_list_applies_select_scope`（`:222`）**单独点名**：它的 spy **原样返回收到的条目**
-（带着 `_internaldate`，Task 3 之后还带着 `_school`），而它断言
-`[it["id"] for it in out] == ["1","2"]`。缺 `To` 时那两条被过滤全滤掉，它会以 `[] == ["1","2"]`
-的形态红 —— 看起来像排序或剥键坏了，**实际是判据把信滤光了**。认错症状就会去改错地方。
+其中 `test_do_list_applies_select_scope`（`:222`）**单独点名**：它的 spy **记录的是过滤之前**
+交给 `select_scope` 的条目（执行顺序是 `select_scope` → 过滤）。缺 `To` 时那两条会被判据滤光，
+但**红的是更前面的键形状断言**（那些条目带着 `_internaldate`，Task 3 之后还带着 `_school`），
+`[it["id"] for it in out] == ["1","2"]` 那一行**根本走不到**。
+
+⚠️ 这条是**实跑纠正过的**：计划原先写「它会以 `[] == ["1","2"]` 的形态红」，Task 3 实作者实跑后
+指出按那句症状去定位会落到一条**从未执行**的断言上。机制（判据把信滤光）没变，**救法也没变** ——
+仍在 Step 1 补 fixture，不是改这条用例的断言。
 
 - [ ] **Step 1: 先修 fixture，让既有用例回到「转发件」语义**
 
