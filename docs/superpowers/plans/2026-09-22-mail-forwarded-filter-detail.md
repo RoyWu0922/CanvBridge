@@ -967,12 +967,44 @@ for name, h in cases:
     except Exception as e:
         dec = f"<decode 失败 {e}>"
     print(f"{name:12} raw={raw!r}  decoded={dec!r}")
+
+# ⚠️ 上面走的是 str 路径；**生产代码走的是 bytes 路径**（`_att_name` 的 part 来自
+# `message_from_bytes(rows[0][1])`）。两者只在裸 8bit 那一格不同 —— 必须单独量：
+from email import message_from_bytes
+h = 'Content-Disposition: attachment; filename="作业.pdf"'
+m = message_from_bytes(h.encode("utf-8") + b"\r\n\r\nxx")
+raw = m.get_filename()
+print(f"{'raw8bit/bytes':16} raw={raw!r}  decoded={str(make_header(decode_header(raw or '')))!r}")
 PY
 ```
 
-**判据**：`cjk-raw8bit` 与 `rfc2047` 必须能还原成 `作业.pdf`；`rfc2231` 若 `get_filename()`
-直接给出 `作业.pdf`（CPython 的 `collapse_rfc2231_value` 会处理）就用它；**若某一种给不出**，
-就在 `_att_name` 里补一次 `decode_mime_header()` 兜底（见 Step 4 的 `_att_name`）。
+**上面最后一行实测应为 mojibake（`'������.pdf'`），不是 `'作业.pdf'`** —— 这是文档化的
+已知限制，**不是**要你去修的 bug：裸 8bit 头是非合规来信，`decode_mime_header` 救不回。
+
+**判据（已实跑，结论照抄下表，不要再自己推）**：
+
+| 形状 | `get_filename()` 给什么 | 需要 `decode_mime_header()` 兜底？ |
+|---|---|---|
+| `ascii` | `'a.pdf'` | 否（对它幂等） |
+| `rfc2047` | **编码字原文** `'=?utf-8?B?5L2c5LiaLnBkZg==?='` | **是** ← 兜底存在的唯一理由 |
+| `rfc2231` | 直接 `'作业.pdf'`（CPython 的 `collapse_rfc2231_value` 已处理） | 否；加了也无害 |
+| `2231+2047` | 只给 `filename=` 那半 | 是，但 **`filename*` 那半丢了**（见下） |
+| `none` | `None` | —（走 `attachment-<index>`） |
+| `cjk-raw8bit`（**str** 路径，即上面这段探针自己） | `'作业.pdf'` | 否 |
+| `cjk-raw8bit`（**bytes** 路径，即**真实来信**） | **mojibake** `'������.pdf'` | 救不回 |
+
+⇒ **结论：兜底必须有，但理由只有 `rfc2047` 一条。** 初稿的判据写「`cjk-raw8bit` 与 `rfc2047`
+必须能还原」是**半错**的：它断言的是上面那段探针走了 `message_from_string`（str），
+而生产代码走的是 `message_from_bytes`（`_att_name` 的 part 来自 `message_from_bytes(rows[0][1])`）
+—— **bytes 路径下裸 8bit 文件名解出来就是 mojibake，`decode_mime_header` 也救不回**。
+这只影响名字好看不好看，**不影响安全**（实测净化后无 `/`、`\`、`..` 残留）。
+⇒ 裸 8bit 是**非合规来信**（头必须是 ASCII），实测登记为已知限制，**不为它加代码**。
+
+⚠️ **另一处实测限制（登记，不修）**：`2231+2047` 同时给出 `filename=`（RFC 2047）与
+`filename*=`（RFC 2231）时，`get_filename()` 只返回**前者**，`filename*` 那半**丢了** ——
+实测 `作业` 而不是 `作业.pdf`（**扩展名被吃掉**）。修它要自己手解 `filename*`，
+等于把 stdlib 的 RFC 2231 解析重写一遍，风险大于收益（只是名字少个后缀，净化仍然生效）。
+⇒ 登记为已知限制。
 
 - [ ] **Step 2: 写失败用例**
 
