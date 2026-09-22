@@ -31,7 +31,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from email import message_from_bytes
 from email.header import decode_header, make_header
-from email.utils import parseaddr, parsedate_to_datetime
+from email.utils import getaddresses, parseaddr, parsedate_to_datetime
 
 from backend.canvas_client import strip_html
 
@@ -46,6 +46,9 @@ HEADER_BATCH = 50          # 一次 UID FETCH 取几封的头
 BODY_BATCH = 5             # 一次 UID FETCH 取几封的整封（比旧值保守：见 spec §5.4）
 _THROTTLE = 0.5            # 批次间隔（秒），旧 spec §9「请求节流」
 MAX_BODY_CHARS = 200_000   # 单封正文上限，纯防病态巨型邮件
+
+#: 判据用的学校域名（spec §2.1）。只此一处定义 —— 实现与用例都从它取。
+SCHOOL_DOMAIN = "cityu.edu.hk"
 
 #: 最近一次 list_mail 记下的 INBOX UIDVALIDITY；fetch_bodies 靠它判断邮箱是否被重建。
 #: 模块级全局是**有意**的：同一请求内 list_mail → fetch_bodies 顺序调用，值必然相同；
@@ -77,6 +80,37 @@ def sender_name(raw: str | None) -> str:
     name, addr = parseaddr(raw or "")
     name = decode_mime_header(name)
     return name or addr
+
+
+def _addr_domain(addr: str) -> str:
+    """地址的域名 = **最后一个 `@` 之后**的部分（去空白、小写化）。
+
+    取最后一个 `@`：`getaddresses` 交回来的 `addr` 只是地址那一半，
+    而它是可以含 `@` 的（`"a@b" <x@cityu.edu.hk>` 实测形状）——
+    按第一个 `@` 切会得到 `b" ...`。
+    没有 `@` 的（空串、`Team <>` 留下的空地址、垃圾串）返回空串，**绝不抛**。
+    """
+    return addr.rsplit("@", 1)[-1].strip().lower() if "@" in addr else ""
+
+
+def recipient_is_school(msg) -> bool:
+    """这封是不是转发过来的 —— To 或 Cc 中**存在任一地址命中**（spec §2.1）。
+
+    命中 ⇔ 域名 == `SCHOOL_DOMAIN`，或以 `"." + SCHOOL_DOMAIN` 结尾（大小写不敏感）。
+
+    **明确禁止子串匹配。** 在整条头里找 `cityu.edu.hk` 会误判两类输入，各有对应用例：
+      - `a@evil-cityu.edu.hk`（前缀 `-` 让它看起来像子域）；
+      - `a@cityu.edu.hk.evil.com`（学校域出现在**攻击者控制的**域名中间）。
+
+    `To`/`Cc` 都可能缺失（`get_all` 返回 `None`）、也可能出现多次 —— 故 `or []` 兜底、
+    且必须用 `get_all`（`get` 只给第一条，只读第一条会漏）。
+    """
+    for field in ("To", "Cc"):
+        for _name, addr in getaddresses(msg.get_all(field) or []):
+            dom = _addr_domain(addr)
+            if dom == SCHOOL_DOMAIN or dom.endswith("." + SCHOOL_DOMAIN):
+                return True
+    return False
 
 
 # ---------- 日期（spec §5.3：received 取 Date 头，转 UTC 带时区）----------

@@ -438,6 +438,73 @@ def _msg(subject="", sender="", date="", body="", ctype="text/plain", charset="u
     return m
 
 
+def _recip(*tos, cc=()):
+    """只带 To/Cc 的邮件 —— 判据的全部输入。"""
+    m = EmailMessage()
+    if tos:
+        m["To"] = ", ".join(tos)
+    if cc:
+        m["Cc"] = ", ".join(cc)
+    return m
+
+
+# ============ 判据：收件人是学校地址（spec §2.1）============
+# 判据是**域名后缀判定**，不是子串。两条反例各自成用例。
+
+def test_recipient_is_school_accepts_exact_and_subdomain():
+    assert mail_client.recipient_is_school(_recip("a@cityu.edu.hk"))
+    assert mail_client.recipient_is_school(_recip("a@staff.cityu.edu.hk"))
+    assert mail_client.recipient_is_school(_recip("a@grad.cityu.edu.hk"))
+
+
+def test_recipient_is_school_is_case_and_space_insensitive():
+    assert mail_client.recipient_is_school(_recip("A@CityU.EDU.HK"))
+    assert mail_client.recipient_is_school(_recip("  a@Cityu.Edu.HK  "))
+
+
+def test_recipient_is_school_rejects_dash_prefix_lookalike():
+    """子串匹配会误判的第一类：`evil-cityu.edu.hk` 的域名前缀带 `-`。"""
+    assert not mail_client.recipient_is_school(_recip("a@evil-cityu.edu.hk"))
+
+
+def test_recipient_is_school_rejects_school_domain_in_the_middle():
+    """子串匹配会误判的第二类：学校域出现在**攻击者控制的**域名中间。"""
+    assert not mail_client.recipient_is_school(_recip("a@cityu.edu.hk.evil.com"))
+
+
+def test_recipient_is_school_reads_cc_too():
+    """To 不命中、Cc 命中 ⇒ 命中（判据是 To **或** Cc）。"""
+    assert mail_client.recipient_is_school(_recip("a@example.invalid", cc=("b@cityu.edu.hk",)))
+
+
+def test_recipient_is_school_false_without_recipient_headers():
+    """`get_all` 取不到头时返回 None —— 不兜底就是 TypeError。"""
+    assert not mail_client.recipient_is_school(_msg())
+    assert not mail_client.recipient_is_school(_recip(""))
+
+
+def test_recipient_is_school_reads_all_repeated_to_headers():
+    """`To` 可以出现多次，**只读第一条会漏**（`get` 只给第一条，`get_all` 才拿得全）。
+
+    用原始字节造：`EmailMessage` 把 To 当唯一头，第二次赋值直接 ValueError
+    （实测确认过；这正是「标准库能不能吃这个输入」那类断言，不能凭印象写）。
+    下面的顺序刻意让「只读第一条」判成 False —— 这才是能揪出实现的判别力。
+    """
+    m = email.message_from_string("To: a@example.invalid\r\nTo: b@cityu.edu.hk\r\n\r\n")
+    assert mail_client.recipient_is_school(m)
+
+
+def test_recipient_is_school_handles_display_name_with_at():
+    """显示名里可以有 `@` —— 域名要取**地址那一半**的最后一个 `@`。"""
+    assert mail_client.recipient_is_school(_recip('"a@b" <x@cityu.edu.hk>'))
+
+
+def test_recipient_is_school_survives_empty_address_element():
+    """`Team <>` 解析出一个**空地址** —— 取域名不能抛。"""
+    assert not mail_client.recipient_is_school(_recip("Team <>"))
+    assert mail_client.recipient_is_school(_recip("Team <>, real@cityu.edu.hk"))
+
+
 # --- RFC 2047 头部解码：Gmail 上中文主题是常态，不解码就是乱码 ---
 
 def test_decode_mime_header_decodes_base64_utf8():
