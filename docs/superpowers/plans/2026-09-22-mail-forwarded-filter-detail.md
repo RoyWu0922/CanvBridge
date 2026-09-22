@@ -1928,7 +1928,9 @@ Expected: 只有 `frontend/i18n.js` 与 `frontend/app.js` 处于修改态
 
 **Files:**
 - Modify: `frontend/index.html`（新弹层插在 `#modulePop` `:422` 之前）
-- Modify: `frontend/app.js`（`mailRowHtml` `:3135`；`mailRenderGroups` 的 `map` `:3218`；`mailItemHtml` `:3240`；`#mailList` 点击处理器 `:3278`；Esc 链 `:337-347`）
+- Modify: `frontend/app.js`（`mailRowHtml` `:3135`；`mailRenderGroups` `:3218`，其内
+  `mailState.mails.map(mailRowHtml)` 在 `:3220`；`mailItemHtml` `:3240`；
+  `#mailList` 点击处理器 `:3278`；Esc 链 `:337-347`，其中 `detailModal` 那一行是 `:346`）
 - Modify: `frontend/app.css`（`:551` 之后，学校邮箱那一节末尾）
 
 **Interfaces:**
@@ -2111,8 +2113,16 @@ $("mailList").addEventListener("keydown", e => {
 Run: `node tools/check_dom_ids.mjs; echo "rc=$?"`
 Expected: `rc=0`，打印「HTML 共 **163** 个 id」（157 + 6）
 Run: `node tools/check_mail_frontend.mjs; echo "rc=$?"`
-Expected: **可能红** —— B0/B1/B2 因为 `<div class="mail-item">` 上多了 `data-m` 而切不开。
-这是**预期**的，Task 11 修切分。**若除 B0/B1/B2 之外还有红，停下来报告**，别顺手改。
+Expected: **必然红 5 条** —— **B0/B1/B2/B4/B5 全部**。原因：`items` 是
+`out.split('<div class="mail-item">')`（**字面串**切分，非正则，`check_mail_frontend.mjs:285`），
+行上多了 `data-m` 后切不出任何块 ⇒ `items` 为空数组 ⇒ **共用 `items` 的五条一起红**
+（B0 是 `items.length === 2`，B1/B4 是 `pair(items[i],…)`，B2/B5 是 `items[i] && …`）。
+**这里没有 B3** —— 别去找它，也别把它的缺席当成漏跑（本文件的 A/B 段编号不连续是历史遗留）。
+这是**预期**的，Task 11 Step 1 把切分改成属性容忍 `/<div class="mail-item"[^>]*>/` 后即回绿。
+A/C/E/H/J 段不受影响（它们断言的是 `out.includes(...)`，与属性无关）。
+**若除这 5 条之外还有红，停下来报告**，别顺手改。
+（我把「B0/B1/B2」订正成这 5 条，是因为枚举在这里是**承重**的：它是「预期」与「报告」的
+分界，漏掉 B4/B5 会让实施者为一个机械上完全相同的原因**假停**一次。）
 Run: `node tools/check_gmail_ui.mjs; echo "rc=$?"`
 Expected: `rc=0`（44 条）
 
@@ -2253,7 +2263,8 @@ Expected: `rc=0`（死键回到 ≤ 21 —— 8 个新键至此全部被引用�
 Run: `node tools/check_dom_ids.mjs; echo "rc=$?"`
 Expected: `rc=0`（HTML 共 163 个 id）
 Run: `node tools/check_mail_frontend.mjs; echo "rc=$?"`
-Expected: 仍**只**红在 B0/B1/B2（Task 11 修）；若多红，停下报告
+Expected: 仍**只**红在 B0/B1/B2/B4/B5 这 5 条（同 Task 9 Step 7 的理由，Task 11 修切分）；
+若多红，停下报告
 Run: `node tools/check_gmail_ui.mjs; echo "rc=$?"`
 Expected: `rc=0`
 Run: `.venv/bin/python -m pytest -q`
