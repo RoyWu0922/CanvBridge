@@ -1470,11 +1470,21 @@ def test_save_attachment_never_overwrites(tmp_path, monkeypatch):
 
 
 def test_save_attachment_uses_utc_date_of_received(tmp_path, monkeypatch):
-    """日期取 `received` 的 **UTC** 日 —— 晚间 +0800 的信可能落进「次日」目录（spec §9 已登记）。"""
+    """日期取 `received` 的 **UTC** 日（spec §5；代价见 §9）。
+
+    ⚠️ 输入必须选一个 **UTC 日 ≠ 本地日** 的时刻，否则这条用例**分不出** UTC 与本地。
+    初稿用的是 `2026-09-17T23:30:00+08:00`，**它的本地日与 UTC 日都是 17 号**
+    ⇒ 把 `_received_date` 的 `astimezone(utc)` 去掉、直接 `dt.strftime("%Y-%m-%d")`
+    （= 本地日），这条用例**照绿**（实测：两种实现都得到 `2026-09-17_a.bin`）
+    —— 「声明 UTC 的用例」在那种输入下根本没有在测 UTC。本仓对这类
+    「声明强于断言」的盲区已有多次记录，所以这里换成一个能分开两者的输入。
+    对 +0800 而言**唯一**能分开的是**凌晨**那一侧（晚间两侧相同，实测）：
+    `03:00+08:00` = 前一日 `19:00Z` ⇒ **UTC 日是 16 号、本地日是 17 号**。
+    """
     _fake_attachment(monkeypatch, "a.bin", b"x")
     out = mail_client.save_attachment(
-        {"id": "1", "received": "2026-09-17T23:30:00+08:00"}, 0, str(tmp_path))
-    assert "2026-09-17_a.bin" in out                  # 23:30+08:00 = 15:30Z，仍是 17 日
+        {"id": "1", "received": "2026-09-17T03:00:00+08:00"}, 0, str(tmp_path))
+    assert "2026-09-16_a.bin" in out       # 03:00+08:00 = 前一日 19:00Z ⇒ UTC 日是 16 号
 
 
 def test_save_attachment_falls_back_to_today_on_bad_date(tmp_path, monkeypatch):
