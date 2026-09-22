@@ -92,11 +92,13 @@ def _install(monkeypatch, fake, *, creds=("me@gmail.com", "app-pw-16"), scope=No
 
 
 def _hdr(subject="S", sender="T <t@cityu.edu.hk>",
-         date="Thu, 17 Sep 2026 16:31:00 +0800"):
+         date="Thu, 17 Sep 2026 16:31:00 +0800",
+         to="t@cityu.edu.hk"):
     m = EmailMessage()
     m["Subject"] = subject
     m["From"] = sender
     m["Date"] = date
+    m["To"] = to
     return m.as_bytes()
 
 
@@ -207,6 +209,7 @@ def test_list_mail_uses_internaldate_when_date_header_missing(monkeypatch):
     m = EmailMessage()
     m["Subject"] = "无 Date 头"
     m["From"] = "t@cityu.edu.hk"
+    m["To"] = "t@cityu.edu.hk"        # 转发件判据要 To/Cc，缺了会被 Task 3 的过滤静默滤掉
     _install(monkeypatch, _FakeIMAP(headers={b"1": m.as_bytes()}))
     out = mail_client.list_mail(7)
     assert out[0]["received"] == "2026-09-17T20:00:00+00:00"
@@ -217,6 +220,46 @@ def test_list_mail_prefers_date_header_over_internaldate(monkeypatch):
     _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr()}))
     out = mail_client.list_mail(7)
     assert out[0]["received"] == "2026-09-17T08:31:00+00:00"
+
+
+# ============ 接线：只留转发件 + 白名单剥键（spec §3.4/§3.5）============
+
+def test_fetch_headers_asks_for_to_and_cc(monkeypatch):
+    """**机制断言**：FETCH 命令串里必须含 `TO CC`。
+
+    为什么必须是机制断言：IMAP 替身**不解析命令串**、只回固定字节，所以
+    「少要了两个头」在行为上表现为「判据恒 False ⇒ 列表恒空」，而那是**可见**的；
+    真正抓不住的是「命令里有没有这两个词」。**它的局限**：只证明命令里有，
+    不证明服务端确实返回了它们（后者只能靠真实探测，见 spec §10）。
+    `TO CC` 与 `INTERNALDATE` 写在同一条 FETCH 里，零额外往返。
+    """
+    fake = _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr()}))
+    mail_client.list_mail(7)
+    fetch = next(c for c in fake.sent if c[0] == "uid" and c[1] == "FETCH")
+    assert "TO CC" in fetch[-1]
+    assert "INTERNALDATE" in fetch[-1]
+
+
+def test_list_mail_drops_mail_not_addressed_to_school(monkeypatch):
+    """只留转发件：判据是 To/Cc 命中学校域名（spec §2.1）。"""
+    _install(monkeypatch, _FakeIMAP(headers={
+        b"1": _hdr(subject="S1"),                                  # 默认 To: t@cityu.edu.hk
+        b"2": _hdr(subject="S2", to="someone@example.invalid"),
+    }))
+    out = mail_client.list_mail(7)
+    assert [it["subject"] for it in out] == ["S1"]
+
+
+def test_list_mail_returns_exactly_contract_keys(monkeypatch):
+    """**白名单**：`_internaldate` 与 `_school` 都是内部键，返回前一个都不许留。
+
+    这条钉的是「黑名单改成白名单」这件事本身 —— 黑名单（`k != "_internaldate"`）
+    在新增 `_school` 时会**静默泄漏**一个不在契约里的键。
+    """
+    _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr(), b"2": _hdr(subject="S3")}))
+    out = mail_client.list_mail(7)
+    assert out, "前提：必须有邮件通过过滤，否则下面两条是空转"
+    assert all(set(it) == {"id", "subject", "sender", "received"} for it in out)
 
 
 def test_do_list_applies_select_scope(monkeypatch):

@@ -19,6 +19,10 @@ docs/superpowers/specs/2026-09-18-school-mail-design.md §3。
   3. 永不发 `STORE` / `COPY` / `MOVE` / `EXPUNGE`。
 用户在 Gmail 里的未读状态必须原样保留 —— 我们只是看一眼，不是替他处理邮件。
 
+**只显示转发件**（spec §2）：`list_mail` 的返回集合收窄为「窗口内的转发件」——
+判据 `recipient_is_school`（收件人 To/Cc 命中学校域名），在服务端即可判定，
+不需要 Gmail 标签、不需要新建过滤器。键集合与类型与旧版**完全一致**，只是集合变小。
+
 凭据只从钥匙串读（`credentials.get_gmail`），绝不落盘、绝不回传前端、绝不出现在
 日志或报告里。认证失败即停、绝不重试（spec §5.8）；没有后台轮询 —— 只在用户点
 刷新时连一次，连完即断。
@@ -49,6 +53,10 @@ MAX_BODY_CHARS = 200_000   # 单封正文上限，纯防病态巨型邮件
 
 #: 判据用的学校域名（spec §2.1）。只此一处定义 —— 实现与用例都从它取。
 SCHOOL_DOMAIN = "cityu.edu.hk"
+
+#: 对外契约的键集合（spec §3.5）。`_do_list` 返回前**按它放行**。
+#: 白名单而不是黑名单：黑名单在新增内部键时静默泄漏，而泄漏的正是「不在契约里」的东西。
+_CONTRACT_KEYS = ("id", "subject", "sender", "received")
 
 #: 最近一次 list_mail 记下的 INBOX UIDVALIDITY；fetch_bodies 靠它判断邮箱是否被重建。
 #: 模块级全局是**有意**的：同一请求内 list_mail → fetch_bodies 顺序调用，值必然相同；
@@ -384,10 +392,13 @@ def _fetch_headers(conn, uids: list[bytes]) -> list[dict]:
     顺带取 INTERNALDATE：它是 Date 头解不出时的退路（spec §5.3）。INTERNALDATE
     是 FETCH 的**数据项**（不是信封字段），所以和 BODY.PEEK[…] 并列写在同一条命令里，
     不额外多一个往返。
+
+    顺带取 TO CC：转发件判据要收件人（spec §2.1），**不取就没有判据** ——
+    同一趟 FETCH 里多两个词，零额外往返。
     """
     typ, data = conn.uid(
         "FETCH", b",".join(uids),
-        "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)] INTERNALDATE)")
+        "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE TO CC)] INTERNALDATE)")
     if typ != "OK":
         raise MailError(f"读取邮件头失败：{data}")
     out = []
@@ -403,14 +414,18 @@ def _fetch_headers(conn, uids: list[bytes]) -> list[dict]:
         internaldate = parse_internaldate(intd.group(1).decode()) if intd else None
         msg = message_from_bytes(raw if isinstance(raw, bytes) else b"")
         item = header_item(m.group(1).decode(), msg, internaldate)
-        # 窗口比的是收到时刻（spec §5.3），对外契约却只有四个键 ——
-        # 收到时刻放内部键，`_do_list` 在返回前剥掉（形状断言盯着这件事）。
+        # 两个内部键，对外契约里都没有它们，`_do_list` 返回前按白名单剥掉（spec §3.5）。
+        # `_school` 加在这里而不是 `header_item` 里：`header_item` 的契约恰好四个键，
+        # 有两条用例逐字钉着（见计划头部「裁定 1」）。
         item["_internaldate"] = internaldate
+        item["_school"] = recipient_is_school(msg)
         out.append(item)
     return out
 
 
 def _do_list(days: int) -> list[dict]:
+    """取窗口内的**转发件**。返回的只是转发件（spec §2.1 判据），键集合不变。"""
+
     global _uidvalidity
     conn, uidvalidity = _connect()
     try:
@@ -429,9 +444,11 @@ def _do_list(days: int) -> list[dict]:
             if n:
                 time.sleep(_THROTTLE)      # 批次之间留间隔（全局约束）
             items.extend(_fetch_headers(conn, chunk))
-        kept = sort_newest_first(select_scope(items, datetime.now(timezone.utc), days))
-        # 剥掉内部键 `_internaldate`：对外契约恰好四个键（spec §4）
-        return [{k: v for k, v in it.items() if k != "_internaldate"} for it in kept]
+        kept = [it for it in select_scope(items, datetime.now(timezone.utc), days)
+                if it.get("_school") is True]
+        kept = sort_newest_first(kept)
+        # 只放行对外契约的四个键（白名单）。`_internaldate` 与 `_school` 都是内部键。
+        return [{k: it[k] for k in _CONTRACT_KEYS} for it in kept]
     finally:
         _logout_quietly(conn)
 
