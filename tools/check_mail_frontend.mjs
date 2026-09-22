@@ -13,9 +13,13 @@
  * 序号 —— 夹具里两者刻意错开，靠条目序号取行会把整封邮件对错。
  *
  * 什么时候该跑：任何改动 frontend/app.js 里的 `renderMail` / `mailRenderGroups` /
- * `mailItemHtml` / `$("mailList")` 的点击写入路径 / `mailState` 结构之后。
+ * `mailItemHtml` / `$("mailList")` 的点击写入路径 / `mailState` 结构之后，
+ * 以及改动**详情弹层**那条链之后（`mailRowAttr` / `mailRowTarget` / `openMailDetail` /
+ * `renderMailDetail` / `mailLinkify` / `fmtBytes` / `mailAttsHtml` —— K/L/M 段守它们）。
  *
- * 零出网：`fetch` 是桩，只放行上面那两条写入端点并记账，其余 URL 一律 throw。
+ * 零出网：`fetch` 是桩，只放行三条端点（两条写入端点 + `/api/mail/detail`）并记账，
+ * 其余 URL 一律 throw。`/api/mail/detail` 的响应**按用例可控**（成功 / 失败 / 挂起，
+ * 见 `detailStub`）—— 详情失败与「响应在途」这两种进入方式要能被驱动到。
  * 全部夹具都是合成的，不含任何真实邮件内容、真实邮箱地址或 token：标签一律 `SYNTH-*`，
  * 发件地址用 RFC 2606 保留域（`s0@example.invalid` / `s1@example.invalid`，永不解析）。
  *
@@ -30,10 +34,36 @@
  *     --mutate-widx[=EXPR] 把取行写成 EXPR，默认 `arr[0]`（按下标取行 → 恒取第一条）
  *     --mutate-mail-relogin[=SITE]  邮件失败路径改回「发 AIMS 手动登录问询」
  *                          （SITE ∈ init / refresh / summarize，默认 all 三处一起）
+ *     --mutate-kmap        行上的 data-m 从 mail_index 改成条目序号 ii（渲染侧错位）
+ *     --mutate-kread       取行不再读 data-m、恒取第 0 封（读取侧错位）
+ *     --mutate-kkey        注释掉 #mailList keydown 里那行「行内交互元素不劫持」守卫
+ *                          （缺陷 1 复发：键盘激活写入按钮被吞）
+ *     --mutate-kguard      去掉 mailRowTarget 的 `/^\d+$/` 守卫（空 data-m 被当成第 0 封）
+ *     --mutate-kdid        去掉 renderMailDetail 早退里的 `detailId !== id` 那一项
+ *                          （详情缓存不再校验属于哪一封）
  *     --mutate             = r2 + meta + map + widx **四个一起上**，红 8 条：
  *                          B1 B2 B4 B5 C2 E3 H1 H2
- *   `--mutate-rm-filter`、`--mutate-no-esc`、`--mutate-mail-relogin` **不在** `--mutate` 里，
- *   必须各自单独跑（`--mutate-mail-relogin` 逐 SITE 跑才能说清 I 段每条断言钉的是哪一处）。
+ *   新增的 K/L/M 段（详情弹层，24+9+5 条）在 --mutate 下**必须全绿** —— 那四个变异
+ *   都不碰详情路径（Task 11 实测：--mutate 下红的是上面那 8 条，K/L/M 一条不红）。
+ *   若 --mutate 的红集变了（多了或少了），先查清是谁干的，别改红集去迁就。
+ *   `--mutate-rm-filter`、`--mutate-no-esc`、`--mutate-mail-relogin` 以及上面那五个
+ *   `--mutate-k*` **都不在** `--mutate` 里（新开关一律不写 `|| MUTATE` —— 一写就会
+ *   把 K/L/M 段的红混进那 8 条里），必须各自单独跑。实测红集（由 Task 11 逐条跑出来，
+ *   原命令与原始输出见 `task-11-report.md`）：
+ *     --mutate-kmap   → K0
+ *     --mutate-kread  → K2 K3 K4 K5 K6 K7 K8 K9 K13 K16 ＋ L1 L6 L8
+ *                       （brief 的 Step 6 只写了 K2 K3 K4 K13 K16，**实测是它的超集**。
+ *                        多出来的 K5–K9 是**同一错位的级联**，不是断言在测别的东西：
+ *                        恒取第 0 封 ⇒ 两发点击打开的是**同一封** ⇒ `mailDetailState.id`
+ *                        不再能区分它们 ⇒ 先点那一发的**晚到响应不再被丢弃**、照画，
+ *                        弹层里于是留下第 0 封的正文与附件（A-BODY / 没有附件），
+ *                        而那正是 `__kBody`/`__kAtts` 五条断言的判别对象 ⇒ K5–K9 跟着红。
+ *                        K10/K12 仍绿也是对的：K10 对「没有附件」平凡成立、
+ *                        K12 只断言 index（brief 自己也这么写）。L1/L6/L8 同理，
+ *                        它们都是读取侧断言，本该跟着红。）
+ *     --mutate-kkey   → L7
+ *     --mutate-kguard → L8
+ *     --mutate-kdid   → M3 M4（对照组 M1 必须仍绿）
  *   取行表达式带方括号，shell 下请加引号，否则会被当通配符：
  *     node tools/check_mail_frontend.mjs --mutate-widx='arr[1]'
  *     node tools/check_mail_frontend.mjs --mutate-widx='arr.at(-1)'
@@ -64,6 +94,32 @@ const fetchLog = [];
    Esc 会被前面那条 `!$("loginPrompt").hidden` 分支截胡（实测：探针第一次跑就抛错），
    于是 G 段的 Esc 断言根本走不到 #confirmPrompt。`click()` 也是必需品：
    dismissLoginPrompt 走 `$("btnLoginPromptNo").click()`。 */
+/* `/api/mail/detail` 的响应**按用例可控**（Task 11 附录一·2）：默认成功（回一份空详情），
+   用例可以换成「后端失败」或「挂起」两种进入方式 —— Task 10 的缓存身份守卫要在这两种
+   进入方式上各自被验一遍（`openMailDetail` 的失败分支从不写缓存、在途期间也还没写，
+   两种情况下缓存里留的都是**上一封**）。
+   挂起态返回一个**永不自动落地**的 promise，resolve 句柄压进 `pending` 留给用例；
+   用例不落地它，也不会吊死整份自检 —— 末尾 `process.exit` 不等待任何未决 promise
+   （它是纯 promise，不是定时器/handle，不会吊住事件循环）。**其余 URL 仍然 throw**，
+   「自检不该发起别的 fetch」这条口径一个字没放宽。 */
+const detailStub = {
+  mode: "ok",                                  // "ok" | "fail" | "pending"
+  payload: { ok: true, detail: { id: "", body: "", attachments: [] } },
+  pending: [],
+  reset(){
+    this.mode = "ok";
+    this.payload = { ok: true, detail: { id: "", body: "", attachments: [] } };
+    this.pending = [];
+  },
+  reply(){
+    if (this.mode === "fail")
+      return Promise.resolve({ ok: true, status: 200,
+        json: async () => ({ ok: false, error: "SYNTH-DETAIL-ERR" }) });
+    if (this.mode === "pending") return new Promise(res => { this.pending.push(res); });
+    const payload = this.payload;
+    return Promise.resolve({ ok: true, status: 200, json: async () => payload });
+  },
+};
 const mkNode = id => (nodes[id] ||= {
   id, innerHTML: "", textContent: "", hidden: true, value: "",
   classList: { add(){}, remove(){}, toggle(){} }, style: {}, dataset: {},
@@ -100,11 +156,22 @@ const sandbox = {
      这两条写入端点是 H 段要观察的对象，必须放行并记账；**其余 URL 仍然 throw**。 */
   fetch: (url, opts) => {
     const u = String(url);
-    if (u !== "/api/add_calendar_event" && u !== "/api/add_reminder")
+    if (u !== "/api/add_calendar_event" && u !== "/api/add_reminder" && u !== "/api/mail/detail")
       throw new Error("自检不该发起 fetch：" + u);
     fetchLog.push({ url: u, body: JSON.parse((opts && opts.body) || "{}") });
+    if (u === "/api/mail/detail") return detailStub.reply();
     return { ok: true, status: 200, json: async () => ({ ok: true }) };
   },
+  /* `location` 与 `URL` 只被 app.js 那条 **document 级 `a[href]` 捕获委托**读
+     （`new URL(href, location.href)` 与 `location.origin`；另一处同形的 `d.baseURI`
+     变体在 app.js 的另一个点击委托里，本自检不驱动它）。`location` 与 `URL`
+     在 `vm` 沙箱里**都不存在**（`URL` 不是 JS 内建，是宿主提供的全局）⇒ 那条委托
+     一进去就抛 ReferenceError、被自己的 `catch` 吞掉后静默 `return`，于是「详情正文
+     里的外链有没有被**既有**委托接住」根本无法观测 —— 探针只会看到「什么都没发生」
+     的假绿。补上这两个名字，L2 才真的驱动到那段既有代码。两者都不在 frontend 的
+     加载路径上、也没有别的读取点（已按符号名核过）。 */
+  location: { href: "http://localhost/", origin: "http://localhost" },
+  URL,
   open: () => null,
 };
 sandbox.window = sandbox; sandbox.globalThis = sandbox;
@@ -140,6 +207,16 @@ const MUTATE_MAIL_RELOGIN = !!RELOGIN_ARG;
 if (MUTATE_MAIL_RELOGIN && !["all", "init", "refresh", "summarize"].includes(RELOGIN_SITE))
   throw new Error(`--mutate-mail-relogin 只认 all/init/refresh/summarize，实得 ${JSON.stringify(RELOGIN_SITE)}`);
 const relogin = site => MUTATE_MAIL_RELOGIN && (RELOGIN_SITE === "all" || RELOGIN_SITE === site);
+
+/* Task 11 新增的五个开关：**一律不写 `|| MUTATE`** —— 一写就会把 K/L/M 段的红混进
+   `--mutate` 那 8 条里（那份红集是钉死的，多一条少一条都要先查清是谁干的）。
+   前两个（kmap/kread）证明 K 段不是恒真；后三个（kkey/kguard/kdid）是附录三要的
+   「另两条交互路径 + 缓存身份」那三道门禁的变异对照，都必须能**双向**跑通。 */
+const MUTATE_KMAP   = process.argv.includes("--mutate-kmap");
+const MUTATE_KREAD  = process.argv.includes("--mutate-kread");
+const MUTATE_KKEY   = process.argv.includes("--mutate-kkey");
+const MUTATE_KGUARD = process.argv.includes("--mutate-kguard");
+const MUTATE_KDID   = process.argv.includes("--mutate-kdid");
 
 const mutate = (src, anchor, repl, label) => {
   const hits = src.split(anchor).length - 1;
@@ -201,6 +278,38 @@ for (const f of ["i18n.js", "util.js", "app.js", "shell.js"]) {
          表达式可覆盖：四种常量下标变异体（0 / 1 / at(-1) / length-1）都要能被钉住。 */
       src = mutate(src, "const row = arr[Number(b.dataset.e)];",
         `const row = ${WIDX_EXPR};`, "widx");
+    }
+    /* `--mutate-kmap`：行上的 `data-m` 从「`mail_index`」改成「条目序号 `ii`」
+       —— 与 `--mutate-map` 同一个错位形态，只**反方向**（渲染侧 vs 读取侧）。
+       `ii` 在 `mailItemHtml(it, m, gi, ti, ii)` 的作用域内，故这条替换是合法 JS。 */
+    if (MUTATE_KMAP) {
+      src = mutate(src, "mailRowAttr(it.mail_index)", "mailRowAttr(ii)", "kmap");
+    }
+    /* `--mutate-kread`：取行不再读 `data-m`，恒取第 0 封 —— 证明 K2/K3/K4 不是恒真。 */
+    if (MUTATE_KREAD) {
+      src = mutate(src, "const raw = el.dataset.m;", 'const raw = "0";', "kread");
+    }
+    /* `--mutate-kkey`：注释掉 #mailList keydown 里那行守卫 —— 缺陷 1 复发：键盘激活
+       行内的写入按钮会被本监听器劫持（吞掉合成 click、同时开详情）。L7 必须变红。 */
+    if (MUTATE_KKEY) {
+      src = mutate(src,
+        '  if(e.target && e.target.closest && e.target.closest("button, a, input, select, textarea")) return;\n',
+        "  /* --mutate-kkey：这行守卫被注释掉（缺陷 1 复发） */\n", "kkey");
+    }
+    /* `--mutate-kguard`：去掉 `mailRowTarget` 的「必须是纯数字」守卫 —— 空 `data-m` 会被
+       `Number("")` 静默当成第 0 封。L8 必须变红。
+       锚点带 `return null;` 后缀：`#mailDetailAtts` 那个附件处理器里有一条同形的
+       守卫（`... ) return;`），不带后缀会命中两次（`mutate()` 会直接抛错）。 */
+    if (MUTATE_KGUARD) {
+      src = mutate(src, 'if(!/^\\d+$/.test(raw || "")) return null;', "", "kguard");
+    }
+    /* `--mutate-kdid`：去掉 `renderMailDetail` 早退里的 `detailId !== id` 那一项，
+       其余三项（`!d` / `!el` / `el.hidden`）保留 —— Task 10 那个缺陷复发：缓存属于
+       上一封时，无参入口照画（把上一封的正文挂在现打开这一封的标题下）。 */
+    if (MUTATE_KDID) {
+      src = mutate(src,
+        "if(!d || !el || el.hidden || mailDetailState.detailId !== mailDetailState.id) return;",
+        "if(!d || !el || el.hidden) return;", "kdid");
     }
     /* F4 回归：把邮件失败路径的「发 AIMS 手动登录问询」加回去。三处各一个锚点，
        逐 SITE 跑 ⇒ 红的必须是 I 段里对应那一条。 */
@@ -282,7 +391,9 @@ ok(out.includes('class="card mail-group"') && out.includes("SYNTH-COURSE"), "A1 
 ok(out.includes("SYNTH-TYPE"), "A2 渲染出类型小节");
 /* 按 <div class="mail-item"> 切开，逐块看「这一块的摘要配的是不是这一封」。
    断言必须**同时**要求该在的在场、不该在的缺席，只查在场等于没查。 */
-const items = out.split('<div class="mail-item">').slice(1);
+/* 按 <div class="mail-item" …> 切开（**属性容忍**）：Task 9 之后这一行会带上
+   `data-m`，写死 `<div class="mail-item">` 会在功能完全正常时变红。 */
+const items = out.split(/<div class="mail-item"[^>]*>/).slice(1);
 const pair = (blk, subj, sum, ev, rm) =>
   !!blk && blk.includes(subj) && blk.includes(sum) && blk.includes(ev) && blk.includes(rm);
 ok(items.length === 2, `B0 越界条目不成卡（实得 ${items.length} 块）`);
@@ -632,6 +743,334 @@ ok(sandbox.__jRow.includes(J_SUBJECT) && !sandbox.__jRow.includes(J_BODY),
    `J1 平铺列表（mailRowHtml）：subject 为空时主题格是「${J_SUBJECT}」、且不含「${J_BODY}」（实得 ${JSON.stringify(sandbox.__jRow)}）`);
 ok(sandbox.__jItem.includes(J_SUBJECT) && !sandbox.__jItem.includes(J_BODY),
    `J2 分组列表（mailItemHtml）：subject 为空时主题格是「${J_SUBJECT}」、且不含「${J_BODY}」（实得 ${JSON.stringify(sandbox.__jItem)}）`);
+
+/* K：详情弹层 —— 打开的是哪一封、正文怎么变成 HTML、附件按钮带回哪个 index、
+   迟到响应不许顶掉后打开的那一封。这三条**都不在** A–J 的覆盖里，而前两条的失败模式
+   是**静默**的：① B 的标题配 A 的正文；② 下下来的不是那一个附件。
+   与 I 段同款：本段自带 `sandbox.fetch` 桩、跑完还原，其余 URL 一律 throw（仍是零出网）。
+   全部夹具为合成串（`SYNTH-*` / `example.invalid`），不含任何真实邮件内容。
+   载荷证明（**实测于 Task 11**，原始命令与输出见 `task-11-report.md`）：
+     · `--mutate-kmap`（渲染侧：`data-m` 取自条目序号而非 `mail_index`）→ **K0 红**。
+       K1–K4 仍绿是**对的**：`kClickRow` 喂的是**写死的** `"0"`/`"1"`，
+       不读 DOM，故渲染侧的错位碰不到它 —— 这正是「渲染侧」这条变异的作用边界。
+     · `--mutate-kread`（读取侧：取行恒取第 0 封）→ **K2 K3 K4 K5 K6 K7 K8 K9 K13 K16 红**
+       （另加 L1/L6/L8：它们也是读取侧断言，本该跟着红）。K2/K3/K4 是直接命中（拿错邮件）；
+       **K13 与 K16 是同一错位的独立症状**：下载按钮与 Enter 都按
+       `mailDetailState.id`/`mailRowTarget` 取那一封，取错之后它们跟着错；
+       **K5–K9 是级联**（两发点击打开同一封 ⇒ 晚到响应不再被丢弃、照画，弹层里留下的是
+       第 0 封的正文与附件）—— 级联红不算独立判别力，故写明在此。
+       **K10/K12 仍绿也是对的** —— K10 对「没有附件」平凡成立、K12 只断言 index 不看 id。 */
+const kBaseFetch = sandbox.fetch;
+const kLog = [];
+const kPending = [];
+const K_DETAIL = {
+  "SYNTH-K-ID-0": { ok: true, detail: { id: "SYNTH-K-ID-0", body: "A-BODY", attachments: [] } },
+  "SYNTH-K-ID-1": { ok: true, detail: { id: "SYNTH-K-ID-1",
+    body: 'B-BODY 见 https://example.invalid/a. <img src=x onerror=SYNTH-XSS> javascript:SYNTH-ALERT',
+    attachments: [{ index: 0, name: "SYNTH-ATT-0.pdf", size: 2048 },
+                  { index: 1, name: "SYNTH-ATT-1.bin", size: null }] } },
+};
+sandbox.fetch = (url, opts) => {
+  const u = String(url);
+  kLog.push({ url: u, body: JSON.parse((opts && opts.body) || "{}") });
+  /* `/api/mail/detail` 的响应**手动落地**：这一段的要点之一就是「先点的晚回」，
+     自动 resolve 的桩造不出那个顺序。 */
+  if (u === "/api/mail/detail") return new Promise(res => kPending.push(res));
+  if (u === "/api/mail/attachment")
+    return Promise.resolve({ ok: true, status: 200,
+      json: async () => ({ ok: true,
+        path: "/tmp/SYNTH-DIR/学校邮件/2026-09-17_SYNTH-ATT-1.bin" }) });
+  throw new Error("自检不该发起 fetch：" + u);
+};
+const kAnswer = (i, payload) => kPending[i]({ ok: true, status: 200, json: async () => payload });
+/* 行的点击**一律过 `#mailList` 那个唯一的 click 处理器**（H0b 钉着它只有 1 个），
+   不在探针里直接调 openMailDetail —— 那样就绕过了「点行能不能打开」这条契约。 */
+const kClickRow = m => clickers[0]({ target: {
+  closest: sel => (sel === "[data-m]" ? { dataset: { m: String(m) } } : null) } });
+
+run(`
+  mailState.loading = false; mailState.error = "";
+  mailState.mails = [
+    { id: "SYNTH-K-ID-0", subject: "SYNTH-K-SUBJ-0", sender: "s0@example.invalid", received: "2026-09-01T00:00:00Z" },
+    { id: "SYNTH-K-ID-1", subject: "SYNTH-K-SUBJ-1", sender: "s1@example.invalid", received: "2026-09-02T00:00:00Z" },
+  ];
+  mailState.groups = [{ course: "SYNTH-K-COURSE", types: [
+    { type: "SYNTH-K-TYPE", items: [{ mail_index: 1, summary: "SYNTH-K-SUM" }] }] }];
+  renderMail();
+  globalThis.__kList = document.getElementById("mailList").innerHTML;
+`);
+/* 前提断言（正例锚）：`data-m` 必须取自 `mail_index`（=1），不是条目下标（=0）。
+   少了它，下面凡是用 `data-m` 取行的地方都会因为「属性压根不在」而红得莫名其妙。 */
+ok(sandbox.__kList.includes('data-m="1"') && !sandbox.__kList.includes('data-m="0"'),
+   `K0 前提：分组条目的 data-m 取自 mail_index（实得 ${JSON.stringify(sandbox.__kList.slice(0, 300))}）`);
+
+const kOpenA = kClickRow(0);           // 先点第 0 封（响应挂起）
+const kOpenB = kClickRow(1);           // 再点第 1 封（响应挂起）
+kAnswer(1, K_DETAIL["SYNTH-K-ID-1"]);  // 后点的**先**回
+await settle(kOpenB);
+kAnswer(0, K_DETAIL["SYNTH-K-ID-0"]);  // 先点的**晚**回 —— 不许顶掉上面那一封
+await settle(kOpenA);
+run(`globalThis.__kTitle = document.getElementById("mailDetailTitle").textContent;
+     globalThis.__kBody  = document.getElementById("mailDetailBody").innerHTML;
+     globalThis.__kAtts  = document.getElementById("mailDetailAtts").innerHTML;
+     globalThis.__kOpen  = document.getElementById("mailDetail").hidden;`);
+const kDetailLog = kLog.filter(f => f.url === "/api/mail/detail");
+ok(kDetailLog.length === 2, `K1 两次点击各发一次 /api/mail/detail（实得 ${kDetailLog.length} 次）`);
+ok(kDetailLog[0].body.id === "SYNTH-K-ID-0" && kDetailLog[1].body.id === "SYNTH-K-ID-1",
+   `K2 取的是点中那一封自己的 id（实得 ${JSON.stringify(kDetailLog.map(f => f.body.id))}）`);
+ok(sandbox.__kTitle === "SYNTH-K-SUBJ-1",
+   `K3 弹层标题是后点开的那一封（实得 ${JSON.stringify(sandbox.__kTitle)}）`);
+ok(sandbox.__kBody.includes("B-BODY") && !sandbox.__kBody.includes("A-BODY"),
+   "K4 迟到的那一封没有顶掉后打开的这一封（B 的正文在场、A 的不在场）");
+ok(sandbox.__kBody.includes("&lt;img src=x onerror=SYNTH-XSS&gt;") && !sandbox.__kBody.includes("<img"),
+   "K5 正文里的标签被转义成文本，不成为 DOM");
+ok(sandbox.__kBody.includes('<a href="https://example.invalid/a" rel="noreferrer">https://example.invalid/a</a>'),
+   `K6 https:// 成为链接，且句末的句号没被吃进 href（实得 ${JSON.stringify(sandbox.__kBody)}）`);
+ok(!/href="javascript:/i.test(sandbox.__kBody) && sandbox.__kBody.includes("javascript:SYNTH-ALERT"),
+   "K7 javascript: 不成为链接（原样当正文）");
+ok(sandbox.__kAtts.includes('data-att="0"') && sandbox.__kAtts.includes('data-att="1"'),
+   "K8 附件按钮各自带自己的 index");
+ok(sandbox.__kAtts.includes("SYNTH-ATT-0.pdf") && sandbox.__kAtts.includes("2.0 KB"),
+   `K9 附件名与人类可读大小（实得 ${JSON.stringify(sandbox.__kAtts)}）`);
+ok(!sandbox.__kAtts.includes("0 B"), "K10 size 为 null 时留白，绝不显示「0 B」");
+
+/* 附件下载：**点中的那个按钮**决定 index。 */
+const kAttClickers = (elListeners["mailDetailAtts"] || {}).click || [];
+ok(kAttClickers.length === 1, `K11 捕获到 #mailDetailAtts 上的点击处理器（实得 ${kAttClickers.length} 个）`);
+const kAttStub = att => ({ dataset: { att }, disabled: false });
+await settle(kAttClickers[0]({ target: {
+  closest: sel => (sel === "button[data-att]" ? kAttStub("1") : null) } }));
+const kAttLog = kLog.filter(f => f.url === "/api/mail/attachment");
+ok(kAttLog.length === 1 && kAttLog[0].body.index === 1,
+   `K12 下载的是按钮自己那一个 index（实得 ${JSON.stringify(kAttLog.map(f => f.body))}）`);
+ok(kAttLog.length === 1 && kAttLog[0].body.id === "SYNTH-K-ID-1"
+   && kAttLog[0].body.download_dir === sandbox.downloadDir(),
+   "K13 下载请求带上那一封的 id 与设置页的下载目录");
+ok(nodes["status"].textContent.includes("SYNTH-DIR"),
+   `K14 成功路径把落盘路径告诉用户（实得 ${JSON.stringify(nodes["status"].textContent)}）`);
+
+/* 键盘可达（spec §6）。判据分两半，缺一不可：
+   正的 —— Enter 也能打开详情；负的 —— **不是行上的按键不许吞**（无条件 preventDefault
+   会让邮件页没法用空格滚动）。 */
+const kKeydowns = (elListeners["mailList"] || {}).keydown || [];
+ok(kKeydowns.length === 1, `K15 捕获到 #mailList 上的 keydown 处理器（实得 ${kKeydowns.length} 个）`);
+const kBeforeKey = kLog.length;
+let kPrevented = 0;
+kKeydowns[0]({ key: "Enter", preventDefault(){ kPrevented++; },
+               target: { closest: sel => (sel === "[data-m]" ? { dataset: { m: "1" } } : null) } });
+ok(kLog.length === kBeforeKey + 1 && kLog[kLog.length - 1].url === "/api/mail/detail"
+   && kLog[kLog.length - 1].body.id === "SYNTH-K-ID-1",
+   "K16 Enter 也能打开详情（键盘可达）");
+ok(kPrevented === 1, "K17 命中行时 preventDefault（Space 不滚页面）");
+kPrevented = 0;
+kKeydowns[0]({ key: "Enter", preventDefault(){ kPrevented++; }, target: { closest: () => null } });
+ok(kPrevented === 0, "K18 不是行上的按键不吞（preventDefault 只在命中行时调用）");
+
+ok(sandbox.__kOpen === false, "K19 前提：详情弹层处于打开态");
+/* **按 Esc 之前必须把前面几段留下的弹层状态清干净**（这不是洁癖）：
+   app.js 的 Esc 链是**顺序 if**，`#loginPrompt` 那一条排在 `#mailDetail` **前面**
+   —— I 段（I8 那发）会把 `#loginPrompt` 打开，`iDismiss()` 走的是
+   `$("btnLoginPromptNo").click()` 这条**间接**出口。只要它有哪一次没合上，这一发 Esc
+   就会被前面那条分支截胡，K20 以一个与详情毫无关系的形态变红（本仓吃过同类亏：
+   `mkNode` 的 `hidden` 默认为 false 时，G 段的 Esc 断言根本走不到 `#confirmPrompt`）。
+   故先把 Esc 链上排在 `#mailDetail` 之前的弹层逐个合上，K19b 断言它们确实都合上了。 */
+run(`for(const id of ["loginPrompt", "confirmPrompt", "detailModal", "modulePop"])
+       document.getElementById(id).hidden = true;`);
+ok(nodes["loginPrompt"].hidden === true && nodes["detailModal"].hidden === true
+   && nodes["modulePop"].hidden === true,
+   "K19b 前提：Esc 链上排在 #mailDetail 之前的弹层都已合上（否则 K20 是替别人红）");
+pressEscape();
+ok(nodes["mailDetail"].hidden === true, "K20 Esc 关掉详情弹层");
+sandbox.fetch = kBaseFetch;
+
+/* 空态：转发件为空时说的是「最近 N 天没有转发过来的邮件」，不是「0 条」了事（spec §6）。
+   判据正负成对：正半证明新文案在场，负半证明**旧文案不在场**（只查在场排除不了
+   两处文案拼进同一格、或旧值被加回字典再用上）。旧文案只写**字面量**。 */
+const K_EMPTY = "最近 7 天没有转发过来的邮件";
+run(`globalThis.__kEmptyText = t("mail.empty", { n: MAIL_DAYS });`);
+ok(sandbox.__kEmptyText === K_EMPTY,
+   `K21 前提：t("mail.empty", {n:7}) == ${JSON.stringify(K_EMPTY)}（实得 ${JSON.stringify(sandbox.__kEmptyText)}）`);
+run(`mailState.loading = false; mailState.error = ""; mailState.mails = [];
+     mailState.groups = null; renderMail();
+     globalThis.__kEmpty = document.getElementById("mailList").innerHTML;`);
+ok(sandbox.__kEmpty.includes(K_EMPTY) && !sandbox.__kEmpty.includes("没有需要处理的邮件"),
+   `K22 空态文案逐字带天数，且不含旧文案（实得 ${JSON.stringify(sandbox.__kEmpty)}）`);
+
+/* L：Task 9 新增的两条**交互入口**（行可点、行可键盘打开）与 Task 10 详情渲染的边界。
+   为什么单开这一段（Task 9 复审的头号输入）：Task 9 复审实测「行可点」「行可键盘打开」
+   **在自动化里覆盖为零**，而缺陷 1（键盘激活行内写入按钮被劫持）**正是从这个洞漏出去的，
+   而且它当时是全绿的**。分组行那半条路径由 K0（渲染侧锚 = `mail_index`）+ K2（点它取的是
+   哪一封）覆盖；本段补的是**磁贴行**（`groups` 为空时的 `.mail-row`）那条路径、
+   「行内交互元素不被劫持」那道门禁、以及外链/附件区/`fmtBytes` 三处边界。
+   判据一律**正负成对**（在场 + 缺席），只查在场排除不了「拿错了但碰巧也在」。
+   载荷证明见文件头：`--mutate-kread` → L1 红、`--mutate-kkey` → L7 红、
+   `--mutate-kguard` → L8 红。仍零出网：`sandbox.fetch` 此刻已还原成基础桩
+   （`/api/mail/detail` 在放行名单里、响应由 `detailStub` 控制），其余 URL 照旧 throw。 */
+detailStub.reset();
+detailStub.payload = { ok: true, detail: { id: "SYNTH-L-ID-1",
+  body: "L-BODY 见 https://example.invalid/l. 尾巴",
+  attachments: [{ index: 0, name: "SYNTH-L-ATT-0.pdf", size: 0 },
+                { index: 1, name: "SYNTH-L-ATT-1.bin", size: 3145728 }] } };
+run(`
+  mailState.loading = false; mailState.error = "";
+  mailState.groups = [];                       // 空 ⇒ 平铺（磁贴）列表那条路径
+  mailState.mails = [
+    { index: 0, id: "SYNTH-L-ID-0", subject: "SYNTH-L-SUBJ-0", sender: "s0@example.invalid", received: "2026-09-01T00:00:00Z" },
+    { index: 1, id: "SYNTH-L-ID-1", subject: "SYNTH-L-SUBJ-1", sender: "s1@example.invalid", received: "2026-09-02T00:00:00Z" },
+  ];
+  renderMail();
+  globalThis.__lTile = document.getElementById("mailList").innerHTML;
+`);
+/* 磁贴行的取行锚必须**是它自己那一格**：两行各自的 `data-m` 逐个点名（不是「至少有一个」），
+   且带 `tabindex="0"`（没有锚的行点不开详情、也就不该是键盘停靠点，二者同生共死）。 */
+const lTileRows = [...sandbox.__lTile.matchAll(/<div class="card mail-row"([^>]*)>/g)]
+  .map(m2 => ({ attrs: m2[1], m: (m2[1].match(/data-m="([^"]*)"/) || [])[1] }));
+ok(lTileRows.length === 2 && lTileRows[0].m === "0" && lTileRows[1].m === "1"
+   && lTileRows.every(r => r.attrs.includes('tabindex="0"')),
+   `L0 磁贴行（.mail-row）各自带自己的 data-m 锚与 tabindex（实得 ${JSON.stringify(lTileRows.map(r => r.m))}）`);
+
+/* 点**非第一行**（`data-m="1"`）：恒取第 0 封 / 锚写错位 都会在这里露出来。 */
+const lBeforeOpen = fetchLog.length;
+await settle(clickers[0]({ target: {
+  closest: sel => (sel === "[data-m]" ? { dataset: { m: "1" } } : null) } }));
+const lOpenLog = fetchLog.slice(lBeforeOpen).filter(f => f.url === "/api/mail/detail");
+ok(lOpenLog.length === 1 && lOpenLog[0].body.id === "SYNTH-L-ID-1",
+   `L1 点磁贴行（data-m="1"）取的是那一封自己（实得 ${JSON.stringify(lOpenLog.map(f => f.body.id))}）`);
+
+/* 外链必须走 app.js **既有**的那条 document 级 `a[href]` 捕获委托（`:26`），不是被某个
+   新处理器接走。驱动方式是把 document 上的 click 监听器**真的跑一遍**，并临时装一个
+   pywebview 桥 —— 只看「没抛错」证明不了任何东西（`location` 缺失时那条委托会抛
+   ReferenceError 再被自己的 catch 吞掉、静默 return，正是「假绿」的形态）。
+   判据：恰好**一个**监听器接住它，且递出去的 URL 逐字就是正文里那一个。 */
+const lAnchorStub = { getAttribute: () => "https://example.invalid/l", target: "" };
+let lDelegateHits = 0;
+run(`globalThis.pywebview = { api: { openExternal(u){ globalThis.__lOpened = String(u); } } };`);
+for (const fn of (docListeners.click || [])) {
+  let prev = 0;
+  try { fn({ button: 0, defaultPrevented: false,
+    target: { closest: sel => (sel === "a[href]" ? lAnchorStub : null) },
+    preventDefault(){ prev++; } }); } catch (e) {}
+  if (prev) lDelegateHits++;
+}
+run(`delete globalThis.pywebview;`);
+const lDelivered = sandbox.__lOpened || "";
+ok(lDelegateHits === 1 && lDelivered === "https://example.invalid/l",
+   `L2 详情正文的外链被**既有**的 document 级 a[href] 捕获委托接住并交给系统浏览器（实得 ${lDelegateHits} 个监听器接住 / ${JSON.stringify(lDelivered)}）`);
+ok(!(((elListeners["mailDetailBody"] || {}).click || []).length),
+   "L3 #mailDetailBody 上没有任何 click 处理器（外链交给 document 级委托，没另起新处理器）");
+
+/* 附件区按**既有类名**渲染（K8/K9 只断言了 `data-att` 与文案，没钉类名）。 */
+const lAttsHtml = nodes["mailDetailAtts"].innerHTML;
+ok(lAttsHtml.includes('class="mail-att"') && lAttsHtml.includes("mail-att-name")
+   && lAttsHtml.includes("mail-att-size") && lAttsHtml.includes('data-att="0"')
+   && lAttsHtml.includes('data-att="1"'),
+   `L4 附件区按既有类名渲染（mail-att / mail-att-name / mail-att-size + data-att；实得 ${JSON.stringify(lAttsHtml)}）`);
+
+/* `fmtBytes` 的边界（Task 11 附录二·4）：`null`/非数**留白**、真实 0 是 `0 B`、
+   极大值进 MB、绝不抛错。K10 只看渲染串里「没有 0 B」；这里逐值点名，把两件事分开钉。
+   整张表进一个断言：任一格错了都该红，而「抛错」由 try/catch 转成一条可读的红，
+   不让整个 `runInContext` 把自检炸在半路。 */
+run(`
+  try { globalThis.__lBytes = [fmtBytes(null), fmtBytes(0), fmtBytes(1023), fmtBytes(1024),
+        fmtBytes(1073741824), fmtBytes(NaN), fmtBytes(-1), fmtBytes("2048")]; }
+  catch(e){ globalThis.__lBytes = "SYNTH-THREW:" + e.message; }
+`);
+const L_BYTES = ["", "0 B", "1023 B", "1.0 KB", "1024.0 MB", "", "", ""];
+ok(JSON.stringify(sandbox.__lBytes) === JSON.stringify(L_BYTES),
+   `L5 fmtBytes 边界逐值正确且不抛错（null/0/1023/1024/1GiB/NaN/负/数字串；实得 ${JSON.stringify(sandbox.__lBytes)}）`);
+
+/* 键盘正例：**Space 与 Enter 两个键都要**（K16/K17 钉的是 Enter，这里补 Space）。
+   条件与 K16 同形：`e.target` 就是行自己、`closest("button, a, …")` 为 null。 */
+const lKeydowns = (elListeners["mailList"] || {}).keydown || [];
+let lSpacePrev = 0;
+const lBeforeSpace = fetchLog.length;
+lKeydowns[0]({ key: " ", preventDefault(){ lSpacePrev++; },
+  target: { closest: sel => (sel === "[data-m]" ? { dataset: { m: "1" } } : null) } });
+const lSpaceLog = fetchLog.slice(lBeforeSpace).filter(f => f.url === "/api/mail/detail");
+ok(lSpacePrev === 1 && lSpaceLog.length === 1 && lSpaceLog[0].body.id === "SYNTH-L-ID-1",
+   `L6 行上按 Space 也能打开详情且 preventDefault（与 K16/K17 的 Enter 配对；实得 preventDefault ${lSpacePrev} 次 / ${JSON.stringify(lSpaceLog.map(f => f.body.id))}）`);
+
+/* **缺陷 1 的门禁（本段最重要的一条）**：`e.target` 是行内**后代**、`closest("button, a,
+   input, select, textarea")` 命中、`closest("[data-m]")` **也命中祖先** —— 这正是那一
+   缺陷的形态：少了那行守卫，`preventDefault` 会吞掉按钮的合成 click，同时弹出邮件详情。
+   K18 用的 `closest: () => null` 是**另一个**形态（取不到行 ⇒ 本来就会早退），
+   它在这个缺陷活着的时候照旧绿 —— 故本条的判别对象必须两个 closest 都命中。 */
+const lHijack = ["Enter", " "].map(key => {
+  let prev = 0;
+  const before = fetchLog.length;
+  lKeydowns[0]({ key, preventDefault(){ prev++; },
+    target: { closest: sel => (sel === "button, a, input, select, textarea"
+      ? { dataset: {} } : sel === "[data-m]" ? { dataset: { m: "1" } } : null) } });
+  return { key, prev, added: fetchLog.slice(before).filter(f => f.url === "/api/mail/detail").length };
+});
+ok(lHijack.every(o => o.prev === 0 && o.added === 0),
+   `L7 行内交互元素（写入按钮）自己吃 Enter/Space：不吞键、也不开详情（缺陷 1 的门禁；实得 ${JSON.stringify(lHijack)}）`);
+
+/* 空的 `data-m` 不取行：`Number("")` 是 0，少一道守卫就会把「没有锚」静默说成「第 0 封」。
+   这是 app.js 自己在 `mailRowTarget` 上写明的防御层（`mailRowAttr` 不写非整数索引，
+   故只有在 DOM 被别的东西动过时才触发）—— 变异 `--mutate-kguard` 就是拆掉它。 */
+const lTitleBefore = nodes["mailDetailTitle"].textContent;
+const lBeforeEmpty = fetchLog.length;
+await settle(clickers[0]({ target: {
+  closest: sel => (sel === "[data-m]" ? { dataset: { m: "" } } : null) } }));
+const lEmptyLog = fetchLog.slice(lBeforeEmpty).filter(f => f.url === "/api/mail/detail");
+ok(lEmptyLog.length === 0 && nodes["mailDetailTitle"].textContent === lTitleBefore,
+   `L8 空的 data-m 不取行（守卫挡住 Number("") 是 0；实得 ${lEmptyLog.length} 个详情请求 / 标题未动）`);
+
+/* M：**详情缓存必须属于当前打开的那一封**（Task 10 复审缺陷 1 的门禁）。
+   要构造的是「缓存非空、且属于**另一封**、弹层还**开着**」这一态 —— 只写「加载期无参调用
+   是 no-op」是不够的（那时缓存是 `null`，走的是 `!d` 那条早退，与缺陷完全无关，缺陷活着
+   时照样绿；Task 10 复审点名过这一点）。失败与在途是**两条不同的进入方式**，都要走一遍：
+   失败分支从不写缓存、在途期间也还没写，两种情况下缓存里留的都是**上一封 A**。
+   最后一条是**对照组**（不得过度拦截）：A 成功时无参调必须照旧重渲 A —— 那是 Task 10
+   那个钩子存在的全部理由。变异 `--mutate-kdid` 下 M3/M4 必须红、M1 必须仍绿。 */
+const M_DETAIL_A = { ok: true, detail: { id: "SYNTH-M-ID-A",
+  body: "A-BODY https://example.invalid/a",
+  attachments: [{ index: 0, name: "SYNTH-M-ATT-A.pdf", size: 1536 }] } };
+detailStub.reset();
+run(`closeMailDetail();`);                       // 起点干净：`id` 归零
+detailStub.payload = M_DETAIL_A;
+await settle(run(`openMailDetail({ id: "SYNTH-M-ID-A" });`));
+ok(nodes["mailDetailBody"].innerHTML.includes("A-BODY")
+   && nodes["mailDetailAtts"].innerHTML.includes("SYNTH-M-ATT-A.pdf"),
+   `M0 前提：A 打开成功 ⇒ 它的正文与附件清单都在场（缓存 = A；实得 ${JSON.stringify(nodes["mailDetailBody"].innerHTML)}）`);
+
+/* 对照组先把 DOM 抹成哨兵再调无参入口：否则「A 还在屏幕上」是**平凡成立**的
+   （上一次渲染留下的），这条断言就成了不承重的摆设 —— 本仓吃过「探针自己说谎」的亏。 */
+run(`document.getElementById("mailDetailBody").innerHTML = "SYNTH-M-WIPED";
+     document.getElementById("mailDetailAtts").innerHTML = "SYNTH-M-WIPED";`);
+run(`renderMailDetail();`);
+ok(nodes["mailDetailBody"].innerHTML.includes("A-BODY")
+   && !nodes["mailDetailBody"].innerHTML.includes("SYNTH-M-WIPED")
+   && nodes["mailDetailAtts"].innerHTML.includes("SYNTH-M-ATT-A.pdf"),
+   `M1 对照组（不得过度拦截）：无参调把 A 的正文与附件**照旧重渲**（实得 ${JSON.stringify(nodes["mailDetailBody"].innerHTML)}）`);
+
+/* 进入方式①：B 打不开（`{ok:false}`）。裁定 A 要的那条失败路径 —— brief 的 K 段桩
+   只有「成功」与「挂起」两种，没有它。 */
+detailStub.mode = "fail";
+run(`closeMailDetail();`);
+await settle(run(`openMailDetail({ id: "SYNTH-M-ID-B" });`));
+const mErrBody = nodes["mailDetailBody"].innerHTML;
+ok(mErrBody.includes("SYNTH-DETAIL-ERR") && nodes["mailDetail"].hidden === false,
+   `M2 前提：B 打不开时正文区是错误卡、弹层仍**开着**（实得 ${JSON.stringify(mErrBody)}）`);
+run(`renderMailDetail();`);
+ok(nodes["mailDetailBody"].innerHTML === mErrBody
+   && !nodes["mailDetailBody"].innerHTML.includes("A-BODY")
+   && !nodes["mailDetailAtts"].innerHTML.includes("SYNTH-M-ATT-A.pdf"),
+   `M3 失败路径：无参调**不许**把上一封（A）的内容画上来，错误卡逐字还在（实得 ${JSON.stringify(nodes["mailDetailBody"].innerHTML)}）`);
+
+/* 进入方式②：C 的响应**挂起不落地**（deferred，不 resolve）—— 弹层开着、缓存仍是 A。 */
+detailStub.mode = "pending";
+run(`closeMailDetail();`);
+run(`openMailDetail({ id: "SYNTH-M-ID-C" });`);   // 刻意不 await：这一态就是「在途」
+const mFlightBody = nodes["mailDetailBody"].innerHTML;
+const mFlightAtts = nodes["mailDetailAtts"].innerHTML;
+run(`renderMailDetail();`);
+ok(nodes["mailDetailBody"].innerHTML === mFlightBody
+   && !nodes["mailDetailBody"].innerHTML.includes("A-BODY")
+   && nodes["mailDetailAtts"].innerHTML === mFlightAtts
+   && !nodes["mailDetailAtts"].innerHTML.includes("SYNTH-M-ATT-A.pdf"),
+   `M4 在途路径：无参调**不许**把上一封（A）的内容画上来（弹层开着、响应未落地；实得 ${JSON.stringify(nodes["mailDetailBody"].innerHTML)}）`);
 
 console.log(fails ? `\n✗ ${fails} 条未通过（共 ${total} 条断言）` : `\n✓ 全部通过（共 ${total} 条断言）`);
 process.exit(fails ? 1 : 0);
