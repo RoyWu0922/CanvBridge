@@ -231,6 +231,32 @@ def select_scope(items: list[dict], now: datetime,
     return out
 
 
+#: 排序哨兵：`_internaldate` 不可用（缺失 / `None` / naive / 非 datetime）时当「最旧」。
+#: 方向与 `select_scope` 的 fail-open 一致 —— 宁可排得不准，也不丢件、也不抛穿整次抓取。
+_OLDEST = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _sort_key(it: dict) -> datetime:
+    ts = it.get("_internaldate")
+    if isinstance(ts, datetime) and ts.tzinfo is not None:
+        return ts
+    return _OLDEST
+
+
+def sort_newest_first(items: list[dict]) -> list[dict]:
+    """按**到达时刻**（内部键 `_internaldate`）降序 —— 新→旧（spec §4.2）。
+
+    排序键与 `select_scope` 的窗口键**是同一把**（INTERNALDATE）。若一个用
+    `_internaldate` 筛、另一个用 `received` 排，就会出现「筛出来的范围与看到的顺序
+    对不上」的**同名改义残留**：`received` 是 `Date:` 头，即**原始发信时间**，
+    转发件上它可能很旧，按它排会把刚收到的旧邮件排到最底下。
+
+    不可用的值按 `_OLDEST` 处理 ⇒ 排在最后；`sorted` 稳定 ⇒ 同键条目保持输入相对
+    顺序。**返回新列表，不改动入参。**
+    """
+    return sorted(items, key=_sort_key, reverse=True)
+
+
 # ---------------------------------------------------------------------------
 # I/O 层
 # ---------------------------------------------------------------------------
@@ -369,7 +395,7 @@ def _do_list(days: int) -> list[dict]:
             if n:
                 time.sleep(_THROTTLE)      # 批次之间留间隔（全局约束）
             items.extend(_fetch_headers(conn, chunk))
-        kept = select_scope(items, datetime.now(timezone.utc), days)
+        kept = sort_newest_first(select_scope(items, datetime.now(timezone.utc), days))
         # 剥掉内部键 `_internaldate`：对外契约恰好四个键（spec §4）
         return [{k: v for k, v in it.items() if k != "_internaldate"} for it in kept]
     finally:

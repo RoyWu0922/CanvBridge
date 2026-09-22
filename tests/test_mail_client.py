@@ -19,9 +19,13 @@ class _FakeIMAP:
     """替身，记录**发出的每一条命令**。绝不真连网（netguard 兜底）。"""
 
     def __init__(self, *, uidvalidity=b"7", headers=None, login_err=None,
-                 untagged=None, status_reply=("OK", [b'"INBOX" (UIDVALIDITY 12345)'])):
+                 untagged=None, status_reply=("OK", [b'"INBOX" (UIDVALIDITY 12345)']),
+                 internaldates=None):
         self.uidvalidity = uidvalidity
         self.headers = headers or {}     # {uid_bytes: raw_header_bytes}
+        #: {uid_bytes: INTERNALDATE bytes}；缺省一律用模块级 _INTERNALDATE。
+        #: 顺序用例需要**逐封不同**的到达时刻，故留此口子。
+        self.internaldates = internaldates or {}
         self.login_err = login_err
         self.status_reply = status_reply
         self.sent = []
@@ -54,7 +58,8 @@ class _FakeIMAP:
                 if u in self.headers:
                     out.append((b'1 (UID %s INTERNALDATE "%s" '
                                 b'BODY[HEADER.FIELDS (...)] {%d}'
-                                % (u, _INTERNALDATE, len(self.headers[u])),
+                                % (u, self.internaldates.get(u, _INTERNALDATE),
+                                   len(self.headers[u])),
                                 self.headers[u]))
             return ("OK", out)
         return ("OK", [b""])
@@ -215,10 +220,14 @@ def test_list_mail_prefers_date_header_over_internaldate(monkeypatch):
 
 
 def test_do_list_applies_select_scope(monkeypatch):
-    """_do_list 真的调用了 select_scope，参数正确，并**剥掉内部键后**原样返回它的结果。
+    """_do_list 真的调用了 select_scope，参数正确，并剥掉内部键后返回它的结果。
 
-    （其余 I/O 用例把 select_scope 换成了恒等函数，所以这一条是唯一
-    「接线没断」的证据 —— 删掉 `return select_scope(...)` 只有它会红。）
+    返回前还会过一遍 `sort_newest_first`；本用例两封 INTERNALDATE **相同**，
+    稳定排序下仍是输入序，所以下面那条顺序断言不受排序影响。
+
+    （其余 I/O 用例把 select_scope 换成了恒等函数。删掉 `return select_scope(...)`
+    时本用例会红；`test_do_list_returns_newest_first` 也覆盖同一根接线，
+    故它不再是唯一一条证据。）
 
     spy **原样返回收到的条目**（带着 `_internaldate`），于是这条同时钉住
     `_do_list` 的剥离：忘了剥 ⇒ 末两条断言红。`test_header_item_shape_exactly_four_keys`
@@ -250,6 +259,70 @@ def test_do_list_applies_select_scope(monkeypatch):
         "对外契约恰好四个键 —— _internaldate 是内部键，_do_list 返回前必须剥掉"
     assert all("_internaldate" not in it for it in out)
     assert [it["id"] for it in out] == ["1", "2"]
+
+
+# ============ 显示顺序：新→旧（spec §4.2）============
+
+def _utc(day: int) -> datetime:
+    """顺序用例用的 aware 时刻：同月不同日。"""
+    return datetime(2026, 9, day, 8, 0, tzinfo=timezone.utc)
+
+
+def _seq(*pairs):
+    """顺序用例的夹具：`(id, _internaldate)` 逐条给，值原样放进条目（含 None/naive）。"""
+    return [{"id": i, "_internaldate": d} for i, d in pairs]
+
+
+def test_sort_newest_first_orders_desc():
+    """后收到的不许排在前收到的后面。
+
+    输入刻意不按序（15/20/18）：恒等函数下得到的是 ["a","b","c"]，与本用例
+    期望的 ["b","c","a"] 不同 ⇒ 这个用例对「根本没排」是**红**的。
+    """
+    out = mail_client.sort_newest_first(
+        _seq(("a", _utc(15)), ("b", _utc(20)), ("c", _utc(18))))
+    assert [it["id"] for it in out] == ["b", "c", "a"]
+
+
+def test_sort_newest_first_keeps_unusable_last_without_dropping():
+    """到达时刻缺失 / `None` / naive：**保留、不抛**，一律当最旧排在最后。
+
+    三种错都咬：① 直接拿 `None` 比大小 ⇒ `TypeError`；
+    ② 把不可用条目过滤掉 ⇒ 顺序断言红（会少一条）；
+    ③ 排序不稳定 ⇒ 末三条的相对顺序断言红。
+    """
+    items = _seq(("none", None), ("oldest", _utc(18)), ("naive", datetime(2026, 9, 21, 8, 0)))
+    items.append({"id": "missing"})               # 连键都没有
+    out = mail_client.sort_newest_first(items)
+    assert [it["id"] for it in out] == ["oldest", "none", "naive", "missing"]
+
+
+def test_sort_newest_first_is_stable_and_does_not_mutate():
+    """同一时刻的两条保持输入相对顺序；且**不改动入参**。"""
+    items = _seq(("first", _utc(18)), ("second", _utc(18)))
+    out = mail_client.sort_newest_first(items)
+    assert [it["id"] for it in out] == ["first", "second"]
+    assert [it["id"] for it in items] == ["first", "second"], "入参被就地改了"
+
+
+def test_do_list_returns_newest_first(monkeypatch):
+    """接线：`_do_list` 真的调用了排序 —— 删掉那一行，本用例红。
+
+    两封的 `Date:` 头**相同**（`_hdr()` 默认）而 INTERNALDATE 不同，所以本用例
+    顺带钉住「排序键是 INTERNALDATE，不是 `received`」：按 `received` 排会留下
+    输入顺序 ["1","2"] ⇒ 红。
+
+    `days=3650` 是为了**避开时间炸弹** —— 夹具的 INTERNALDATE 写死，若走真实时钟的
+    7 天窗口，过了那天用例自己就红了（本文件 `_install` 的 docstring 已就此警告过）。
+    窗口开到足够大，这里测的就只剩顺序。
+    """
+    fake = _FakeIMAP(
+        headers={b"1": _hdr(), b"2": _hdr()},
+        internaldates={b"1": b"15-Sep-2026 20:00:00 +0000",
+                       b"2": b"20-Sep-2026 20:00:00 +0000"})
+    _install(monkeypatch, fake, scope=mail_client.select_scope)   # 真的 select_scope
+    out = mail_client.list_mail(3650)
+    assert [it["id"] for it in out] == ["2", "1"], "旧的在最前 —— 排序没接上"
 
 
 def test_list_mail_returns_empty_without_fetching(monkeypatch):
