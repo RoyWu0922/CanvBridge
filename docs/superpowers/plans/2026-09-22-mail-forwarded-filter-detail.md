@@ -1017,6 +1017,7 @@ PY
     ("a/b.txt", "a_b.txt"),
     ("a\x00b.txt", "ab.txt"),
     ("  .hidden.  ", "hidden"),
+    (" . . ", "attachment-3"),
     ("", "attachment-3"),
     ("x" * 300, "x" * 200),
 ])
@@ -1028,6 +1029,14 @@ def test_safe_attachment_name(raw, expect):
     `..` 随后各自被换成 `_`（连同夹在中间的 `_`），最终是 **`____etc_passwd`**（4 个下划线）。
     写成 `".._.._etc_passwd"` 会与**本用例第二条断言** `".." not in out` 自相矛盾 ——
     计划初稿就是这么错的，实跑 7 例抓出来的。
+
+    ⚠️ **本表全是 ASCII，所以它绑不住 `_att_name` 的 RFC 2047 兜底** ——
+    `get_filename()` 对 ASCII 名字本来就可读，兜底那条路一次都走不到。
+    兜底的绑定在 `test_att_name_decodes_rfc2047_filename` 上，别以为这张表覆盖了它。
+
+    ⚠️ `" . . "` → `attachment-3` 那一例钉的是「`.strip().strip(".")` 会把夹在点之间的
+    空白**重新露到两端**」：旧写法下结果是 `" "`（一个空格），既不算空、又留着首尾空白，
+    与 docstring 的「去掉首尾空白与点」不符（复审 Minor 4，实跑 `" . . "` → `' '` 抓出的）。
     """
     out = mail_client.safe_attachment_name(raw, 3)
     assert out == expect
@@ -1050,8 +1059,18 @@ def test_att_name_survives_get_filename_raising():
 
 
 def test_part_size_is_none_when_undecodable():
-    """解不出就是 `None`，**绝不编造 0**（spec §4）。"""
+    """解不出就是 `None`，**绝不编造 0**（spec §4）。
+
+    ⚠️ 桩**必须**同时给出 `get_content_type()`：`_part_bytes` 第一句就调它，
+    少了它抛的是 `AttributeError`（被同一个 `except` 吞掉），本用例就变成「钉住了一个
+    别的失败」—— 名字说的解码失败一次都没走到，还会在一次把 `get_content_type()`
+    挪出 `try` 的正当重构上无故变红（复审 Minor 5；实测该桩收到的唯一调用就是
+    `get_content_type`，`get_payload` 根本没被调到）。
+    """
     class _Bad:
+        def get_content_type(self):
+            return "application/octet-stream"
+
         def get_payload(self, decode=False):
             raise ValueError("boom")
     assert mail_client._part_size(_Bad()) is None
@@ -1085,12 +1104,83 @@ def test_fetch_attachment_agrees_with_detail_index(monkeypatch):
 
 
 def test_fetch_attachment_rejects_bad_index(monkeypatch):
-    """越界 / 负数 / 非 int（含 bool）一律抛，绝不「就近取一个」。"""
+    """越界 / 负数 / 非 int 一律抛，绝不「就近取一个」。
+
+    **`True` 在本用例里是被「越界」顺带挡住的，不是 `bool` 守卫挡住的** ——
+    这是**单附件**邮件，`True == 1` 恰好越界。所以本用例**不许**声称它钉住了
+    `isinstance(index, bool)`：把守卫删掉，这里照样绿（变异实测 M5，brief 初稿的
+    docstring 写「（含 bool）」正是**声明强于断言**）。真正钉住守卫的是紧随其后的
+    `test_fetch_attachment_rejects_bool_index_even_when_in_range`（两个附件，
+    `True`/`False` 都落在范围内）。**声明已改准，别再改回「（含 bool）」。**
+    """
     _detail_install(monkeypatch, {b"1": _raw_mail([(_att_head(b"a.bin"), b"AAAA")])})
     mail_client.list_mail(7)
     for bad in (-1, 1, 99, "0", None, True, 0.0):
         with pytest.raises(mail_client.MailError):
             mail_client.fetch_attachment({"id": "1"}, bad)
+
+
+def test_fetch_attachment_rejects_bool_index_even_when_in_range(monkeypatch):
+    """`bool` 必须**显式**排掉，不能靠越界兜住（M5 的补钉，见上一条 docstring）。
+
+    两个附件 ⇒ `True`(=1) 与 `False`(=0) **都在范围内**：少了守卫时 `True` 会
+    **静默取回第 1 个附件**，正是要禁的「就近取一个」。前面的 0/1 是**正例锚**
+    （否则下面的 `raises` 可能只是「一直抛」）。
+    """
+    raw = _raw_mail([(_att_head(b"a.bin"), b"AAAA"), (_att_head(b"b.bin"), b"BB")])
+    _detail_install(monkeypatch, {b"1": raw})
+    mail_client.list_mail(7)
+    assert mail_client.fetch_attachment({"id": "1"}, 0)[0] == "a.bin"
+    assert mail_client.fetch_attachment({"id": "1"}, 1)[0] == "b.bin"
+    for bad in (True, False):
+        with pytest.raises(mail_client.MailError):
+            mail_client.fetch_attachment({"id": "1"}, bad)
+
+
+def test_att_name_decodes_rfc2047_filename(monkeypatch):
+    """RFC 2047 编码字的附件名必须解成人话 —— 这是 `_att_name` 里 `decode_mime_header`
+    兜底**唯一的理由**（M6 的补钉）。
+
+    上面那张参数化表**全是纯 ASCII**，`get_filename()` 对它们给的就是可读名字 ⇒
+    兜底那条路**一次都没走到**，删掉兜底整节照绿。所以表里的结论必须在**这里**绑：
+    钉的是**生产路径**（`message_from_bytes` 解出的 part → `_att_name`）。
+    """
+    raw = _raw_mail([(_att_head(b"=?utf-8?B?5L2c5LiaLnBkZg==?="), b"AAAA")])
+    _detail_install(monkeypatch, {b"1": raw})
+    mail_client.list_mail(7)
+
+    # 前提锚：先证明这份输入**确实**落在兜底那一格（若某天 stdlib 自己会解编码字，
+    # 兜底成死代码，本用例应红在**这里**，而不是红在名字上让人误以为是回归）
+    part = mail_client._attachment_parts(email.message_from_bytes(raw))[0]
+    assert part.get_filename() == "=?utf-8?B?5L2c5LiaLnBkZg==?=", \
+        "get_filename() 已经自己能解编码字了 —— Step 1 表里 rfc2047 那一格的前提变了"
+
+    d = mail_client.fetch_detail({"id": "1"})
+    assert [a["name"] for a in d["attachments"]] == ["作业.pdf"]
+    assert mail_client.fetch_attachment({"id": "1"}, 0)[0] == "作业.pdf"
+
+
+def test_fetch_attachment_raises_when_fetch_fails(monkeypatch):
+    """超限与「解不出字节」两条失败分支必须在**调用点**上钉住（复审 I1）。
+
+    `_reject_if_too_big` 与 `_part_size` 各自的纯函数用例不能替代这两条：
+    把 `fetch_attachment` 里那两个 `raise` 删掉，纯函数用例**照样绿** ——
+    少了下半支，用户看到的会是 `TypeError: object of type 'NoneType' has no len()`。
+    spec §4 的 20 MiB 上限是本任务的门面要求，它的执行点不该没有绑定。
+    """
+    raw = _raw_mail([(_att_head(b"a.bin"), b"AAAA")])
+    _detail_install(monkeypatch, {b"1": raw})
+    mail_client.list_mail(7)
+
+    # 路径一：超限（`MAX_ATTACHMENT_BYTES` 是**调用时**读的模块全局，可以 monkeypatch 小）
+    monkeypatch.setattr(mail_client, "MAX_ATTACHMENT_BYTES", 2)
+    with pytest.raises(mail_client.MailError, match="超过"):
+        mail_client.fetch_attachment({"id": "1"}, 0)
+
+    # 路径二：字节解不出（`_part_bytes` 给 None）
+    monkeypatch.setattr(mail_client, "_part_bytes", lambda part: None)
+    with pytest.raises(mail_client.MailError):
+        mail_client.fetch_attachment({"id": "1"}, 0)
 
 
 def test_fetch_attachment_raises_when_uid_is_gone(monkeypatch):
@@ -1151,8 +1241,8 @@ def test_detail_and_attachment_paths_are_readonly(monkeypatch):
     """详情与附件取回：全程 PEEK、无 STORE/COPY/MOVE/EXPUNGE。
 
     **正例锚**（否定式断言的老毛病）：「一条命令都没发」时下面几条同时恒真，
-    所以先证明这次运行真走到了取件那段路。两次调用各连一次（不缓存，spec §4），
-    故 FETCH 至少两条 —— 一条 list_mail 的、两条取整封的。
+    所以先证明这次运行真走到了取件那段路。三次调用各连一次（不缓存，spec §4），
+    故 FETCH **三条** —— 一条 list_mail 取头、两条取整封（详情一条、附件一条）。
     """
     raw = _raw_mail([(_att_head(b"a.bin"), b"AAAA")])
     fake = _detail_install(monkeypatch, {b"1": raw})
@@ -1160,7 +1250,11 @@ def test_detail_and_attachment_paths_are_readonly(monkeypatch):
     mail_client.fetch_detail({"id": "1"})
     mail_client.fetch_attachment({"id": "1"}, 0)
     fetches = [c for c in fake.sent if c[0] == "uid" and c[1] == "FETCH"]
-    assert len(fetches) >= 2, f"取件那两条路没真发 FETCH，下面的断言是空转的：{fetches}"
+    # 正例锚要**精确**：`>= 2` 会让「少发一条取件」的回归照样绿（复审 Minor 6）。
+    # 确切条数由实跑定 —— 上面 docstring 数的是 1 条 list_mail + 2 条取整封 = 3，
+    # 与紧随其后的 `select == 3`（三次调用各连一次）自洽。若实跑不是 3，
+    # 要改的是 docstring 里那句「至少两条」，**不是**这个数。
+    assert len(fetches) == 3, f"取件那几条路没真发 FETCH，下面的断言是空转的：{fetches}"
     assert fake.sent.count(("select", "INBOX", True)) == 3, \
         "三次调用各连一次，且每次都必须 EXAMINE（readonly=True）"
     for c in fetches:
@@ -1202,7 +1296,10 @@ def safe_attachment_name(raw: str, index: int) -> str:
     name = name.replace("\x00", "")
     name = name.replace("/", "_").replace("\\", "_")
     name = name.replace("..", "_")
-    name = name.strip().strip(".")
+    # 一次 strip 掉「空白与点」的**字符集合**，不要写 `.strip().strip(".")`：
+    # 那两下会把夹在点之间的空白重新露到两端（`" . . "` → `" "`，实测），
+    # 于是既不算空、又留着首尾空白，与上面 docstring 的承诺不符。
+    name = name.strip(" .")
     if not name:
         name = f"attachment-{index}"
     return name[:200]
