@@ -1149,7 +1149,7 @@ def test_fetch_detail_raises_when_fetch_fails(monkeypatch):
 def test_logout_error_does_not_escape_or_mask(monkeypatch):
     """登出抛异常时：**不许**冒出 `fetch_detail`，也**不许**盖住真正的错。
 
-    这条钉的是 `_logout_quietly`（`backend/mail_client.py:320`）存在的**唯一理由** ——
+    这条钉的是 `_logout_quietly`（`backend/mail_client.py:324`）存在的**唯一理由** ——
     它的 docstring 逐字：「登出，异常吞掉 —— **不能让它盖住真正的错**」。
     **变异已验证它承重**（实现者实测 M10）：把这个调用换回裸 `conn.logout()`，
     形状一立刻红 —— 登出的异常会直接冒出 `fetch_detail`。
