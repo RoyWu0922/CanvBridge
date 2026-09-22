@@ -4,6 +4,7 @@ import imaplib
 import re
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+from pathlib import Path
 
 import pytest
 
@@ -1261,10 +1262,25 @@ def test_reject_if_too_big_boundary_and_message():
 
 
 def test_fetch_attachment_returns_name_and_bytes(monkeypatch):
+    """三个元素逐个钉死：名字、字节、**这封邮件自己的 `received`**。
+
+    第三个元素是 Task 6 追加的落盘日期来源。**必须逐字断言**，否则它就是个
+    「声明强于断言」的装饰字段：`_raw_mail` 的 `Date:` 头是
+    `Thu, 17 Sep 2026 16:31:00 +0800`（`_hdr()` 给的是同一个时刻）⇒
+    `_iso(received_dt(msg))` = `2026-09-17T08:31:00+00:00`。
+    `save_attachment` 的日期目录正是靠它：把它喂错、或恒返回 `""`，
+    落盘都会**静默**退回「当天 UTC」，而七条落盘用例各有各的 fake、抓不到这个。
+
+    反面（`Date:` 解不出 ⇒ `""`）**没有**单独用例：本轮 brief 的修订明确限定
+    「不得新增测试函数」（条数 7 与全量 590 要维持有效）。那条路的判据落在
+    `_received_date` 自己的用例上（`falls_back_to_today_on_bad_date` 喂坏串），
+    以及 `_iso(None) == ""` 的既有覆盖。
+    """
     raw = _raw_mail([(_att_head(b"a.bin"), b"AAAA"), (_att_head(b"b.bin"), b"BB")])
     _detail_install(monkeypatch, {b"1": raw})
     mail_client.list_mail(7)
-    assert mail_client.fetch_attachment({"id": "1"}, 1) == ("b.bin", b"BB")
+    assert mail_client.fetch_attachment({"id": "1"}, 1) == (
+        "b.bin", b"BB", "2026-09-17T08:31:00+00:00")
 
 
 def test_fetch_attachment_agrees_with_detail_index(monkeypatch):
@@ -1273,7 +1289,7 @@ def test_fetch_attachment_agrees_with_detail_index(monkeypatch):
     _detail_install(monkeypatch, {b"1": raw})
     mail_client.list_mail(7)
     for a in mail_client.fetch_detail({"id": "1"})["attachments"]:
-        name, data = mail_client.fetch_attachment({"id": "1"}, a["index"])
+        name, data, _received = mail_client.fetch_attachment({"id": "1"}, a["index"])
         assert name == a["name"]
         assert len(data) == a["size"]
 
@@ -1381,7 +1397,8 @@ def test_fetch_attachment_logout_error_does_not_escape(monkeypatch):
     raw = _raw_mail([(_att_head(b"a.bin"), b"AAAA")])
     _install(monkeypatch, _BadLogout(headers={b"1": _hdr()}, bodies={b"1": raw}))
     mail_client.list_mail(7)
-    assert mail_client.fetch_attachment({"id": "1"}, 0) == ("a.bin", b"AAAA")
+    assert mail_client.fetch_attachment({"id": "1"}, 0) == (
+        "a.bin", b"AAAA", "2026-09-17T08:31:00+00:00")
 
 
 def test_forwarded_message_attachment_round_trips(monkeypatch):
@@ -1401,7 +1418,7 @@ def test_forwarded_message_attachment_round_trips(monkeypatch):
     mail_client.list_mail(7)
     d = mail_client.fetch_detail({"id": "1"})
     assert [a["name"] for a in d["attachments"]] == ["fwd.eml"]
-    name, data = mail_client.fetch_attachment({"id": "1"}, 0)
+    name, data, _received = mail_client.fetch_attachment({"id": "1"}, 0)
     assert name == "fwd.eml"
     assert b"inner body" in data, "内嵌那封邮件的正文必须在下载内容里"
     assert len(data) == d["attachments"][0]["size"]
@@ -1440,3 +1457,121 @@ def test_detail_and_attachment_paths_are_readonly(monkeypatch):
     assert bad == [], f"取详情/附件时发了变更命令：{bad}"
     assert not any(str(x).upper().startswith(("STORE", "EXPUNGE"))
                    for c in fake.sent for x in c)
+
+
+# ============ 落盘：目录、不覆盖、锚点（spec §5）============
+
+def _fake_attachment(monkeypatch, name, data, received=""):
+    """把 `fetch_attachment` 换成三元组替身 —— **落盘日期从这里进**，不从 `item` 进。
+
+    生产里 `item` 只是 `{"id": uid}` 句柄（`fetch_detail`/`fetch_attachment`/
+    `save_attachment` 三个函数都只读 `item["id"]`，各自重新解析整封），Task 7 的路由
+    收到的请求体也只有 `{id, index, download_dir}`：`item` 里**没有** `received`，
+    日期必须由 `fetch_attachment` 从**那封邮件自己**的 `Date:` 头带出来（spec §5）。
+    所以本节的日期一律经这个参数注入 —— 写成 `item={"received": ...}` 是在测一条
+    生产里根本不存在的输入路径（那种写法下七条用例会全绿，而线上永远是「当天」）。
+    """
+    monkeypatch.setattr(mail_client, "fetch_attachment",
+                        lambda item, index: (name, data, received))
+
+
+def test_save_attachment_writes_into_school_folder(tmp_path, monkeypatch):
+    _fake_attachment(monkeypatch, "a.bin", b"AAAA", "2026-09-17T08:31:00+00:00")
+    out = mail_client.save_attachment({"id": "1"}, 0, str(tmp_path))
+    assert out == str(tmp_path / "学校邮件" / "2026-09-17_a.bin")
+    assert (tmp_path / "学校邮件" / "2026-09-17_a.bin").read_bytes() == b"AAAA"
+
+
+def test_save_attachment_creates_missing_folder(tmp_path, monkeypatch):
+    """目录不存在则创建 —— 用户填的下载目录里没有「学校邮件」是常态。"""
+    _fake_attachment(monkeypatch, "a.bin", b"x", "")
+    assert not (tmp_path / "学校邮件").exists()
+    mail_client.save_attachment({"id": "1"}, 0, str(tmp_path))
+    assert (tmp_path / "学校邮件").is_dir()
+
+
+def test_save_attachment_never_overwrites(tmp_path, monkeypatch):
+    """同名**绝不覆盖**：第二次落 `-1`，第三次落 `-2`（spec §5）。"""
+    item = {"id": "1"}
+    # 三次的日期必须**同一天**：日期一变，落点就成了另一个名字，
+    # `-1`/`-2` 后缀断言会退化成「三个互不相干的文件」，与「同名不覆盖」无关。
+    _fake_attachment(monkeypatch, "a.bin", b"first", "2026-09-17T08:31:00+00:00")
+    p1 = mail_client.save_attachment(item, 0, str(tmp_path))
+    _fake_attachment(monkeypatch, "a.bin", b"second", "2026-09-17T08:31:00+00:00")
+    p2 = mail_client.save_attachment(item, 0, str(tmp_path))
+    _fake_attachment(monkeypatch, "a.bin", b"third", "2026-09-17T08:31:00+00:00")
+    p3 = mail_client.save_attachment(item, 0, str(tmp_path))
+    assert p1.endswith("2026-09-17_a.bin")
+    assert p2.endswith("2026-09-17_a-1.bin")
+    assert p3.endswith("2026-09-17_a-2.bin")
+    assert Path(p1).read_bytes() == b"first"          # 第一份没被覆盖
+    assert Path(p2).read_bytes() == b"second"
+
+
+def test_save_attachment_uses_utc_date_of_received(tmp_path, monkeypatch):
+    """日期取 `received` 的 **UTC** 日（spec §5；代价见 §9）。
+
+    ⚠️ 输入必须选一个 **UTC 日 ≠ 本地日** 的时刻，否则这条用例**分不出** UTC 与本地。
+    初稿用的是 `2026-09-17T23:30:00+08:00`，**它的本地日与 UTC 日都是 17 号**
+    ⇒ 把 `_received_date` 的 `astimezone(utc)` 去掉、直接 `dt.strftime("%Y-%m-%d")`
+    （= 本地日），这条用例**照绿**（实测：两种实现都得到 `2026-09-17_a.bin`）
+    —— 「声明 UTC 的用例」在那种输入下根本没有在测 UTC。本仓对这类
+    「声明强于断言」的盲区已有多次记录，所以这里换成一个能分开两者的输入。
+    对 +0800 而言**唯一**能分开的是**凌晨**那一侧（晚间两侧相同，实测）：
+    `03:00+08:00` = 前一日 `19:00Z` ⇒ **UTC 日是 16 号、本地日是 17 号**。
+    """
+    _fake_attachment(monkeypatch, "a.bin", b"x", "2026-09-17T03:00:00+08:00")
+    out = mail_client.save_attachment({"id": "1"}, 0, str(tmp_path))
+    assert "2026-09-16_a.bin" in out       # 03:00+08:00 = 前一日 19:00Z ⇒ UTC 日是 16 号
+
+
+def test_save_attachment_falls_back_to_today_on_bad_date(tmp_path, monkeypatch):
+    """`received` 解不出 / 是 naive 时用**当天 UTC**，绝不猜一个日期。
+
+    ⚠️ 每个坏值必须用**各自的子目录**：初稿在同一个 `tmp_path` 里连落三次同名文件，
+    第二、三次会被 `_unique_path` 加上 `-1`/`-2`，而 `f"{today}_a.bin" in out`
+    在 `2026-09-22_a-1.bin` 上**恒假**（实测：`'_a.bin'` 不是 `'_a-1.bin'` 的子串）
+    ⇒ 初稿从第二次迭代起必然红。`-1` 后缀本身是 `never_overwrites` 那条的职责，别在这儿重复测。
+    另：跨 UTC 午夜时 `today` 会在调用前后不同，取**调用前后两个日期都接受**，
+    否则这条用例每天有极小概率无故变红。（naive 那条实测 `tzinfo is None`，
+    正是 `_received_date` 判为「解不出」的依据。）
+    """
+    for i, bad in enumerate(("", "not-a-date", "2026-09-17T08:31:00")):
+        # 替身必须在**循环内**重打：打在循环外的话三轮都带着第一个坏值，
+        # 后两轮的 `bad` 根本没进过被测代码（"2026-09-17T08:31:00" 是 naive，
+        # 它的 tzinfo is None 断言就成了摆设）。
+        _fake_attachment(monkeypatch, "a.bin", b"x", bad)
+        before = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        out = mail_client.save_attachment({"id": "1"}, 0, str(tmp_path / str(i)))
+        after = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        assert any(f"{d}_a.bin" in out for d in {before, after}), out
+
+
+def test_save_attachment_rejects_empty_download_dir(monkeypatch):
+    _fake_attachment(monkeypatch, "a.bin", b"x", "")
+    for bad in ("", "   "):
+        with pytest.raises(mail_client.MailError):
+            mail_client.save_attachment({"id": "1"}, 0, bad)
+
+
+def test_save_attachment_refuses_path_escaping_the_root(tmp_path, monkeypatch):
+    """锚点断言**独立于净化**：即使净化被改坏，落盘前仍要重新确认最终路径在根之内。
+
+    用变异注入一个逃逸名来证明这道守卫不是装饰（净化正常时它永不触发 ——
+    那正是「永不触发的守卫」最容易被后来者当成冗余删掉的原因）。
+
+    ⚠️ 注入名必须是 **四个** `..`，不是两个 —— **实测定死的**，别按直觉改回去：
+    落点被拼成 `f"{日期}_{名}"`，那个 `_` 把第一段 `2026-09-17_..` 变成**普通目录名**
+    （不是父引用），于是它先吃掉一个 `..`：
+      - `../../evil.bin`     ⇒ `<root>/学校邮件/evil.bin` —— **仍在根内**，锚点放行；
+      - `../../../evil.bin`  ⇒ `<root>/evil.bin`        —— **仍在根内**，锚点放行；
+      - `../../../../evil.bin` ⇒ `<root>/../evil.bin`    —— 才真逃出去，锚点抛。
+    初稿写两个 `..` ⇒ 锚点根本不触发 ⇒ 本用例**必然红**；而末尾那句
+    `not (tmp_path.parent / "evil.bin").exists()` 恰好对应四个 `..`
+    —— 作者本意就是四个，只是少写了两个。
+    """
+    monkeypatch.setattr(mail_client, "fetch_attachment",
+                        lambda item, index: ("../../../../evil.bin", b"x", ""))
+    with pytest.raises(mail_client.MailError):
+        mail_client.save_attachment({"id": "1"}, 0, str(tmp_path))
+    assert not (tmp_path.parent / "evil.bin").exists()

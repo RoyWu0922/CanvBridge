@@ -36,6 +36,7 @@ from datetime import datetime, timedelta, timezone
 from email import message_from_bytes
 from email.header import decode_header, make_header
 from email.utils import getaddresses, parseaddr, parsedate_to_datetime
+from pathlib import Path
 
 from backend.canvas_client import strip_html
 
@@ -658,13 +659,21 @@ def fetch_detail(item: dict) -> dict:
     return {"id": uid, "body": body, "attachments": atts}
 
 
-def fetch_attachment(item: dict, index: int) -> tuple[str, bytes]:
-    """取第 `index` 个附件，返回 `(净化后的文件名, 原始字节)`。**BODY.PEEK[]**。
+def fetch_attachment(item: dict, index: int) -> tuple[str, bytes, str]:
+    """取第 `index` 个附件，返回 `(净化后的文件名, 原始字节, 该邮件的 received)`。**BODY.PEEK[]**。
 
     `index` 是 `fetch_detail` 报出的那个（**附件序**，不是 part 序）；越界、
     不是附件、超过 `MAX_ATTACHMENT_BYTES` 都抛 `MailError`。
     **不缓存**：每次下载重连一次、重解一次整封（spec §4）——
     代价是 N 个附件 N 次连接，换来的是进程里不驻留邮件字节。
+
+    第三个元素是**这封邮件自己**的 `received`（`Date:` 头的 UTC ISO，解不出是 `""`），
+    供 `save_attachment` 定目录用（spec §5「该邮件 `received`」）。它**不是**调用方
+    传进来的：`item` 只是个 `{"id": ...}` 句柄（三个函数都只读 `item["id"]`，各自
+    重新解析），路由层拿不到也不该编一个日期。本次解析已经在上面发生，顺手带出去，
+    免得为了一个日期再连一次 IMAP。
+    与 `header_item` 的差别：这里**没有 INTERNALDATE 可退**（`_fetch_raw_chunk` 只回
+    `(uid, bytes)`），`Date:` 头解不出的邮件就是 `""` ⇒ 落盘走「当天 UTC」回退。
     """
     uid = item["id"]
     conn, uidvalidity = _connect()
@@ -676,6 +685,11 @@ def fetch_attachment(item: dict, index: int) -> tuple[str, bytes]:
     if not rows:
         raise MailError(f"没有取到编号为 {uid} 的邮件（它可能已被移走或删除）")
     msg = message_from_bytes(rows[0][1])
+    # 落盘日期**从这封邮件自己取**（spec §5「该邮件 received」）——解析已在这里发生，
+    # 顺手带出去，免得调用方为了一个日期再连一次 IMAP。`_iso(None)` 是 `""`。
+    # 与 `header_item` 的差别：这里**没有 INTERNALDATE 可退**（`_fetch_raw_chunk` 只回
+    # `(uid, bytes)`），`Date:` 头解不出的邮件就是 `""` ⇒ 落盘走「当天 UTC」回退。
+    received = _iso(received_dt(msg))
     parts = _attachment_parts(msg)
     # `bool` 是 `int` 的子类，必须显式排掉（`isinstance(True, int)` 为真）。
     if isinstance(index, bool) or not isinstance(index, int) or not (0 <= index < len(parts)):
@@ -686,7 +700,75 @@ def fetch_attachment(item: dict, index: int) -> tuple[str, bytes]:
     if data is None:
         raise MailError(f"附件内容无法解码，未下载。（{name}）")
     _reject_if_too_big(len(data), name)
-    return name, data
+    return name, data, received
+
+
+#: 落盘子目录名。**固定字面量、不做 i18n** —— 它同时是磁盘路径，
+#: 切界面语言不该把用户的目录挪走（spec §5）。
+SCHOOL_MAIL_FOLDER = "学校邮件"
+
+
+def _received_date(received: str) -> str:
+    """落盘目录用的日期 = `fetch_attachment` 交回的 `received` 的 **UTC** 日期；
+    解不出（`""` / 坏串 / naive）用当天 UTC（spec §5）。
+
+    入参是**那封邮件自己的** `received` 字符串（`_iso` 的产物，见 `fetch_attachment`），
+    **不是**请求里的字段 —— `item` 只是 `{"id": ...}` 句柄，客户端给不出可信日期。
+
+    用 `fromisoformat` 而不是切前 10 个字符：切串会**默默假定** `received` 是 UTC，
+    而 `_iso()` 一旦换了写法（比如带偏移）切出来的就不是日期了。
+    这里显式要求带时区：naive 的一律当「解不出」。
+    """
+    try:
+        dt = datetime.fromisoformat(received or "")
+    except (TypeError, ValueError):
+        dt = None
+    if dt is None or dt.tzinfo is None:
+        dt = datetime.now(timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _unique_path(target: Path) -> Path:
+    """同名绝不覆盖：已存在则退到 `<stem>-1<suffix>`、`-2`…（spec §5）。"""
+    if not target.exists():
+        return target
+    n = 1
+    while True:
+        cand = target.with_name(f"{target.stem}-{n}{target.suffix}")
+        if not cand.exists():
+            return cand
+        n += 1
+
+
+def save_attachment(item: dict, index: int, download_dir: str) -> str:
+    """取第 `index` 个附件并落盘，返回**实际写入的路径**。
+
+    落点 = `<download_dir>/学校邮件/<YYYY-MM-DD>_<净化名>`；同名加 `-1`/`-2` 后缀。
+    日期取**这封邮件自己**的 `received`（`fetch_attachment` 交回的那个，spec §5）——
+    绝不从 `item` 或请求里读：`item` 只是 `{"id": ...}` 句柄，路由层没有可信日期。
+    落盘前最后一道是**锚点**：`resolve()` 后必须仍在 `resolve()` 后的 `download_dir` 之内
+    （照抄 `files_downloader.confine_dest` 的纪律，spec §5）—— 用 `relative_to` 而不是
+    前缀比较，前缀比较会把 `/a/bc` 判成在 `/a/b` 之内。
+    """
+    if not (download_dir or "").strip():
+        raise MailError("没有设置下载目录，无法保存附件")
+    root = Path(download_dir).expanduser()
+    name, data, received = fetch_attachment(item, index)
+    folder = root / SCHOOL_MAIL_FOLDER
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise MailError(f"无法创建下载目录 {folder}：{exc}") from exc
+    target = _unique_path(folder / f"{_received_date(received)}_{name}")
+    try:
+        target.resolve().relative_to(root.resolve())
+    except ValueError:
+        raise MailError("附件名落到了下载目录之外，已停止保存") from None
+    try:
+        target.write_bytes(data)
+    except OSError as exc:
+        raise MailError(f"保存附件失败：{exc}") from exc
+    return str(target)
 
 
 def fetch_bodies(items: list[dict]) -> dict:
