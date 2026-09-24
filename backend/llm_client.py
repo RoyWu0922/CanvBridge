@@ -521,8 +521,8 @@ def extract_todos(base_url: str, api_key: str, model: str,
     `mails` 每项：{index, subject, sender, received, body}。
     返回 {"items": [...], "warnings": [码], "dropped": int}；**整体失败**（取不到 /
     不是 JSON 对象 / `items` 不是数组）时 items 为空且 warnings 有话说。
-    **「绝不静默降级」只担保到这一层** —— 形状坏掉的**单个元素**按 `_normalize_extract`
-    那条「只丢弃、不留痕」的口径静默跳过（确切边界只写在那一个 docstring 里）。
+    **「绝不静默降级」只担保到这一层** —— 形状坏掉的**单个元素**静默跳过
+    （不计入 `dropped`、不报警），确切边界见 `_normalize_extract` 的 docstring。
     """
     if not mails:
         return {"items": [], "warnings": [], "dropped": 0}

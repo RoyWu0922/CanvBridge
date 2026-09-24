@@ -486,12 +486,11 @@ def test_extract_todos_retries_once_then_reports(monkeypatch):
 def test_extract_todos_shape_broken_items_are_declared_silent(monkeypatch):
     """形状坏掉的**元素**静默跳过：不计 `dropped`、不报警。
 
-    这不是「应当如此」的背书，是**当前契约的记录** —— 与 `_normalize_groups` 同一个
-    形状口径：它的 docstring 明写了「其余畸形形状……只丢弃、不留痕」，同一形状另有
-    groups 用例钉着（`items: ["交实验报告"]`）。`_keep_dicts` 的过滤同样静默，但它的
-    docstring **只**写了「只留对象元素」、没承诺留痕 —— 那一条由
+    这不是「应当如此」的背书，是**当前契约的记录**：形状坏掉的元素静默跳过、
+    不计入 `dropped`、不报警。
+    锚分两处：本用例钉 `items` 里的非对象元素；
     `test_extract_todos_non_list_fields_become_empty_arrays` 的 `dropped` / `warnings`
-    断言钉着。
+    断言钉 `_keep_dicts` 过滤掉的那两类（`reminders` / `calendar_events`）。
     对照：越界下标**要**计数报警，见 `test_extract_todos_drops_out_of_range_index` ——
     两者刻意不同，别当成一件事。
     """
