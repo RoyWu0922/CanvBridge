@@ -215,7 +215,7 @@ def test_no_credentials_points_at_settings(monkeypatch):
 
 def test_list_mail_returns_contract_items(monkeypatch):
     _install(monkeypatch, _FakeIMAP(
-        headers={b"1": _hdr(subject="作业", sender="老师 <t@cityu.edu.hk>"),
+        headers={b"1": _hdr(subject="作业", sender="老师 <T@CityU.EDU.HK>"),
                  b"2": _hdr(subject="Announcement")}))
     out = mail_client.list_mail(7)
     by_id = {x["id"]: x for x in out}
