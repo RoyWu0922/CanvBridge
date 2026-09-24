@@ -2218,3 +2218,94 @@ def test_gmail_delete_ok(monkeypatch):
     monkeypatch.setattr(credentials, "delete_gmail", lambda: True)
     body = TestClient(main.app).delete("/api/mail/gmail/credentials").json()
     assert body == {"ok": True}
+
+
+# --- 邮件规则分类 ---
+
+def _mt_mails():
+    return [
+        {"id": "A", "subject": "实验报告", "sender": "李老師",
+         "sender_addr": "li.wei@cityu.edu.hk", "received": "2026-09-17T08:31:00Z"},
+        {"id": "B", "subject": "校历", "sender": "Registry",
+         "sender_addr": "reg@cityu.edu.hk", "received": "2026-09-16T08:31:00Z"},
+    ]
+
+
+def test_mail_classify_labels_by_rules(monkeypatch):
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: _mt_mails())
+    body = TestClient(main.app).post("/api/mail/classify", json={
+        "days": 7,
+        "rules": [{"id": "r1", "name": "李教授", "senders": ["li.wei@cityu.edu.hk"]}]}).json()
+    assert body["ok"] is True
+    assert body["count"] == 2
+    assert body["warnings"] == []
+    # 逐条邮件的键集合：顶层白名单管不到元素，而 `mails` 正是前端的回指表。
+    # 用 `==` 而不是 `<=` —— 子集断言在**少一个键**时照样绿。
+    assert all(set(m) == {"id", "subject", "sender", "sender_addr", "received",
+                          "labels"} for m in body["mails"])
+    assert body["mails"][0]["labels"] == ["r1"]
+    assert body["mails"][1]["labels"] == []
+    assert set(body) == {"ok", "count", "mails", "warnings"}
+
+
+def test_mail_classify_defaults_to_fourteen_days(monkeypatch):
+    """待办跨周，邮件页的 7 天会挡住下周的事。形状必须是 int（见既有 `days` 口径）。"""
+    seen = {}
+    monkeypatch.setattr(mail_client, "list_mail",
+                        lambda days: (seen.setdefault("d", days), [])[1])
+    TestClient(main.app).post("/api/mail/classify", json={}).json()
+    assert seen["d"] == 14
+
+
+def test_mail_classify_only_fetches_bodies_when_a_rule_needs_them(monkeypatch):
+    """默认路径**不碰正文**：30 封要 3 秒（5 封一批、批间 0.5s 节流）。"""
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: _mt_mails())
+    called = []
+    monkeypatch.setattr(mail_client, "fetch_bodies",
+                        lambda items: (called.append(items), {})[1])
+    TestClient(main.app).post("/api/mail/classify", json={
+        "rules": [{"id": "r1", "senders": ["li.wei@cityu.edu.hk"]}]}).json()
+    assert called == []
+    TestClient(main.app).post("/api/mail/classify", json={
+        "rules": [{"id": "r1", "keywords": ["x"], "search_body": True}]}).json()
+    assert len(called) == 1
+
+
+def test_mail_classify_fetches_bodies_for_all_mails_not_only_unmatched(monkeypatch):
+    """**多标签下不能跳过已命中的邮件取正文**：一封已被「李教授」命中的信仍可能再命中
+    一条只在正文出现的关键词规则，跳过即静默漏标签。"""
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: _mt_mails())
+    sent = []
+    monkeypatch.setattr(mail_client, "fetch_bodies",
+                        lambda items: (sent.append([m["id"] for m in items]),
+                                       {"A": "补充：实验报告提交", "B": ""})[1])
+    body = TestClient(main.app).post("/api/mail/classify", json={"rules": [
+        {"id": "r1", "senders": ["li.wei@cityu.edu.hk"]},
+        {"id": "r2", "keywords": ["实验报告"], "search_body": True}]}).json()
+    assert sent == [["A", "B"]]           # 两封都要取，不能只取 B
+    assert set(body["mails"][0]["labels"]) == {"r1", "r2"}
+
+
+def test_mail_classify_passes_rule_warning_codes_through(monkeypatch):
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: [])
+    body = TestClient(main.app).post("/api/mail/classify", json={
+        "rules": [{"id": "r1", "senders": [], "keywords": []}]}).json()
+    assert body["ok"] is True
+    assert body["warnings"] == ["empty_rule"]
+
+
+def test_mail_classify_tolerates_bodyless_request(monkeypatch):
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: [])
+    body = TestClient(main.app).post("/api/mail/classify").json()
+    assert body["ok"] is True
+
+
+def test_mail_classify_failure_is_200_json(monkeypatch):
+    def boom(days):
+        raise mail_client.MailError("邮箱会话已失效")
+    monkeypatch.setattr(mail_client, "list_mail", boom)
+    r = TestClient(main.app).post("/api/mail/classify", json={})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert "邮箱会话已失效" in body["error"]

@@ -14,7 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import (apple_script, banweb, canvas_client, credentials, files_downloader,
-               library_areas, library_client, library_query, llm_client, mail_client)
+               library_areas, library_client, library_query, llm_client, mail_client,
+               mail_rules)
 
 app = FastAPI(title="CanvBridge")
 
@@ -55,6 +56,14 @@ class MailListRequest(BaseModel):
 class MailSummaryRequest(LLMConfig):
     days: int = 7
     language: str = "zh"
+
+
+class MailClassifyRequest(BaseModel):
+    #: 待办跨周，默认 14 天（邮件页默认 7 天，会挡住下周的事）。
+    days: int = 14
+    #: 规则来自前端 localStorage，本端点**不持有**它们。`Any` + 由 mail_rules 收敛：
+    #: 用具体类型会让畸形规则抛 422，而 422 体是合法 JSON、走不到 api() 那条 catch。
+    rules: Any = None
 
 
 class MailDetailRequest(BaseModel):
@@ -1148,3 +1157,27 @@ def mail_summarize(req: MailSummaryRequest):
         return {"ok": True, "mails": mails, **r}
     except Exception as exc:
         return {"ok": False, "reason": phase, "error": str(exc)}
+
+
+@app.post("/api/mail/classify")
+def mail_classify(req: MailClassifyRequest = MailClassifyRequest()):
+    """按用户规则给邮件打标签。**零 AI、零成本、可复现** —— 分类不经模型。
+
+    正文那趟的代价：只要有**任意一条**规则 `search_body` 为真，就给窗口内**所有**
+    邮件取正文。曾考虑「已命中的跳过取正文」——**那是错的**：多标签下，一封已被
+    「李教授」命中的邮件仍可能再命中一条只在正文出现的关键词规则，跳过即**静默漏标签**。
+    所以宁可慢也不漏。**默认关闭**，默认路径不碰正文。
+    """
+    try:
+        mails = mail_client.list_mail(req.days)
+        rules, warnings = mail_rules.validate_rules(req.rules)
+        if mails and any(r["search_body"] for r in rules):
+            bodies = mail_client.fetch_bodies(mails)
+            mails = [{**m, "body": bodies.get(m["id"], "")} for m in mails]
+        labels = mail_rules.label_mails(rules, mails)
+        out = [{"id": m["id"], "subject": m["subject"], "sender": m["sender"],
+                "sender_addr": m["sender_addr"], "received": m["received"],
+                "labels": labels.get(m["id"], [])} for m in mails]
+        return {"ok": True, "count": len(out), "mails": out, "warnings": warnings}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
