@@ -40,7 +40,7 @@
 | `tools/check_mailtodo_frontend.mjs` | **新页自检**：守住「勾选键 = 指纹而非 UID」 | 新建 |
 | `tests/test_mail_rules.py` | 规则引擎用例 | 新建 |
 | `tests/test_mail_client.py` | 契约键用例 | 改（5 处键集合断言 + 3 处名字/文案残留） |
-| `tests/test_main.py` | 两个新端点用例 | 改（追加 + 3 处残留） |
+| `tests/test_main.py` | 两个新端点用例 | 改（追加 + 2 处残留 + 10 处夹具；第 3 处候选经复核无需改） |
 | `tests/test_llm_client.py` | 新归一的用例 | 改（追加） |
 
 **为什么不新开一个前端 js 文件：** 前端是四段 classic script（`shell.js` / `util.js` / `i18n.js` / `app.js`），加载顺序有硬性约束，`i18n.js` 的 `applyLang()` 会经钩子回调 `app.js` 里的渲染函数。加第五个文件要动 `index.html` 的 script 标签与加载序，正是本项目白屏事故的产地。既有每个页面都在 `app.js` 里，照旧。
@@ -169,13 +169,13 @@ Expected: PASS（全文件）—— **前提是 Step 1 那张补正表里的三�
 | `tests/test_mail_client.py:335` | 「对外契约恰好四个键」→ 改「五个键」 |
 | `tests/test_mail_client.py:712` | 旧用例名的 `def` 行本身也要改名 —— 只改 `:309` 与 `:1818` 里的引用会留下一个**指向不存在名字**的引用 |
 | `tests/test_main.py:1817-1819` | 注释里的键序列与**指名引用**的用例名一起改（键序列补 `sender_addr`，用例名换新名） |
-| `tests/test_main.py:2034` | 「响应只有这四个键」→ 改「这五个键」 |
+| `tests/test_main.py:2034` | **不改**（Task 1 实测更正）。该注释属于 `:2032-2038` 那段，描述的是它正下方的信封断言 `assert set(body) == {"ok", "mails", "groups", "warnings"}` —— 顶层恰好 4 键，本任务**不碰**；`sender_addr` 加在**逐条邮件**上（`:2043` 才是它）。把这句改成「五个键」会把一条**真注释改假**。 |
 
 - [ ] **Step 6: 更新 `tests/test_main.py` 里的夹具，让它们继续描述真实契约**
 
 `/api/mail/summarize` 与 `/api/mail/list` 的夹具是 monkeypatch 的裸字典，加键后**不会变红**，但它描述的不再是真实契约 —— 这种「夹具与实现静默分家」正是日后漏键不被发现的产地。
 
-**（pre-flight 实测补正，2026-09-24）** 这类 4 键字面量在 `tests/test_main.py` 里有 **9 处、分属 8 个用例**，不是「两处」：
+**（pre-flight 实测补正，2026-09-24）** 这类 4 键字面量在 `tests/test_main.py` 里有 **10 处、分属 8 个用例**，不是「两处」：
 
 | 用例 | 字面量位置 | 承重与否 |
 |---|---|---|
@@ -188,7 +188,7 @@ Expected: PASS（全文件）—— **前提是 Step 1 那张补正表里的三�
 | `test_mail_summarize_llm_failure_reports_llm_phase` | `:2125` | 描述性 |
 | `test_mail_summarize_missing_body_falls_back_to_empty` | `:2158`、`:2159` | 描述性 |
 
-**9 处全部补 `"sender_addr": ""`**（`:2010` 那处按真实契约补地址亦可）—— 只补「两处」会让另外 7 处继续描述一个已经不存在的契约，而本步骤存在的理由恰恰是消掉这一类。并把 `:2043` 的断言补上该键：
+**10 处全部补 `"sender_addr"`**（`:2010` 那处按真实契约补地址亦可）—— 只补「两处」会让另外 8 处继续描述一个已经不存在的契约，而本步骤存在的理由恰恰是消掉这一类。并把 `:2043` 的断言补上该键：
 
 ```python
     assert all(set(m) == {"id", "subject", "sender", "sender_addr", "received",
