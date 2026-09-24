@@ -56,7 +56,8 @@
 
 **Interfaces:**
 - Consumes: 无（第一个任务）
-- Produces: 邮件条目多一个键 `sender_addr: str` —— 恒为**小写地址**（非显示名），From 缺失时为 `""`。`_CONTRACT_KEYS` 变为 5 元组。**后续所有任务的规则匹配都吃这个键。**
+- Produces: 邮件条目多一个键 `sender_addr: str` —— `parseaddr` 解出的**地址部分**，已小写、已去空白，**不是显示名**；拆不出地址时退回**原文的小写形式**，两者都没有时为 `""`。`_CONTRACT_KEYS` 变为 5 元组。**后续所有任务的规则匹配都吃这个键。**
+  ⚠️ **它不保证含 `@`**（Task 1 复审实测更正，原写「恒为小写地址」是假的）：`From: "Li Wei"` → `"li wei"`、`From: 老师` → `"老师"`。下游**不得**假定 `"@" in sender_addr`，也不得据此做域名后缀提取。好的一面是「按发件人名字匹配」顺带可用。
 
 **背景（为什么必须做）：** `/api/mail/list` 的 `sender` 是**显示名优先、退回地址**（`mail_client.py:90` `sender_name`：`return name or addr`），通常**根本不含邮箱地址**。用户按「教授邮箱」写的规则会一条都匹配不上，且**完全静默**。
 
@@ -95,7 +96,7 @@ def test_header_item_survives_missing_headers():
 
 
 def test_contract_keys_is_exactly_the_five_public_keys():
-    """白名单少一个键 = `_do_list` 在 `:455` 把它丢掉 = 前端永远匹配不上（静默）。
+    """白名单少一个键 = `_do_list` 按它放行时把它丢掉 = 前端永远匹配不上（静默）。
     用集合相等而不是 `in` —— `in` 在**多**键时照绿。"""
     assert set(mail_client._CONTRACT_KEYS) == {
         "id", "subject", "sender", "sender_addr", "received"}
@@ -143,7 +144,9 @@ _CONTRACT_KEYS = ("id", "subject", "sender", "sender_addr", "received")
         "id": uid,
         "subject": decode_mime_header(msg.get("Subject")),
         "sender": sender_name(msg.get("From")),
-        # 恒为**地址**（小写、去空白），供规则匹配用；不是显示名。
+        # 「parseaddr」解出的地址部分（小写、去空白），供规则匹配用；不是显示名。
+        # 但**不保证含「@」**：拆不出地址时退回原文的小写形式（`From: 老师` → `"老师"`），
+        # 所以下游不能假定 `"@" in sender_addr`，也不能据此做域名后缀提取。
         # `parseaddr` 不是新依赖：`sender_name` 内部已在用，`_addr_domain` 是同族先例 ——
         # 这是把「已经解出来又被丢掉」的东西留下。
         "sender_addr": parseaddr(msg.get("From"))[1].strip().lower(),
