@@ -213,7 +213,7 @@ def header_item(uid: str, msg, internaldate: datetime | None = None) -> dict:
         #   `Li Wei <Li.Wei@CityU.EDU.HK>` → "li.wei@cityu.edu.hk"   `Li Wei` → "li"
         #   `"Li Wei"` → "li wei"   `Li:Wei` → "wei"   `a<b>` → "b"
         #   `, Li Wei` → ""   `Li <>` → ""   缺 From 头 → ""
-        # 所以下游**只能按子串匹配**（这是特性：按发件人名字写的规则也能命中），
+        # 所以下游**只能按子串匹配**（可能是非地址值，也可能是空串），
         # 不得假定 `"@" in sender_addr`，也不得据此做域名后缀提取 —— `_addr_domain`
         # 对上面那些非地址值一律静默返回空串，建在它上面的规则会**永不命中**。
         # 另：裸 8-bit 的 From 头会让 `msg.get("From")` 返回 Header 对象，`parseaddr`
