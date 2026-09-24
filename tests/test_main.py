@@ -1807,6 +1807,7 @@ def test_library_search_returns_json_when_the_domain_catalog_raises(monkeypatch)
 def test_mail_list_returns_mails(monkeypatch):
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
         {"id": "A", "subject": "作业", "sender": "李老師",
+         "sender_addr": "t@cityu.edu.hk",
          "received": "2026-09-17T08:31:00Z"}])
     body = TestClient(main.app).post("/api/mail/list", json={"days": 7}).json()
     assert body["ok"] is True
@@ -1814,9 +1815,9 @@ def test_mail_list_returns_mails(monkeypatch):
     assert body["mails"][0]["subject"] == "作业"
     # 响应键白名单。原先这里是 `assert "token" not in json.dumps(body)` ——**真空**：
     # mail dict 由 mail_client.header_item 构造，对外契约恰好
-    # id/subject/sender/received 四个键（字段级钉子见
-    # tests/test_mail_client.py 的 test_header_item_shape_exactly_four_keys，它用
-    # 集合相等钉死这四个键）；而新取信层里**根本不存在 bearer token** —— Gmail
+    # id/subject/sender/sender_addr/received 五个键（字段级钉子见
+    # tests/test_mail_client.py 的 test_header_item_shape_exactly_five_keys，它用
+    # 集合相等钉死这五个键）；而新取信层里**根本不存在 bearer token** —— Gmail
     # 只读三件套走 IMAP，凭据存在钥匙串、只在 credentials.get_gmail 里取用，
     # 从不落进任何 dict。所以那句「响应里没有 token」
     # 恒真 —— 它看着像在守 spec §9「token 绝不回传前端」，实际守的是个永不出现
@@ -1841,6 +1842,7 @@ def test_mail_list_tolerates_bodyless_request(monkeypatch):
     """无 body 的 POST 也要走通 —— 前端 api() 在 body 为 undefined 时不发 body。"""
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
         {"id": "A", "subject": "作业", "sender": "李老師",
+         "sender_addr": "t@cityu.edu.hk",
          "received": "2026-09-17T08:31:00Z"}])
     r = TestClient(main.app).post("/api/mail/list")   # 完全不带 body
     assert r.status_code == 200
@@ -2008,6 +2010,7 @@ def test_mail_attachment_failure_is_200_json(monkeypatch):
 def test_mail_summarize_joins_bodies_and_groups(monkeypatch):
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
         {"id": "A", "subject": "作业", "sender": "李老師",
+         "sender_addr": "t@cityu.edu.hk",
          "received": "2026-09-17T08:31:00Z"}])
     monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "交报告"})
     seen = {}
@@ -2040,7 +2043,8 @@ def test_mail_summarize_joins_bodies_and_groups(monkeypatch):
     # 「这个字段该不该出现」，而不是让它静默通过。
     # （原先用 `<=` 是子集断言，正是 Task 5 删掉 is_read 时没有任何用例变红的**原因**
     # —— 那是**少键**。声明强于断言，白名单得是相等而不是包含。）
-    assert all(set(m) == {"id", "subject", "sender", "received", "index", "body"}
+    assert all(set(m) == {"id", "subject", "sender", "sender_addr", "received",
+                          "index", "body"}
                for m in body["mails"])
 
 
@@ -2055,8 +2059,8 @@ def test_mail_summarize_indexes_are_contiguous(monkeypatch):
     index/body 之后、返回之前的唯一观察点。
     """
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
-        {"id": "A", "subject": "甲", "sender": "", "received": ""},
-        {"id": "B", "subject": "乙", "sender": "", "received": ""}])
+        {"id": "A", "subject": "甲", "sender": "", "sender_addr": "", "received": ""},
+        {"id": "B", "subject": "乙", "sender": "", "sender_addr": "", "received": ""}])
     monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "a", "B": "b"})
     seen = {}
 
@@ -2078,7 +2082,7 @@ def test_mail_summarize_indexes_are_contiguous(monkeypatch):
 def test_mail_summarize_returns_mails_too(monkeypatch):
     """前端要把 AI 结果的 mail_index 对回原邮件 → 响应必须同时带上 mails。"""
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
-        {"id": "A", "subject": "作业", "sender": "", "received": ""}])
+        {"id": "A", "subject": "作业", "sender": "", "sender_addr": "", "received": ""}])
     monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "b"})
     monkeypatch.setattr(llm_client, "summarize_mail",
                         lambda *a, **k: {"groups": [], "warnings": []})
@@ -2108,7 +2112,7 @@ def test_mail_summarize_fetch_bodies_failure_reports_mail_phase(monkeypatch):
     用户会被指去查 API key —— 方向是错的。
     """
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
-        {"id": "A", "subject": "作业", "sender": "", "received": ""}])
+        {"id": "A", "subject": "作业", "sender": "", "sender_addr": "", "received": ""}])
 
     def boom(items):
         raise mail_client.MailError("邮箱会话已失效")
@@ -2122,7 +2126,7 @@ def test_mail_summarize_fetch_bodies_failure_reports_mail_phase(monkeypatch):
 def test_mail_summarize_llm_failure_reports_llm_phase(monkeypatch):
     """AI 阶段炸了 → reason == "llm"：前端据此显示「AI 总结失败」，而不是「加载失败」。"""
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
-        {"id": "A", "subject": "作业", "sender": "", "received": ""}])
+        {"id": "A", "subject": "作业", "sender": "", "sender_addr": "", "received": ""}])
     monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "b"})
 
     def boom(*a, **k):
@@ -2155,8 +2159,8 @@ def test_mail_summarize_missing_body_falls_back_to_empty(monkeypatch):
     被端点的宽 except 吞掉），其余邮件的摘要也随之全丢。
     """
     monkeypatch.setattr(mail_client, "list_mail", lambda days: [
-        {"id": "A", "subject": "甲", "sender": "", "received": ""},
-        {"id": "B", "subject": "乙", "sender": "", "received": ""}])
+        {"id": "A", "subject": "甲", "sender": "", "sender_addr": "", "received": ""},
+        {"id": "B", "subject": "乙", "sender": "", "sender_addr": "", "received": ""}])
     monkeypatch.setattr(mail_client, "fetch_bodies",
                         lambda items: {"A": "a"})      # B 没取到正文
     monkeypatch.setattr(llm_client, "summarize_mail",

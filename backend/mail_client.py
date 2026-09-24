@@ -60,7 +60,8 @@ SCHOOL_DOMAIN = "cityu.edu.hk"
 
 #: 对外契约的键集合（spec §3.5）。`_do_list` 返回前**按它放行**。
 #: 白名单而不是黑名单：黑名单在新增内部键时静默泄漏，而泄漏的正是「不在契约里」的东西。
-_CONTRACT_KEYS = ("id", "subject", "sender", "received")
+#: `sender_addr` 与 `sender` 并列：后者显示名优先、通常**不含**地址，规则匹配要的是地址。
+_CONTRACT_KEYS = ("id", "subject", "sender", "sender_addr", "received")
 
 #: 最近一次 list_mail 记下的 INBOX UIDVALIDITY；fetch_bodies 靠它判断邮箱是否被重建。
 #: 模块级全局是**有意**的：同一请求内 list_mail → fetch_bodies 顺序调用，值必然相同；
@@ -185,7 +186,7 @@ def _iso(dt: datetime | None) -> str:
 
 
 def header_item(uid: str, msg, internaldate: datetime | None = None) -> dict:
-    """把一封邮件的头组装成对外契约的条目（键集合：id/subject/sender/received）。
+    """把一封邮件的头组装成对外契约的条目（键集合：id/subject/sender/sender_addr/received）。
 
     时间取 Date 头（原始发信时间）；**解不出时退回 INTERNALDATE**（邮件落进 Gmail
     的时刻），有可退的日期时绝不返回空串 —— 空串会让前端日期栏**静默留白**、
@@ -204,6 +205,10 @@ def header_item(uid: str, msg, internaldate: datetime | None = None) -> dict:
         "id": uid,
         "subject": decode_mime_header(msg.get("Subject")),
         "sender": sender_name(msg.get("From")),
+        # 恒为**地址**（小写、去空白），供规则匹配用；不是显示名。
+        # `parseaddr` 不是新依赖：`sender_name` 内部已在用，`_addr_domain` 是同族先例 ——
+        # 这是把「已经解出来又被丢掉」的东西留下。
+        "sender_addr": parseaddr(msg.get("From"))[1].strip().lower(),
         "received": _iso(received_dt(msg) or internaldate),
     }
 
@@ -419,7 +424,7 @@ def _fetch_headers(conn, uids: list[bytes]) -> list[dict]:
         msg = message_from_bytes(raw if isinstance(raw, bytes) else b"")
         item = header_item(m.group(1).decode(), msg, internaldate)
         # 两个内部键，对外契约里都没有它们，`_do_list` 返回前按白名单剥掉（spec §3.5）。
-        # `_school` 加在这里而不是 `header_item` 里：`header_item` 的契约恰好四个键，
+        # `_school` 加在这里而不是 `header_item` 里：`header_item` 的契约恰好五个键，
         # 有两条用例逐字钉着（见计划头部「裁定 1」）。
         item["_internaldate"] = internaldate
         item["_school"] = recipient_is_school(msg)
@@ -451,7 +456,7 @@ def _do_list(days: int) -> list[dict]:
         kept = [it for it in select_scope(items, datetime.now(timezone.utc), days)
                 if it.get("_school") is True]
         kept = sort_newest_first(kept)
-        # 只放行对外契约的四个键（白名单）。`_internaldate` 与 `_school` 都是内部键。
+        # 只放行对外契约的五个键（白名单）。`_internaldate` 与 `_school` 都是内部键。
         return [{k: it[k] for k in _CONTRACT_KEYS} for it in kept]
     finally:
         _logout_quietly(conn)

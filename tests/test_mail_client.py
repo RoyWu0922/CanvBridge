@@ -223,7 +223,8 @@ def test_list_mail_returns_contract_items(monkeypatch):
     assert by_id["1"]["subject"] == "作业"
     assert by_id["1"]["sender"] == "老师"
     assert by_id["1"]["received"] == "2026-09-17T08:31:00+00:00"
-    assert all(set(x) == {"id", "subject", "sender", "received"} for x in out)
+    assert all(set(x) == {"id", "subject", "sender", "sender_addr", "received"}
+               for x in out)
 
 
 def test_list_mail_fetches_internaldate(monkeypatch):
@@ -292,7 +293,8 @@ def test_list_mail_returns_exactly_contract_keys(monkeypatch):
     _install(monkeypatch, _FakeIMAP(headers={b"1": _hdr(), b"2": _hdr(subject="S3")}))
     out = mail_client.list_mail(7)
     assert out, "前提：必须有邮件通过过滤，否则下面两条是空转"
-    assert all(set(it) == {"id", "subject", "sender", "received"} for it in out)
+    assert all(set(it) == {"id", "subject", "sender", "sender_addr", "received"}
+               for it in out)
 
 
 def test_do_list_applies_select_scope(monkeypatch):
@@ -306,7 +308,7 @@ def test_do_list_applies_select_scope(monkeypatch):
     故它不再是唯一一条证据。）
 
     spy **原样返回收到的条目**（带着 `_internaldate`），于是这条同时钉住
-    `_do_list` 的剥离：忘了剥 ⇒ 末两条断言红。`test_header_item_shape_exactly_four_keys`
+    `_do_list` 的剥离：忘了剥 ⇒ 末两条断言红。`test_header_item_shape_exactly_five_keys`
     只看 `header_item` 的产出，够不到 `_do_list` 的返回（**覆盖缺口，修复轮 1 补上**；
     补之前用 `[{"id": "sentinel"}]` 那种不带内部键的返回值，剥与不剥都绿。）
 
@@ -331,8 +333,9 @@ def test_do_list_applies_select_scope(monkeypatch):
     assert seen["now_aware"], "now 必须是 aware，否则与 cutoff 比较会抛 TypeError"
     assert all(isinstance(x, datetime) and x.tzinfo is not None for x in seen["intd"]), \
         "交给 select_scope 的 _internaldate 必须是 aware datetime —— 串会被 fail-open 静默放过，窗口就死了"
-    assert [set(it) for it in out] == [{"id", "subject", "sender", "received"}] * 2, \
-        "对外契约恰好四个键 —— _internaldate 是内部键，_do_list 返回前必须剥掉"
+    assert [set(it) for it in out] == [
+        {"id", "subject", "sender", "sender_addr", "received"}] * 2, \
+        "对外契约恰好五个键 —— _internaldate 是内部键，_do_list 返回前必须剥掉"
     assert all("_internaldate" not in it for it in out)
     assert [it["id"] for it in out] == ["1", "2"]
 
@@ -709,21 +712,46 @@ def test_header_item_prefers_date_header_over_internaldate():
 
 # --- header_item：组装对外契约的条目 ---
 
-def test_header_item_shape_exactly_four_keys():
-    """键集合白名单 —— is_read 已删除，多一个少一个都要红。"""
+def test_header_item_shape_exactly_five_keys():
+    """键集合白名单 —— is_read 已删除、sender_addr 已新增，多一个少一个都要红。"""
     m = _msg(subject="作业", sender="老师 <t@cityu.edu.hk>",
              date="Thu, 17 Sep 2026 16:31:00 +0800")
     it = mail_client.header_item("42", m)
-    assert set(it) == {"id", "subject", "sender", "received"}
+    assert set(it) == {"id", "subject", "sender", "sender_addr", "received"}
     assert it["id"] == "42"
     assert it["subject"] == "作业"
     assert it["sender"] == "老师"
+    assert it["sender_addr"] == "t@cityu.edu.hk"
     assert it["received"] == "2026-09-17T08:31:00+00:00"
 
 
 def test_header_item_survives_missing_headers():
     it = mail_client.header_item("7", _msg())
-    assert it == {"id": "7", "subject": "", "sender": "", "received": ""}
+    assert it == {"id": "7", "subject": "", "sender": "", "sender_addr": "",
+                  "received": ""}
+
+
+def test_contract_keys_is_exactly_the_five_public_keys():
+    """白名单少一个键 = `_do_list` 返回时按它放行、把它丢掉 = 前端永远匹配不上（静默）。
+    用集合相等而不是 `in` —— `in` 在**多**键时照绿。"""
+    assert set(mail_client._CONTRACT_KEYS) == {
+        "id", "subject", "sender", "sender_addr", "received"}
+
+
+def test_header_item_sender_addr_is_the_address_not_the_display_name():
+    """`sender` 显示名优先、**不含**地址，规则要按邮箱匹配就必须有本键。
+    大写域名必须被压平，否则用户按 `li.wei@cityu.edu.hk` 写的小写规则会静默匹配不上。"""
+    m = _msg(subject="作业", sender="Li Wei <Li.Wei@CityU.EDU.HK>",
+             date="Thu, 17 Sep 2026 16:31:00 +0800")
+    it = mail_client.header_item("42", m)
+    assert it["sender"] == "Li Wei"                     # 显示名优先，且不含地址
+    assert it["sender_addr"] == "li.wei@cityu.edu.hk"   # 地址、小写
+
+
+def test_header_item_sender_addr_is_empty_without_a_from_header():
+    """`parseaddr(None)[1]` 实测返回 `''`、**不抛**（Task 1 探针，Python 3.11）。
+    照 `sender_name` 的写法保持一致即可，不必额外兜底。"""
+    assert mail_client.header_item("7", _msg())["sender_addr"] == ""
 
 
 # --- select_scope：按 INTERNALDATE 的纯日期窗口，fail-open（见裁定 D）---
