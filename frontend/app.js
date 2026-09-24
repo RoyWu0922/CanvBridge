@@ -3675,7 +3675,8 @@ function mtTodoCount(){
 /* 警告码 → 它那句话里 `{n}` 该填哪个数。**不同的码数的是不同的东西**，不能一律喂 `missing`：
    `ai_dropped` 数「模型给回来的结果里有几条指向了不存在的邮件」（后端只在 dropped > 0 时发这个码），
    `ids_missing` 数「这次少给了几封信」。以前两个都喂 `missing` ⇒ `ai_dropped` 在
-   dropped=1 / missing=0 时把「0 条」印在屏幕上，而**只要这句话出现，那个数就一定是错的**。
+   dropped=1 / missing=0 时把「0 条」印在屏幕上 —— 这个码只在 dropped > 0 时发出，
+   而当时读的数却是 missing，两者只在恰好相等时才碰巧不错。
    其余四个码的文案里没有 `{n}`，给了也不显示。 */
 function mtWarnCount(code){
   if(code === "ai_dropped") return mtState.dropped;
@@ -3756,7 +3757,11 @@ async function mtExtract(){
   }
   const have = new Set(Object.keys(mtState.items || {}));
   const todo = mtState.mails.filter(m => !have.has(mtFingerprint(m)));
-  if(!todo.length){ renderMailTodo(); return; }
+  if(!todo.length){
+    setStatus(t("mailtodo.extract_up_to_date"), "info");
+    renderMailTodo();
+    return;
+  }
   mtState.extracting = true;
   mtState.extractWarnings = [];     // 上一次的警告描述的是上一次的结果，不能陪着这一次的错误条
   mtState.missing = 0;
@@ -3781,7 +3786,10 @@ async function mtExtract(){
        这不是异常、是规格。不记账的话这封信**每点一次按钮就被重读一遍正文、重问一次模型** ——
        而「别重复花 token」正是这个账本存在的理由。
        空条目对三个读者都是**无操作**：`mtTodoHtml` 的 `rows.length` 为 0、直接 return；
-       `mtScheduleRows` 的两个循环都遍历空数组；`mtTodoCount` 加 0。 */
+       `mtScheduleRows` 的两个循环都遍历空数组；`mtTodoCount` 加 0。
+       第四个读者 `mtHasItems()` **会翻转**（假 → 真）—— 那是**有意的**：
+       它正是 `mtEmptyMsg()` 拿来把空态从「还没抽过」改判成「这次没抽出来」的依据，
+       也是修复轮 1 那条连带改动的前提。 */
     todo.forEach(m => {
       const fp = mtFingerprint(m);
       if(!mtState.items[fp]) mtState.items[fp] = { id: m.id, reminders: [], calendar_events: [] };
@@ -3826,12 +3834,18 @@ function mtHasExtractedContent(){
   });
 }
 
-/* 两处空态共用的一句话。**每个分支各写一条字面的键字符串** ——
-   `tools/check_i18n_keys.mjs` 只认紧跟引号的键字面量，写成 `t(cond ? … : …)`
-   或 `t(key)` 会让这两个键**被判为死键**、把死键数推上去，
-   而自检只在死键超基线时报红（那种红指向的是别的键，不是这里）。 */
+/* 空态那句话**每个分支各写一条字面的键字符串** —— 与本文件其余地方的写法一致：
+   键作为带引号的完整字面量出现在源码里，`tools/check_i18n_keys.mjs` 的悬空引用扫描
+   （认 `t(…)` 调用与 `data-i18n` 属性两种形态）就能验到它指的是一个存在的键。 */
 function mtEmptyMsg(){
   return mtHasItems() ? t("mailtodo.extract_none") : t("mailtodo.need_extract");
+}
+
+/* 时间表的空态**不是**清单那句话，两者别共用：清单空 ⇒ 确实一条都没抽出来；
+   时间表空只说明**抽出来的条目都没有日期**（「看完论文」那种仍然挂在清单上、一条不少）。
+   拿清单那句印在这里，等于在同一屏上既说「什么都没抽出来」、又显示着「看完论文」。 */
+function mtSchedEmptyMsg(){
+  return mtHasItems() ? t("mailtodo.sched_none_dated") : t("mailtodo.need_extract");
 }
 
 /* 时间表：calendar_events（按 start）+ reminders（按 due_date）**合并**后按时间升序。
@@ -3858,7 +3872,7 @@ function mtScheduleRows(){
 function mtScheduleHtml(){
   const rows = mtScheduleRows();
   if(!rows.length){
-    return `<div class="card mail-empty">${esc(mtEmptyMsg())}</div>`;
+    return `<div class="card mail-empty">${esc(mtSchedEmptyMsg())}</div>`;
   }
   return rows.map(r => `
     <div class="mt-row">
