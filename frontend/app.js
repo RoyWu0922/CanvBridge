@@ -3593,21 +3593,37 @@ function renderMailTodo(){
     meta.textContent = (mtState.loading || mtState.error || !mtState.mails.length) ? ""
       : t("mailtodo.count", { n: mtState.mails.length, m: mtTodoCount() });
   }
-  renderMailTodoWarnings();
+  /* 警告条与时间表**跟着清单一起让位** —— 与上面 `#mtMeta` 同一条纪律：
+     错误卡旁边摆着一份「上一次窗口」排好的表，和「共 5 封」挂在错误卡旁边一样是骗人。
+     三种状态下都清空并藏掉整张时间表卡。 */
   const sched = $("mtSchedule");
-  if(sched) sched.innerHTML = mtScheduleHtml();
+  const schedCard = $("mtSchedCard");
+  const hideSched = () => {
+    if(sched) sched.innerHTML = "";
+    if(schedCard) schedCard.hidden = true;
+  };
+  const clearWarn = () => {
+    const el = $("mtWarn");
+    if(el){ el.hidden = true; el.textContent = ""; }
+  };
   if(mtState.error){
+    clearWarn(); hideSched();
     box.innerHTML = `<div class="card mail-error">${esc(mtState.error)}</div>`;
     return;
   }
   if(mtState.loading){
+    clearWarn(); hideSched();
     box.innerHTML = `<div class="card mail-empty">…</div>`;
     return;
   }
   if(!mtState.mails.length){
+    clearWarn(); hideSched();
     box.innerHTML = `<div class="card mail-empty">${esc(t("mailtodo.empty", { n: mtDays }))}</div>`;
     return;
   }
+  renderMailTodoWarnings();
+  if(schedCard) schedCard.hidden = false;
+  if(sched) sched.innerHTML = mtScheduleHtml();
   box.innerHTML = mtTodoHtml();
 }
 
@@ -3701,7 +3717,7 @@ function mtTodoHtml(){
       });
     });
   });
-  if(!groups.size) return `<div class="card mail-empty">${esc(t("mailtodo.need_classify"))}</div>`;
+  if(!groups.size) return `<div class="card mail-empty">${esc(mtEmptyMsg())}</div>`;
   return [...groups.entries()].map(([name, rows]) =>
     `<div class="card mt-group"><h4>${esc(name)}</h4>${rows.join("")}</div>`).join("");
 }
@@ -3717,9 +3733,106 @@ function mtFmtWhen(iso){
   return isNaN(d) ? String(iso) : d.toLocaleString();
 }
 
-function mtScheduleHtml(){                       // Task 9 填真值
-  return "";
+/* AI 抽取：**按需触发**（一个按钮），不自动跑 —— 否则每开一次页烧一次 token。
+   只对**还没抽过**的邮件发请求（`mtState.items` 里已有的跳过）。 */
+async function mtExtract(){
+  if(mtState.extracting) return;
+  if(!mtState.mails.length){ setStatus(t("mailtodo.need_classify"), "err"); return; }
+  const s = settings();
+  if(!s.llm_base_url || !s.llm_api_key || !s.llm_model){
+    setStatus(t("mailtodo.extract_failed") + t("settings.need_llm"), "err");
+    return;
+  }
+  const have = new Set(Object.keys(mtState.items || {}));
+  const todo = mtState.mails.filter(m => !have.has(mtFingerprint(m)));
+  if(!todo.length){ renderMailTodo(); return; }
+  mtState.extracting = true;
+  mtState.extractWarnings = [];     // 上一次的警告描述的是上一次的结果，不能陪着这一次的错误条
+  mtState.missing = 0;
+  renderMailTodo();
+  try{
+    const r = await api("mail/extract", {
+      llm_base_url: s.llm_base_url, llm_api_key: s.llm_api_key, llm_model: s.llm_model,
+      ids: todo.map(m => m.id), days: mtDays, language: LANG() });
+    if(r.ok !== true){
+      setStatus(t("mailtodo.extract_failed") + (r.error || ""), "err");
+      return;
+    }
+    const fpById = {};
+    mtState.mails.forEach(m => { fpById[m.id] = mtFingerprint(m); });
+    (r.items || []).forEach(it => {
+      const fp = fpById[it.id];
+      if(fp) mtState.items[fp] = it;             // 键是**指纹**，不是 id（见 Task 8）
+    });
+    const dropped = Number(r.dropped || 0);
+    const missing = Number(r.missing || 0);
+    mtState.missing = missing;
+    mtState.extractWarnings = (r.warnings || []).slice();
+    if(missing && !mtState.extractWarnings.includes("ids_missing")){
+      mtState.extractWarnings.push("ids_missing");   // 少给几条还答 ok 是静默丢件
+    }
+    if(!Object.keys(mtState.items).length && !dropped && !missing){
+      setStatus(t("mailtodo.extract_none"), "info");
+    }
+  }catch(e){
+    setStatus(t("mailtodo.extract_failed") + String(e && e.message || e), "err");
+  }finally{
+    mtState.extracting = false;
+    renderMailTodo();
+  }
 }
+
+/* 「抽过没有」：`mtState.items` 非空即至少成功抽过一次。
+   两处空态都要靠它分叉 —— 没抽过时说「这次没有抽出…」是假话（根本还没抽）。 */
+function mtHasItems(){
+  return Object.keys(mtState.items || {}).length > 0;
+}
+
+/* 两处空态共用的一句话。**每个分支各写一条字面的键字符串** ——
+   `tools/check_i18n_keys.mjs` 只认紧跟引号的键字面量，写成 `t(cond ? … : …)`
+   或 `t(key)` 会让这两个键**被判为死键**、把死键数推上去，
+   而自检只在死键超基线时报红（那种红指向的是别的键，不是这里）。 */
+function mtEmptyMsg(){
+  return mtHasItems() ? t("mailtodo.extract_none") : t("mailtodo.need_extract");
+}
+
+/* 时间表：calendar_events（按 start）+ reminders（按 due_date）**合并**后按时间升序。
+   **只有抽得出日期的能进** —— 抽不出日期的只留在上方清单，不在这里凭空占位。 */
+function mtScheduleRows(){
+  const rows = [];
+  mtState.mails.forEach(m => {
+    const it = mtState.items[mtFingerprint(m)];
+    if(!it) return;
+    (it.calendar_events || []).forEach(ev => {
+      if(!ev.start) return;
+      rows.push({ when: ev.start, title: ev.title || it.summary || "", who: mtWhoSent(m) });
+    });
+    (it.reminders || []).forEach(rem => {
+      if(!rem.due_date) return;
+      rows.push({ when: rem.due_date, title: rem.title || it.summary || "", who: mtWhoSent(m) });
+    });
+  });
+  /* 解不出的日期排到最后（而不是当成「现在」混进最前面）—— 把坏值排到眼前是骗人。 */
+  const at = s => { const d = new Date(s); return isNaN(d) ? Infinity : d.getTime(); };
+  return rows.sort((a, b) => at(a.when) - at(b.when));
+}
+
+function mtScheduleHtml(){
+  const rows = mtScheduleRows();
+  if(!rows.length){
+    return `<div class="card mail-empty">${esc(mtEmptyMsg())}</div>`;
+  }
+  return rows.map(r => `
+    <div class="mt-row">
+      <b>${esc(mtFmtWhen(r.when))}</b>
+      <span>${esc(r.title)}</span>
+      <em class="muted">${esc(r.who)}</em>
+    </div>`).join("");
+}
+
+$("mtExtract").addEventListener("click", () => {
+  withBusy(t("mailtodo.extracting"), $("mtExtract"), mtExtract);
+});
 
 async function loadMailTodo(){
   if(mtState.loading) return false;
