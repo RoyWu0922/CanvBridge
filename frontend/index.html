@@ -38,6 +38,7 @@
       <button class="nav-item" data-page="courses"><span data-i18n="nav.courses"></span></button>
       <button class="nav-item" data-page="library"><span data-i18n="nav.library"></span></button>
       <button class="nav-item" data-page="mail"><span data-i18n="nav.mail"></span></button>
+      <button class="nav-item" data-page="mailtodo"><span data-i18n="nav.mailtodo"></span></button>
       <div class="nav-gap"></div>
       <button class="nav-item" data-page="settings"><span data-i18n="nav.settings"></span></button>
     </nav>
@@ -254,6 +255,42 @@
         </div>
       </div>
       <div id="mailList"></div>
+    </div>
+
+    <div id="page-mailtodo" class="page" hidden>
+      <div class="card">
+        <div class="mail-toolbar">
+          <button class="btn btn-primary" id="mtRefresh" data-i18n="mailtodo.refresh"></button>
+          <button class="btn" id="mtExtract" data-i18n="mailtodo.extract"></button>
+          <button class="btn" id="mtRules" data-i18n="mailtodo.rules"></button>
+          <label class="field"><span data-i18n="mailtodo.days"></span>
+            <select id="mtDaysSel">
+              <option value="7">7</option>
+              <option value="14" selected>14</option>
+              <option value="30">30</option>
+            </select></label>
+          <span class="mail-meta" id="mtMeta"></span>
+        </div>
+        <div class="mail-error" id="mtWarn" hidden></div>
+      </div>
+      <div class="card" id="mtRulePanel" hidden>
+        <div id="mtRuleList"></div>
+        <div class="mail-toolbar">
+          <button class="btn" id="mtRuleAdd" data-i18n="mailtodo.rule_add"></button>
+          <button class="btn" id="mtRuleExport" data-i18n="mailtodo.rule_export"></button>
+          <button class="btn" id="mtRuleImport" data-i18n="mailtodo.rule_import"></button>
+          <button class="btn btn-primary" id="mtRuleSave" data-i18n="mailtodo.rule_save"></button>
+        </div>
+        <div class="mail-meta" id="mtRuleHint"></div>
+      </div>
+      <div class="card">
+        <h3 data-i18n="mailtodo.todo_title"></h3>
+        <div id="mtTodo"></div>
+      </div>
+      <div class="card">
+        <h3 data-i18n="mailtodo.sched_title"></h3>
+        <div id="mtSchedule"></div>
+      </div>
     </div>
 
     <div id="page-settings" class="page" hidden>

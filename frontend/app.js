@@ -2424,6 +2424,23 @@ const LIBRARY_MAX_PAGES = 5;   /* 与后端 library_client.MAX_PAGES 一致；�
 const MAIL_DAYS = 7;
 let mailState = { mails: [], groups: null, loading: false, error: "" };
 
+/* 邮件规则分类页的状态。**声明在这里、而不是文件末尾那段页面代码里**：与上面的
+   `mailState` 同一个道理 —— 本文件顶层的 `applyLang()`（就在下面几行）会经 i18n.js
+   的钩子调用 renderMailTodo()，而它要读这些顶层 `let`。压在文件末尾就是
+   「读到还在 TDZ 的 let」⇒ **整页白屏**，而 `typeof` 守卫照旧为真、`node --check` 也查不出。
+   判据是「这个函数读了哪些顶层 let，那些声明在**最早**调用时点之前吗」—— 不只是
+   **新增**状态会踩：给既有函数加一个更早的调用时点同样致命。 */
+/* 窗口天数。**`let` 而不是 `const`**：工具条上的天数选择要能改它。
+   待办跨周，默认 14 天比邮件页的 7 天长。
+   **仍然必须声明在这段早声明区里** —— renderMailTodo() 会读它取空态文案，
+   而 renderMailTodo() 在下面几行那次顶层 applyLang() 里就会被调用到。 */
+let mtDays = 14;
+const MT_RULES_KEY = "sc_mailRules";
+const MT_DONE_KEY  = "sc_mailDone";
+let mtRules = [];                                 // 规则（localStorage 的镜像）
+let mtState = { mails: [], labels: {}, loading: false, error: "", warnings: [],
+                items: {}, extracting: false, extractWarnings: [], missing: 0 };
+
 /* 详情弹层「当前这一封」的状态（`id` + `detail` + `detailId`）。
    **声明在这里、而不是末尾那段邮箱代码里**：与上面的 `mailState` 同一个道理，而且这一条
    更要命 —— `renderMailDetail` 会被本文件顶层的 `applyLang()`（经 i18n.js 的钩子）**无参**
@@ -3528,4 +3545,72 @@ $("mailList").addEventListener("keydown", e => {
   if(!m) return;
   e.preventDefault();
   openMailDetail(m);
+});
+
+/* ---------- 邮件规则分类（待办 / 时间表） ---------- */
+/* 页面状态 `mtState` / `mtRules` 声明在文件上部（`applyLang()` 那一段、`mailState` 旁边）
+   —— 理由同上：applyLang() 会经 i18n.js 的钩子调用 renderMailTodo()。 */
+
+function initMailTodoTab(){
+  if(mtState.mails.length || mtState.loading){ renderMailTodo(); return; }
+  return loadMailTodo();
+}
+
+function renderMailTodo(){
+  const box = $("mtTodo");
+  if(!box) return;
+  const meta = $("mtMeta");
+  if(meta){
+    /* 错误卡与计数说的是两件事，同时出现就是骗人 —— 与 renderMail 同一条纪律：
+       载入失败时 mails 仍是上一次的结果，于是「共 5 封」会挂在错误卡旁边。 */
+    meta.textContent = (mtState.loading || mtState.error || !mtState.mails.length) ? ""
+      : t("mailtodo.count", { n: mtState.mails.length, m: mtTodoCount() });
+  }
+  renderMailTodoWarnings();
+  const sched = $("mtSchedule");
+  if(sched) sched.innerHTML = mtScheduleHtml();
+  if(mtState.error){
+    box.innerHTML = `<div class="card mail-error">${esc(mtState.error)}</div>`;
+    return;
+  }
+  if(mtState.loading){
+    box.innerHTML = `<div class="card mail-empty">…</div>`;
+    return;
+  }
+  if(!mtState.mails.length){
+    box.innerHTML = `<div class="card mail-empty">${esc(t("mailtodo.empty", { n: mtDays }))}</div>`;
+    return;
+  }
+  box.innerHTML = mtTodoHtml();
+}
+
+function mtTodoCount(){ return 0; }              // Task 8 填真值
+
+function renderMailTodoWarnings(){
+  const el = $("mtWarn");
+  if(!el) return;
+  const codes = [...(mtState.warnings || []), ...(mtState.extractWarnings || [])];
+  const msgs = codes.map(w => t("mailtodo.warn." + w, { n: mtState.missing }));
+  el.hidden = !msgs.length;
+  el.textContent = msgs.join(" · ");
+}
+
+function mtTodoHtml(){                           // Task 8 填真值
+  return `<div class="card mail-empty">${esc(t("mailtodo.need_classify"))}</div>`;
+}
+
+function mtScheduleHtml(){                       // Task 9 填真值
+  return "";
+}
+
+async function loadMailTodo(){                   // Task 8 接后端
+  return true;
+}
+
+/* 天数选择：改了立刻重算。**坏值回落到 14**，绝不把 NaN/空串原样传给后端
+   （后端 `days: int` 收到 NaN 会抛 422，而 422 体是合法 JSON、前端那条 catch 拦不到）。 */
+$("mtDaysSel").addEventListener("change", e => {
+  const n = Number(e.target.value);
+  mtDays = Number.isFinite(n) && n > 0 ? n : 14;
+  loadMailTodo();
 });
