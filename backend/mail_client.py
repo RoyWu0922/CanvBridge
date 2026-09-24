@@ -206,11 +206,19 @@ def header_item(uid: str, msg, internaldate: datetime | None = None) -> dict:
         "subject": decode_mime_header(msg.get("Subject")),
         "sender": sender_name(msg.get("From")),
         # parseaddr 解出的地址部分（小写、首尾去空白），供规则匹配用；不是显示名。
-        # **不保证是地址、也不保证含 @**：解不出地址时退回 parseaddr 自己的兜底 ——
-        # 原文的**首个空白分隔词**（带引号则整段）。实测：From: 老师 → "老师"、
-        # From: Li Wei → "li"（**不是** "li wei"）、From: "Li Wei" → "li wei"。
-        # 所以下游不能假定 "@" in sender_addr，也不能据此做域名后缀提取 ——
-        # `_addr_domain` 对这类值静默返回空串，建在它上面的规则会**永不命中**。
+        # **不保证是地址、不保证含 @、也不保证非空** —— 解不出地址时它会落回
+        # parseaddr 内部的其它分支，那些分支的形状**别去猜**：本注释改过三版，
+        # 前两版都在猜机制（「恒为地址」「退回原文小写」），都被实测证伪。
+        # 实测（生产路径 `message_from_bytes`，见 tests 里的锚用例）：
+        #   `Li Wei <Li.Wei@CityU.EDU.HK>` → "li.wei@cityu.edu.hk"   `Li Wei` → "li"
+        #   `"Li Wei"` → "li wei"   `Li:Wei` → "wei"   `a<b>` → "b"
+        #   `, Li Wei` → ""   `Li <>` → ""   缺 From 头 → ""
+        # 所以下游**只能按子串匹配**（这是特性：按发件人名字写的规则也能命中），
+        # 不得假定 `"@" in sender_addr`，也不得据此做域名后缀提取 —— `_addr_domain`
+        # 对上面那些非地址值一律静默返回空串，建在它上面的规则会**永不命中**。
+        # 另：裸 8-bit 的 From 头会让 `msg.get("From")` 返回 Header 对象，`parseaddr`
+        # 对它抛 TypeError（在 `sender_name` 就先抛），走不到这里 ⇒ 本键在生产路径上
+        # **不会**是非 ASCII 串。该崩溃是本键之外的既有问题（ledger 裁定 12），不在本任务范围。
         # `parseaddr` 不是新依赖：`sender_name` 内部已在用，`_addr_domain` 是同族先例 ——
         # 这是把「已经解出来又被丢掉」的东西留下。
         "sender_addr": parseaddr(msg.get("From"))[1].strip().lower(),

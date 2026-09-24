@@ -755,6 +755,27 @@ def test_header_item_sender_addr_is_empty_without_a_from_header():
     assert mail_client.header_item("7", _msg())["sender_addr"] == ""
 
 
+def _raw_from(from_line: bytes):
+    """按**生产路径**造消息：IMAP 交回的是字节，`mail_client` 用 `message_from_bytes`
+    （compat32）解析。**不能用 `_msg`** —— 它造的是 `EmailMessage`（policy=default），
+    会把 `From: Li Wei` 重新渲染成 `From: "Li Wei"`，实测同一个头在两条路上给出不同的
+    `sender_addr`（`'li wei'` vs `'li'`）。锚必须锚在生产那一侧。"""
+    return email.message_from_bytes(
+        b"From: " + from_line + b"\r\nSubject: s\r\n\r\n")
+
+
+def test_header_item_sender_addr_falls_back_to_a_non_address_string():
+    """解不出地址时 `sender_addr` **不是地址、可能为空** —— 本键的注释曾连错三版，
+    根因就是没有这条锚：措辞可以在断言之外任意发挥。
+
+    下面每个值都是在 `message_from_bytes`（生产路径）上实测出来的。
+    """
+    assert mail_client.header_item("1", _raw_from(b"Li Wei"))["sender_addr"] == "li"
+    assert mail_client.header_item("2", _raw_from(b"Li:Wei"))["sender_addr"] == "wei"
+    assert mail_client.header_item("3", _raw_from(b", Li Wei"))["sender_addr"] == ""
+    assert mail_client.header_item("4", _raw_from(b"Li <>"))["sender_addr"] == ""
+
+
 # --- select_scope：按 INTERNALDATE 的纯日期窗口，fail-open（见裁定 D）---
 
 def test_select_scope_keeps_recent_by_internaldate():
