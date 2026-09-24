@@ -490,7 +490,7 @@ def test_extract_todos_shape_broken_items_are_declared_silent(monkeypatch):
     不计入 `dropped`、不报警。
     锚分两处：本用例钉 `items` 里的非对象元素；
     `test_extract_todos_non_list_fields_become_empty_arrays` 的 `dropped` / `warnings`
-    断言钉 `_keep_dicts` 过滤掉的那两类（`reminders` / `calendar_events`）。
+    断言钉 `_keep_dicts` 过滤掉的那两类（`reminders` / `calendar_events`）不被计数、不报警。
     对照：越界下标**要**计数报警，见 `test_extract_todos_drops_out_of_range_index` ——
     两者刻意不同，别当成一件事。
     """
