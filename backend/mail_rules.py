@@ -11,7 +11,7 @@ from __future__ import annotations
 WARNING_CODES = (
     "bad_rule",     # 规则不成形 ⇒ 整条丢弃：不是对象 / id 不可用或重复 / 匹配列表或 rules 本身不是数组
     "empty_rule",   # 两个匹配列表都空 ⇒ 这条规则**永远命中不了任何邮件**，整条丢弃
-    "blank_item",   # 某个匹配项是空白串 ⇒ 剥掉它（规则本身还在，照常参与匹配）
+    "blank_item",   # 某个匹配项是空白串 ⇒ 剥掉它（剥完两个列表都空 ⇒ 按 empty_rule 整条丢弃）
 )
 
 

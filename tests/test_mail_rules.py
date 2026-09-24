@@ -18,7 +18,7 @@ def test_empty_rule_is_dropped_and_reported():
 
 
 def test_whitespace_only_items_are_dropped_and_reported():
-    """`["", "  "]` 里的空白串会被剥掉并报码；规则**本身还在**，照常参与匹配。"""
+    """`["", "  "]` 里的空白串会被剥掉并报码；这个输入的关键词非空，规则**还在**、照常参与匹配。"""
     rules, warnings = mail_rules.validate_rules([
         {"id": "r1", "name": "空白", "senders": ["", "  "], "keywords": ["报告"]}])
     assert rules[0]["senders"] == []

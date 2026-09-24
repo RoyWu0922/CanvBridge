@@ -268,11 +268,11 @@ def _mail(mid="1", addr="", subject="", body=""):
     return {"id": mid, "sender_addr": addr, "subject": subject, "body": body}
 
 
-# --- validate_rules：空规则是「匹配一切」的陷阱 ---
+# --- validate_rules：空规则是「谁也匹配不到」的死规则 ---
 
 def test_empty_rule_is_dropped_and_reported():
-    """`senders` 与 `keywords` 都空时，子串匹配退化成「任何字符串都包含空串」
-    ⇒ 整个邮箱被收进一个分类，而界面上看不出任何异常。必须丢弃**并报码**。"""
+    """`senders` 与 `keywords` 都空时**这条规则谁也匹配不到**（实测 `label_mails`
+    收到它返回空字典）⇒ 留着它等于用户以为设了筛选、其实什么都不会发生。必须丢弃**并报码**。"""
     rules, warnings = mail_rules.validate_rules([
         {"id": "r1", "name": "空", "senders": [], "keywords": []}])
     assert rules == []
@@ -280,7 +280,7 @@ def test_empty_rule_is_dropped_and_reported():
 
 
 def test_whitespace_only_items_are_dropped_and_reported():
-    """`["", "  "]` 里的空白串与空规则同罪。"""
+    """`["", "  "]` 里的空白串会被剥掉并报码；这个输入的关键词非空，规则**还在**、照常参与匹配。"""
     rules, warnings = mail_rules.validate_rules([
         {"id": "r1", "name": "空白", "senders": ["", "  "], "keywords": ["报告"]}])
     assert rules[0]["senders"] == []
@@ -417,8 +417,8 @@ from __future__ import annotations
 #: （出句子会让英文界面冒中文）。
 WARNING_CODES = (
     "bad_rule",     # 不是对象 / 缺 id / id 重复
-    "empty_rule",   # 两个匹配列表都空 ⇒ 子串匹配下会命中**一切**
-    "blank_item",   # 某个匹配项是空白串 ⇒ 同上
+    "empty_rule",   # 两个匹配列表都空 ⇒ 这条规则永远命中不了任何邮件，整条丢弃
+    "blank_item",   # 某个匹配项是空白串 ⇒ 剥掉它（剥完两个列表都空 ⇒ 按 empty_rule 整条丢弃）
 )
 
 
@@ -453,8 +453,8 @@ def _dedupe(seq: list[str]) -> list[str]:
 def validate_rules(raw) -> tuple[list[dict], list[str]]:
     """把请求体里的规则收敛成可信结构，并报出被丢弃的原因。
 
-    **丢弃一律报码。** 空规则在子串匹配下等于「匹配一切」，静默接受会让整个邮箱
-    被收进一个分类而界面上毫无异常 —— 与图书馆那轮修掉的静默失效同族。
+    **丢弃一律报码。** 空规则**命中不了任何邮件**（两个列表都空 ⇒ `continue` 直接丢弃），
+    静默接受会让用户留下一条永远不会生效的规则而界面上毫无解释 —— 与图书馆那轮修掉的静默失效同族。
     """
     warnings: list[str] = []
     rules: list[dict] = []
@@ -1328,7 +1328,7 @@ zh 块 —— `nav.mailtodo` 插在 `frontend/i18n.js:12` 的 `"nav.mail": "邮�
     "mailtodo.rule_bad": "每条规则要有名称，且发件人、关键词至少填一个",
     "mailtodo.rule_import_failed": "导入失败：不是规则数组",
     "mailtodo.warn.bad_rule": "有规则格式不对（缺 id 或 id 重复），已忽略",
-    "mailtodo.warn.empty_rule": "有规则既没填发件人也没填关键词，会匹配全部邮件，已忽略",
+    "mailtodo.warn.empty_rule": "有规则既没填发件人也没填关键词，它匹配不到任何邮件，已忽略",
     "mailtodo.warn.blank_item": "有规则里的发件人/关键词是空白，已忽略",
     "mailtodo.warn.ai_unusable": "AI 返回的结构不可用，这次没抽出待办",
     "mailtodo.warn.ai_dropped": "AI 有 {n} 条结果指向了不存在的邮件，已丢弃",
@@ -1370,7 +1370,7 @@ en 块 —— `nav.mailtodo` 插在 `frontend/i18n.js:437` 的 `"nav.mail": "Mai
     "mailtodo.rule_bad": "Every rule needs a name and at least one sender or keyword",
     "mailtodo.rule_import_failed": "Import failed: not an array of rules",
     "mailtodo.warn.bad_rule": "Some rules were malformed (missing or duplicate id) and were ignored",
-    "mailtodo.warn.empty_rule": "A rule with no senders and no keywords would match every mail — ignored",
+    "mailtodo.warn.empty_rule": "A rule with no senders and no keywords matches no mail at all — ignored",
     "mailtodo.warn.blank_item": "Some senders/keywords were blank and were ignored",
     "mailtodo.warn.ai_unusable": "The AI returned an unusable structure; nothing was extracted",
     "mailtodo.warn.ai_dropped": "{n} AI result(s) pointed at nonexistent mail and were dropped",
@@ -1546,9 +1546,9 @@ function mtSaveRules(rules){
   localStorage.setItem(MT_RULES_KEY, JSON.stringify(rules));
 }
 
-/* 名称必填，且发件人 / 关键词至少一个非空。两者都空 = 匹配**全部**邮件
-   （子串匹配下空串被任何串包含），后端也会丢弃并报 empty_rule —— 但**这里就得拦住**：
-   让用户存下一条注定被丢的规则，是最糟的那种「看起来正常」。 */
+/* 名称必填，且发件人 / 关键词至少一个非空。两者都空的规则**在后端会被丢弃**
+   （`mail_rules.py` 的 `validate_rules` 报 `empty_rule` 后 `continue`），界面上就是
+   「存下了一条、它却什么也不做」—— 但**这里就得拦住**：那是最糟的那种「看起来正常」。 */
 function mtRuleValid(r){
   if(!r || !String(r.name || "").trim()) return false;
   const has = xs => Array.isArray(xs) && xs.some(x => String(x || "").trim());

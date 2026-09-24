@@ -300,7 +300,7 @@ okTry(() => {
 okTry(() => {
   const fp = val(`mtFingerprint(${JSON.stringify(M1)})`);
   /* 同一道守卫（理由同 S1）：`fp` 是 `undefined` 时，下面 `JSON.stringify(fp)` 会把字面量
-     `undefined` 直接拼进表达式 ⇒ 比的是 `"undefined0"` 与 `"undefined1"` 两个**退化出来的**
+     `undefined` 直接拼进表达式 ⇒ 比的是 `"undefined\u00020"` 与 `"undefined\u00021"` 两个**退化出来的**
      字符串，性质（下标不同 ⇒ 键不同）仍为真，却没有任何东西证明它拿到过真指纹。 */
   if (typeof fp !== "string" || !fp) { seen = why(fp); return false; }
   const k0 = val(`mtDoneKey(${JSON.stringify(fp)}, 0)`);
