@@ -323,11 +323,28 @@ def test_keyword_does_not_see_body_unless_search_body():
     assert mail_rules.label_mails(on, m) == {"1": ["r1"]}
 
 
-def test_sender_matches_address_not_display_name():
+def test_sender_rule_matches_the_address_form():
+    """规则写地址，就按地址匹配。
+
+    **别把这句读成「和显示名无关」**——`sender_addr` 在 `From` 拆不出地址时
+    退回的是**原文小写**（`From: 老师` → `"老师"`），所以按名字写的规则**也会**命中，
+    见下一条。本用例名原先叫 `..._not_display_name`，那半句是没被断言的过头话。
+    """
     rules, _ = mail_rules.validate_rules([
         {"id": "r1", "name": "李教授", "senders": ["li.wei@cityu.edu.hk"]}])
     assert mail_rules.label_mails(rules, [_mail(addr="li.wei@cityu.edu.hk")]) == {"1": ["r1"]}
     assert mail_rules.label_mails(rules, [_mail(addr="other@cityu.edu.hk")]) == {}
+
+
+def test_sender_rule_can_match_a_display_name_too():
+    """`sender_addr` **不保证含 `@`**（Task 1 复审实测）：`From: 老师` 给到 `"老师"`。
+
+    这是**特性**不是缺陷 —— 用户按教授的中文名写规则也能命中。谁要是给
+    `label_mails` 加一条 `if "@" not in addr: continue` 的守卫，这条会红，
+    而那条守卫会把名字匹配**静默**砍掉。这是本用例存在的唯一理由。
+    """
+    rules, _ = mail_rules.validate_rules([{"id": "r1", "senders": ["老师"]}])
+    assert mail_rules.label_mails(rules, [_mail(addr="老师")]) == {"1": ["r1"]}
 
 
 def test_sender_matches_a_bare_domain_suffix():
@@ -491,7 +508,8 @@ def label_mails(rules: list[dict], mails: list[dict]) -> dict[str, list[str]]:
 - [ ] **Step 4: 跑测试，逐条确认都真的执行了**
 
 Run: `.venv/bin/python -m pytest tests/test_mail_rules.py -v`
-Expected: PASS —— **14 条**全绿，且 `-v` 列表里每条用例名都在。若条数少于 14，先查是哪条没被收集。
+Expected: PASS —— **15 条**全绿，且 `-v` 列表里每条用例名都在。若条数少于 15，先查是哪条没被收集。
+（原写 14：Task 1 复审后本条补了 `test_sender_rule_can_match_a_display_name_too`。**先按 15 核对，不符再查，不要照抄数字**。）
 
 - [ ] **Step 5: 变异检验（证明关键守卫承重）**
 
@@ -505,7 +523,12 @@ Expected: **FAIL** —— `test_keyword_does_not_see_body_unless_search_body` �
 
 变异 C —— 把 `senders` 改成匹配显示名（`addr` → `str(m.get("sender") or "")`）：
 Run: `.venv/bin/python -m pytest tests/test_mail_rules.py -q -k sender`
-Expected: **FAIL** —— 三条 `sender` 用例里有红。跑完**改回**。
+Expected: **FAIL** —— `-k sender` 共收 **4** 条（`..._rule_matches_the_address_form`、
+`..._rule_can_match_a_display_name_too`、`..._matches_a_bare_domain_suffix`、
+`...s_and_keywords_are_or_within_one_rule`），这 4 条的 `sender` 侧断言应**全红**。
+跑完**改回**。
+**这条 Expected 是我推的，不是跑出来的 —— 以你跑出的真实红集为准**：若条数或名字不符，
+先查清（多半是 `-k` 的收词范围与我数的不一样），把**实际红集原样贴进报告**，别把这里改成你以为的数。
 
 > 每次变异后必须**清掉 `.pyc`**（`.venv/bin/python -B` 只防写不防读，判据是 `(mtime, size)`，同秒等长重写会跑上一次的代码）：
 > `find . -name '__pycache__' -prune -exec rm -rf {} +`
