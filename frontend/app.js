@@ -3841,11 +3841,22 @@ function mtEmptyMsg(){
   return mtHasItems() ? t("mailtodo.extract_none") : t("mailtodo.need_extract");
 }
 
-/* 时间表的空态**不是**清单那句话，两者别共用：清单空 ⇒ 确实一条都没抽出来；
-   时间表空只说明**抽出来的条目都没有日期**（「看完论文」那种仍然挂在清单上、一条不少）。
-   拿清单那句印在这里，等于在同一屏上既说「什么都没抽出来」、又显示着「看完论文」。 */
+/* 时间表的空态**不是**清单那句话，两者别共用 —— 清单只渲染 `reminders`
+   （`mtTodoHtml` 那条 `if(!rows.length) return`），时间表只收**带日期的**
+   （`mtScheduleRows()` 的两道门 `if(!ev.start)` / `if(!rem.due_date)`），问的是两件事。
+   三个分支各写一条字面的键字符串，每条都指得回一次测量：
+     ① `mtHasExtractedContent()` 为真 ⇒「抽出的条目都没有日期」：
+        它真 ⇒ 抽出的东西**确实**落到了界面上（有 reminder，或有个带 start 的 event），
+        而时间表此刻返回空 ⇒ 只可能是**抽出来的东西一条日期都没有** ——
+        「看完论文」那种没有 due_date 的 reminder 正挂在清单上、一条不少。
+     ② 它假、而 `mtHasItems()` 真 ⇒「这次没有抽出待办或日期」：
+        抽过（账本非空），却一条也没落到界面上；此时清单也是空的（清单只认 reminders），
+        两侧说的是同一件事。`items:[]` 那种（账本里补了空条目）就是这个状态。
+     ③ `mtHasItems()` 为假 ⇒「还没抽过、点按钮」：一次都没抽过，账本还没有任何记录。
+   拿清单那句印在 ① 上，等于在同一屏上既说「什么都没抽出来」、又显示着「看完论文」。 */
 function mtSchedEmptyMsg(){
-  return mtHasItems() ? t("mailtodo.sched_none_dated") : t("mailtodo.need_extract");
+  if(mtHasExtractedContent()) return t("mailtodo.sched_none_dated");
+  return mtHasItems() ? t("mailtodo.extract_none") : t("mailtodo.need_extract");
 }
 
 /* 时间表：calendar_events（按 start）+ reminders（按 due_date）**合并**后按时间升序。
