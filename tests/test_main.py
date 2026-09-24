@@ -2315,9 +2315,10 @@ def test_mail_classify_failure_is_200_json(monkeypatch):
 
 
 def test_mail_classify_tolerates_a_mail_missing_from_fetch_bodies(monkeypatch):
-    """`fetch_bodies` **可以不返回每一封** —— `mail_client` 里有两处 `continue`
-    会把畸形条目跳过（`:510` / `:514`）。所以 `bodies.get(m["id"], "")` 的缺省是承重的：
-    缺了它，缺席那封抛 `KeyError` → 被 `except` 吞成 `{ok:false}` ⇒ 整个窗口一封都不返回。"""
+    """`fetch_bodies` **可以不返回每一封** —— 取正文的 `_fetch_raw_chunk` 里有两处
+    `continue`（`entry` 形状不合法、`blob` 里找不到 `UID`）会把那一条跳过。所以
+    `bodies.get(m["id"], "")` 的缺省是承重的：缺了它，缺席那封抛 `KeyError` →
+    被 `except` 吞成 `{ok:false}` ⇒ 整个窗口一封都不返回。"""
     monkeypatch.setattr(mail_client, "list_mail", lambda days: _mt_mails())
     monkeypatch.setattr(mail_client, "fetch_bodies",
                         lambda items: {"A": "补充：实验报告提交"})   # B 刻意缺席
@@ -2432,8 +2433,9 @@ def test_mail_extract_llm_failure_reports_llm_phase(monkeypatch):
 
 def test_mail_extract_passes_warning_codes_and_dropped_through(monkeypatch):
     """警告**以码跨语言传递**（全局约束）：本端点只转发 `extract_todos` 的码与计数，
-    自己**不造句**。把这两个字段写死成 `[]` / `0` 全绿，而前端此后再也拿不到
-    「AI 有 N 条结果指向了不存在的邮件」——静默丢件，页面上只剩一句「没有待办」。"""
+    自己**不造句**。加本用例之前，把这两个字段换成 `[]` / `0` 是**无人反对**的 ——
+    而那样前端此后再也拿不到「AI 有 N 条结果指向了不存在的邮件」：静默丢件，
+    页面上只剩一句「没有待办」。"""
     monkeypatch.setattr(mail_client, "list_mail", lambda days: _mt_mails())
     monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "x"})
     monkeypatch.setattr(llm_client, "extract_todos",
