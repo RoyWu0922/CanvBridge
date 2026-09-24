@@ -9,20 +9,28 @@ from __future__ import annotations
 #: 前端按 `mailtodo.warn.<code>` 取双语句子 —— 这里只出**码**，绝不出句子
 #: （出句子会让英文界面冒中文）。
 WARNING_CODES = (
-    "bad_rule",     # 不是对象 / 缺 id / id 重复
+    "bad_rule",     # 不是对象 / 缺 id / id 重复 / 匹配列表不是数组
     "empty_rule",   # 两个匹配列表都空 ⇒ 子串匹配下会命中**一切**
     "blank_item",   # 某个匹配项是空白串 ⇒ 同上
 )
 
 
-def _as_list(v) -> list:
-    return v if isinstance(v, list) else []
+def _as_list(v, warnings: list[str]) -> list:
+    """`None` / 缺键 ⇒ 空列表（合法：这个维度没写）；**存在但不是数组** ⇒ 空列表 + `bad_rule`。
+
+    静默把它吞成 `[]` 会让整条匹配子句消失，而界面上看不出任何异常。
+    """
+    if isinstance(v, list):
+        return v
+    if v is not None:
+        warnings.append("bad_rule")
+    return []
 
 
 def _clean_items(raw, warnings: list[str]) -> list[str]:
     """收敛一个匹配列表：只留非空字符串，去空白、小写化。"""
     out: list[str] = []
-    for it in _as_list(raw):
+    for it in _as_list(raw, warnings):
         if not isinstance(it, str):
             continue
         s = it.strip()
@@ -46,13 +54,15 @@ def _dedupe(seq: list[str]) -> list[str]:
 def validate_rules(raw) -> tuple[list[dict], list[str]]:
     """把请求体里的规则收敛成可信结构，并报出被丢弃的原因。
 
-    **丢弃一律报码。** 空规则在子串匹配下等于「匹配一切」，静默接受会让整个邮箱
+    **会改变匹配结果的丢弃，一律报码**；不改变匹配结果的（例如列表里的非字符串项，
+    它本来就匹配不上任何东西）静默丢掉。
+    空规则在子串匹配下等于「匹配一切」，静默接受会让整个邮箱
     被收进一个分类而界面上毫无异常 —— 与图书馆那轮修掉的静默失效同族。
     """
     warnings: list[str] = []
     rules: list[dict] = []
     seen: set[str] = set()
-    for r in _as_list(raw):
+    for r in _as_list(raw, warnings):
         if not isinstance(r, dict):
             warnings.append("bad_rule")
             continue
@@ -80,7 +90,7 @@ def validate_rules(raw) -> tuple[list[dict], list[str]]:
 
 
 def label_mails(rules: list[dict], mails: list[dict]) -> dict[str, list[str]]:
-    """{邮件 id: [规则 id, ...]}。命中几条带几个标签，**与规则顺序无关**。
+    """{邮件 id: [规则 id, ...]}。命中几条带几个标签，**命中的规则集合与规则顺序无关**。
 
     没命中任何规则的邮件**不出现在返回值里** —— 调用方用 `.get(id, [])` 取，
     「不在字典里」与「空列表」是同一件事，不必制造两种表示。

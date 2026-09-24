@@ -142,3 +142,21 @@ def test_unmatched_mail_is_absent_from_the_result():
 def test_mail_without_an_id_is_skipped():
     rules, _ = mail_rules.validate_rules([{"id": "r1", "keywords": ["k"]}])
     assert mail_rules.label_mails(rules, [{"subject": "k"}]) == {}
+
+
+def test_non_list_matching_list_is_reported_rather_than_silently_dropped():
+    """`senders` 传成字符串（而不是数组）⇒ 整条子句消失，必须报 `bad_rule`。
+
+    缺键 / `None` 是「这个维度没写」，合法，**不报** —— 否则每条只用关键词的规则
+    都会带一个假警告。
+    """
+    rules, warnings = mail_rules.validate_rules([
+        {"id": "r1", "senders": "@cityu.edu.hk", "keywords": ["实验报告"]},
+    ])
+    assert warnings == ["bad_rule"]
+    assert rules[0]["senders"] == []
+    assert rules[0]["keywords"] == ["实验报告"]
+
+    rules, warnings = mail_rules.validate_rules([{"id": "r2", "keywords": ["x"]}])
+    assert warnings == []
+    assert rules[0]["senders"] == []
