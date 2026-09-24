@@ -481,6 +481,12 @@ def _normalize_extract(data: dict, mails: list[dict], language: str) -> dict:
     """收敛抽取结果。越界 / 非整数 mail_index 一律丢 —— 绝不能把 AI 编的内容
     挂到真实邮件上（与 `_normalize_groups` 同一条纪律）。
 
+    **留痕的确切保证（与 `_normalize_groups` 逐条对齐）**：越界 / 非整数 `mail_index`
+    的条目计入 `dropped` 并报 `ai_dropped`；**其余畸形形状只丢弃、不留痕** ——
+    `items` 里的非对象项、以及 `_keep_dicts` 过滤掉的非对象 `reminders` /
+    `calendar_events` 项，都不计数也不报警。理由是**文案比这窄**：前端把 `ai_dropped`
+    渲染成「AI 有 N 条结果指向了不存在的邮件」，把形状坏掉的项数进去那句话就成了假话。
+
     警告出**码**不出句子：前端按 `mailtodo.warn.<code>` 取双语，出句子会让英文界面冒中文。
     """
     items_in = data.get("items") if isinstance(data, dict) else None
@@ -513,8 +519,10 @@ def extract_todos(base_url: str, api_key: str, model: str,
     """从邮件正文里抽出待办与带日期的日程。**这是本设计里 AI 唯一的活。**
 
     `mails` 每项：{index, subject, sender, received, body}。
-    返回 {"items": [...], "warnings": [码], "dropped": int}；整体失败时 items 为空、
-    warnings 有话说，**绝不静默降级**。
+    返回 {"items": [...], "warnings": [码], "dropped": int}；**整体失败**（取不到 /
+    不是 JSON 对象 / `items` 不是数组）时 items 为空且 warnings 有话说。
+    **「绝不静默降级」只担保到这一层** —— 形状坏掉的**单个元素**按 `_normalize_extract`
+    与 `_keep_dicts` 同一条「只丢弃、不留痕」的口径静默跳过（见那两个函数的 docstring）。
     """
     if not mails:
         return {"items": [], "warnings": [], "dropped": 0}

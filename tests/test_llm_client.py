@@ -479,3 +479,18 @@ def test_extract_todos_retries_once_then_reports(monkeypatch):
     assert len(calls) == 2
     assert r["items"] == []
     assert r["warnings"] == ["ai_unusable"]
+
+
+def test_extract_todos_shape_broken_items_are_declared_silent(monkeypatch):
+    """形状坏掉的**元素**静默跳过：不计 `dropped`、不报警。
+
+    这不是「应当如此」的背书，是**当前契约的记录** —— 与 `_normalize_groups`
+    （见同文件里 `items: ["交实验报告"]` 那条 groups 用例）和 `_keep_dicts`
+    同一条口径，两者的 docstring 都明写了「只丢弃、不留痕」。
+    对照：越界下标**要**计数报警，见 `test_extract_todos_drops_out_of_range_index` ——
+    两者刻意不同，别当成一件事。
+    """
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: json.dumps(
+        {"items": ["交实验报告"]}))
+    r = llm_client.extract_todos("u", "k", "m", [_ex_mail()])
+    assert r == {"items": [], "warnings": [], "dropped": 0}
