@@ -2327,3 +2327,94 @@ def test_mail_classify_tolerates_a_mail_missing_from_fetch_bodies(monkeypatch):
     assert body["count"] == 2
     assert body["mails"][0]["labels"] == ["r1"]
     assert body["mails"][1]["labels"] == []
+
+
+# --- 邮件待办抽取 ---
+
+def test_mail_extract_maps_indices_back_to_mail_ids(monkeypatch):
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: _mt_mails())
+    monkeypatch.setattr(mail_client, "fetch_bodies",
+                        lambda items: {"A": "下周五前交实验报告", "B": ""})
+    seen = {}
+
+    def fake_extract(base, key, model, mails, language="zh"):
+        seen["mails"] = mails
+        return {"items": [{"mail_index": 0, "summary": "交报告",
+                           "reminders": [{"title": "交报告", "due_date": "2026-09-25T23:59:00",
+                                          "notes": ""}],
+                           "calendar_events": []}],
+                "warnings": [], "dropped": 0}
+
+    monkeypatch.setattr(llm_client, "extract_todos", fake_extract)
+    body = TestClient(main.app).post("/api/mail/extract", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
+        "ids": ["A"], "days": 7, "language": "zh"}).json()
+    assert body["ok"] is True
+    # index 是回指锚，必须从 0 连续编号
+    assert [m["index"] for m in seen["mails"]] == [0]
+    assert seen["mails"][0]["body"] == "下周五前交实验报告"
+    # 前端只认 **id**，不认下标
+    assert body["items"][0]["id"] == "A"
+    assert body["items"][0]["mail_index"] == 0
+    assert set(body) == {"ok", "items", "warnings", "dropped", "missing"}
+
+
+def test_mail_extract_reports_ids_that_were_not_found(monkeypatch):
+    """要了 3 个 id、窗口里只有 1 个 ⇒ 必须说出来，不能少给两条还答 ok。
+    多标签/缓存下这是真实情形：缓存里的邮件可能已被挤出窗口。"""
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: _mt_mails())
+    monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "x"})
+    monkeypatch.setattr(llm_client, "extract_todos",
+                        lambda *a, **k: {"items": [], "warnings": [], "dropped": 0})
+    body = TestClient(main.app).post("/api/mail/extract", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
+        "ids": ["A", "ZZ", "YY"]}).json()
+    assert body["ok"] is True
+    assert body["missing"] == 2
+
+
+def test_mail_extract_skips_the_model_when_nothing_matches(monkeypatch):
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: _mt_mails())
+    called = []
+    monkeypatch.setattr(llm_client, "extract_todos",
+                        lambda *a, **k: (called.append(1), {})[1])
+    body = TestClient(main.app).post("/api/mail/extract", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
+        "ids": ["ZZ"]}).json()
+    assert called == []
+    assert body["items"] == []
+    assert body["missing"] == 1
+
+
+def test_mail_extract_rejects_a_missing_or_bad_ids(monkeypatch):
+    for bad in [None, [], "A", ["A", 3], ["A", "  "], [""]]:
+        body = TestClient(main.app).post("/api/mail/extract", json={
+            "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
+            "ids": bad}).json()
+        assert body["ok"] is False, bad
+        assert "ids" in body["error"]
+
+
+def test_mail_extract_reports_the_mail_phase(monkeypatch):
+    def boom(days):
+        raise mail_client.MailError("邮箱会话已失效")
+    monkeypatch.setattr(mail_client, "list_mail", boom)
+    r = TestClient(main.app).post("/api/mail/extract", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "ids": ["A"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["reason"] == "mail"
+
+
+def test_mail_extract_llm_failure_reports_llm_phase(monkeypatch):
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: _mt_mails())
+    monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "x"})
+
+    def boom(*a, **k):
+        raise RuntimeError("模型炸了")
+    monkeypatch.setattr(llm_client, "extract_todos", boom)
+    body = TestClient(main.app).post("/api/mail/extract", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "ids": ["A"]}).json()
+    assert body["ok"] is False
+    assert body["reason"] == "llm"

@@ -66,6 +66,16 @@ class MailClassifyRequest(BaseModel):
     rules: Any = None
 
 
+class MailExtractRequest(LLMConfig):
+    #: 要抽取的邮件 id（来自 /api/mail/classify 的响应）。
+    ids: Any = None
+    #: **与分类用同一个窗口**。规格 §3 的 body 列表里没有它，实现时补上：不给窗口
+    #: 后端就只能另定一个固定值，那会让两个端点的窗口静默漂移（分类按 14 天给 id、
+    #: 抽取按 7 天找 ⇒ 少一周的待办且不报错）。
+    days: int = 14
+    language: str = "zh"
+
+
 class MailDetailRequest(BaseModel):
     #: 字段一律 `Any` + 手写校验：`int` 会把 `"3"` 隐式转成 3、`str` 遇到 3 会抛 422
     #: —— 两条都违反 spec §5（既不许隐式转换，也不许抛 HTTP 异常）。
@@ -117,6 +127,22 @@ def _mail_index(v) -> int | None:
     if isinstance(v, bool) or not isinstance(v, int):
         return None
     return v if v >= 0 else None
+
+
+def _mail_id_list(v) -> list[str] | None:
+    """请求里的邮件 id 列表：必须是非空数组、每项都是非空**字符串**。
+
+    不做任何隐式转换（`3` 不变成 `"3"`）—— 与既有的 `_mail_uid` / `_mail_index` 同一口径。
+    返回 `None` 表示形状不合法。
+    """
+    if not isinstance(v, list) or not v:
+        return None
+    out: list[str] = []
+    for x in v:
+        if not isinstance(x, str) or not x.strip():
+            return None
+        out.append(x.strip())
+    return out
 
 
 class SyncRequest(CanvasConfig):
@@ -1156,6 +1182,45 @@ def mail_summarize(req: MailSummaryRequest):
             language=req.language)
         return {"ok": True, "mails": mails, **r}
     except Exception as exc:
+        return {"ok": False, "reason": phase, "error": str(exc)}
+
+
+@app.post("/api/mail/extract")
+def mail_extract(req: MailExtractRequest):
+    """AI 只做一件窄活：从**指定邮件**的正文里抽出待办与日期。取信仍是纯读。
+
+    分类不经过这里（那是 `/api/mail/classify` 的规则引擎），故本端点不需要 rules。
+    未在窗口里找到的 id 由 `missing` 报出来 —— 少给几条还答 ok 是静默丢件。
+    """
+    ids = _mail_id_list(req.ids)
+    if ids is None:
+        return {"ok": False, "error": "邮件编号列表（ids）必须是非空数字串数组"}
+    phase = "mail"
+    try:
+        mails = mail_client.list_mail(req.days)
+        want = set(ids)
+        sel = [m for m in mails if m["id"] in want]
+        missing = len(want) - len(sel)
+        if not sel:
+            # 一封都没找到：不调模型（那是真金白银），但**要说出来**
+            return {"ok": True, "items": [], "warnings": [], "dropped": 0,
+                    "missing": missing}
+        bodies = mail_client.fetch_bodies(sel)
+        for i, m in enumerate(sel):
+            m["index"] = i
+            m["body"] = bodies.get(m["id"], "")
+        phase = "llm"
+        r = llm_client.extract_todos(req.llm_base_url, req.llm_api_key, req.llm_model,
+                                     sel, language=req.language)
+        # `mail_index` 是 `sel` 的下标（llm_client 已保证它在范围内）→ 换成真实 id。
+        # 前端只认 id：下标是这一趟的临时编号，刷新后毫无意义，拿它当缓存键会让
+        # 勾选状态在下次刷新时挂到**另一封邮件**上。
+        items = [{**it, "id": sel[it["mail_index"]]["id"]} for it in r["items"]]
+        return {"ok": True, "items": items, "warnings": r["warnings"],
+                "dropped": r["dropped"], "missing": missing}
+    except Exception as exc:
+        # `reason` 区分取信阶段与 AI 阶段（同 /api/mail/summarize）：认证失败该去设置页
+        # 重填应用专用密码，报成「AI 失败」会把用户指向查 API key。
         return {"ok": False, "reason": phase, "error": str(exc)}
 
 
