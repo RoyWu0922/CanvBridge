@@ -56,8 +56,8 @@
 
 **Interfaces:**
 - Consumes: 无（第一个任务）
-- Produces: 邮件条目多一个键 `sender_addr: str` —— `parseaddr` 解出的**地址部分**，已小写、已首尾去空白，**不是显示名**；解不出地址时退回 `parseaddr` 自己的兜底（**原文的首个空白分隔词**，带引号则整段），两者都没有时为 `""`。`_CONTRACT_KEYS` 变为 5 元组。**后续所有任务的规则匹配都吃这个键。**
-  ⚠️ **它不保证是地址、也不保证含 `@`**（Task 1 **两轮**复审实测更正；原写「恒为小写地址」，第一版更正写「退回原文的小写形式」—— **两版都是假的全称**）：实测 `From: "Li Wei"` → `"li wei"`、`From: 老师` → `"老师"`、**`From: Li Wei` → `"li"`（不是 `"li wei"`）**。下游**不得**假定 `"@" in sender_addr`，也不得据此做域名后缀提取（`_addr_domain` 对这类值静默返回 `""`，建在它上面的规则会永不命中）。好的一面是「按发件人名字匹配」顺带可用。
+- Produces: 邮件条目多一个键 `sender_addr: str` —— `parseaddr` 解出的**地址部分**（小写、首尾去空白）；解不出地址时它是 `parseaddr` 兜底给的**非地址**值（**形状别猜**、可能是 `""`；三版猜测均被实测证伪，见下条）。`_CONTRACT_KEYS` 变为 5 元组。**后续所有任务的规则匹配都吃这个键。**
+  ⚠️ **它不保证是地址、不保证含 `@`、也不保证非空**（Task 1 **三轮**复审实测更正；原写「恒为小写地址」，第一版写「退回原文的小写形式」，第二版写「退回原文的首个空白分隔词」—— **三版都是假的全称，且都没走生产路径**）：实测 `From: "Li Wei"` → `"li wei"`、`From: Li Wei` → `"li"`、`From: Li:Wei` → `"wei"`、`From: Li <>` → `""`。下游**不得**假定 `"@" in sender_addr`，也不得据此做域名后缀提取（`_addr_domain` 对这类值静默返回 `""`，建在它上面的规则会永不命中）。**也别再宣称「按发件人名字匹配顺带可用」**：带地址时本键就是地址，不带地址的裸 8-bit 头在 `sender_name` 就先抛（裁定 12）⇒ 中文名根本到不了这个键。
 
 **背景（为什么必须做）：** `/api/mail/list` 的 `sender` 是**显示名优先、退回地址**（`mail_client.py:90` `sender_name`：`return name or addr`），通常**根本不含邮箱地址**。用户按「教授邮箱」写的规则会一条都匹配不上，且**完全静默**。
 
@@ -161,13 +161,13 @@ _CONTRACT_KEYS = ("id", "subject", "sender", "sender_addr", "received")
         "subject": decode_mime_header(msg.get("Subject")),
         "sender": sender_name(msg.get("From")),
         # parseaddr 解出的地址部分（小写、首尾去空白），供规则匹配用；不是显示名。
-        # **不保证是地址、也不保证含 @**：解不出地址时退回 parseaddr 自己的兜底 ——
-        # 原文的**首个空白分隔词**（带引号则整段）。实测：From: 老师 → "老师"、
-        # From: Li Wei → "li"（**不是** "li wei"）、From: "Li Wei" → "li wei"。
-        # 所以下游不能假定 "@" in sender_addr，也不能据此做域名后缀提取 ——
-        # `_addr_domain` 对这类值静默返回空串，建在它上面的规则会**永不命中**。
-        # `parseaddr` 不是新依赖：`sender_name` 内部已在用，`_addr_domain` 是同族先例 ——
-        # 这是把「已经解出来又被丢掉」的东西留下。
+        # **不保证是地址、不保证含 @、也不保证非空** —— 解不出地址时它落回 parseaddr 内部的
+        # 其它分支，形状**别去猜**（本注释改过三版，前两版都在猜机制、都被实测证伪）。
+        # 实测（生产路径）：`Li Wei <Li.Wei@CityU.EDU.HK>` → "li.wei@cityu.edu.hk"、`Li Wei` → "li"、
+        # `"Li Wei"` → "li wei"、`Li:Wei` → "wei"、`a<b>` → "b"、`, Li Wei` → ""、`Li <>` → ""。
+        # 所以下游**只能按子串匹配**（可能是非地址值，也可能是空串），不得假定
+        # `"@" in sender_addr`，也不得做域名后缀提取 —— `_addr_domain` 对上述值静默返回空串，
+        # 规则会**永不命中**。裸 8-bit From 头让 `parseaddr` 抛 TypeError（`sender_name` 先抛）。
         "sender_addr": parseaddr(msg.get("From"))[1].strip().lower(),
         "received": _iso(received_dt(msg) or internaldate),
     }
@@ -240,9 +240,9 @@ git commit -m "feat(mail): 条目新增 sender_addr（地址，供规则匹配�
 
 **Interfaces:**
 - Consumes: Task 1 的 `sender_addr` 键。
-  ⚠️ **它不保证含 `@`**（Task 1 复审实测，见 Task 1 Interfaces 的更正）：`From: 老师` → `"老师"`。
-  所以本模块**只能做子串匹配**，**不得**加 `if "@" not in addr: continue` 这类守卫，
-  也不得做域名后缀提取 —— 那会把「按发件人名字匹配」这条路静默砍掉，而用户的规则看起来完全正常。
+  ⚠️ **它不保证含 `@`、也不保证非空**（Task 1 三轮实测更正，见 Task 1 Interfaces）：`From: Li Wei` → `"li"`、`From: Li <>` → `""`。
+  所以本模块**只能做子串匹配**，**不得**加 `if "@" not in addr: continue` 这类守卫
+  （它会静默丢掉上面那些非地址值），也不得做域名后缀提取 —— 用户写的规则看着完全正常，只是永不命中。
 - Produces:
   - `WARNING_CODES: tuple[str, ...]` = `("bad_rule", "empty_rule", "blank_item")`
   - `validate_rules(raw) -> tuple[list[dict], list[str]]` —— 规则每项形如 `{"id": str, "name": str, "senders": list[str], "keywords": list[str], "search_body": bool}`，`senders`/`keywords` 里的串**已小写化、已去空白**；第二项是**去重后**的警告码。
@@ -335,9 +335,9 @@ def test_keyword_does_not_see_body_unless_search_body():
 def test_sender_rule_matches_the_address_form():
     """规则写地址，就按地址匹配。
 
-    **别把这句读成「和显示名无关」**——`sender_addr` 在 `From` 拆不出地址时退回的是
-    **原文的首个空白分隔词**（`From: 老师` → `"老师"`、**`From: Li Wei` → `"li"`**），
-    所以按名字写的规则**也会**命中，见下一条。本用例名原先叫 `..._not_display_name`。
+    **别把这句读成「和显示名无关」**——`sender_addr` 解不出地址时给的是**非地址**值
+    （`From: Li Wei` → `"li"`、`From: Li:Wei` → `"wei"`、`From: Li <>` → `""`），
+    所以按非地址值写的规则**也会**命中，见下一条。本用例名原先叫 `..._not_display_name`。
     """
     rules, _ = mail_rules.validate_rules([
         {"id": "r1", "name": "李教授", "senders": ["li.wei@cityu.edu.hk"]}])
@@ -345,15 +345,16 @@ def test_sender_rule_matches_the_address_form():
     assert mail_rules.label_mails(rules, [_mail(addr="other@cityu.edu.hk")]) == {}
 
 
-def test_sender_rule_can_match_a_display_name_too():
-    """`sender_addr` **不保证含 `@`**（Task 1 复审实测）：`From: 老师` 给到 `"老师"`。
+def test_sender_rule_can_match_a_non_address_value():
+    """`sender_addr` **不保证含 `@`**（Task 1 实测，生产路径）：`From: Li Wei` 给到 `"li"`。
 
-    这是**特性**不是缺陷 —— 用户按教授的中文名写规则也能命中。谁要是给
-    `label_mails` 加一条 `if "@" not in addr: continue` 的守卫，这条会红，
-    而那条守卫会把名字匹配**静默**砍掉。这是本用例存在的唯一理由。
+    谁要是给 `label_mails` 加一条 `if "@" not in addr: continue` 的守卫，这条会红。
+    **别再写「按教授中文名匹配」** —— 中文名到不了这里：带地址时本键是地址，
+    不带地址的裸 8-bit 头在 `sender_name` 就先抛 TypeError（ledger 裁定 12）。
+    本用例只钉一件事：不得假定本键含 `@`。
     """
-    rules, _ = mail_rules.validate_rules([{"id": "r1", "senders": ["老师"]}])
-    assert mail_rules.label_mails(rules, [_mail(addr="老师")]) == {"1": ["r1"]}
+    rules, _ = mail_rules.validate_rules([{"id": "r1", "senders": ["li"]}])
+    assert mail_rules.label_mails(rules, [_mail(addr="li")]) == {"1": ["r1"]}
 
 
 def test_sender_matches_a_bare_domain_suffix():
@@ -518,7 +519,7 @@ def label_mails(rules: list[dict], mails: list[dict]) -> dict[str, list[str]]:
 
 Run: `.venv/bin/python -m pytest tests/test_mail_rules.py -v`
 Expected: PASS —— **15 条**全绿，且 `-v` 列表里每条用例名都在。若条数少于 15，先查是哪条没被收集。
-（原写 14：Task 1 复审后本条补了 `test_sender_rule_can_match_a_display_name_too`。**先按 15 核对，不符再查，不要照抄数字**。）
+（原写 14：Task 1 复审后补了 `test_sender_rule_can_match_a_non_address_value`（原名 `..._display_name_too`，因该名与实测不符已改）。**先按 15 核对，不符再查，不要照抄数字**。）
 
 - [ ] **Step 5: 变异检验（证明关键守卫承重）**
 
@@ -533,7 +534,7 @@ Expected: **FAIL** —— `test_keyword_does_not_see_body_unless_search_body` �
 变异 C —— 把 `senders` 改成匹配显示名（`addr` → `str(m.get("sender") or "")`）：
 Run: `.venv/bin/python -m pytest tests/test_mail_rules.py -q -k sender`
 Expected: **FAIL** —— `-k sender` 共收 **4** 条（`..._rule_matches_the_address_form`、
-`..._rule_can_match_a_display_name_too`、`..._matches_a_bare_domain_suffix`、
+`..._rule_can_match_a_non_address_value`、`..._matches_a_bare_domain_suffix`、
 `...s_and_keywords_are_or_within_one_rule`），这 4 条的 `sender` 侧断言应**全红**。
 跑完**改回**。
 **这条 Expected 是我推的，不是跑出来的 —— 以你跑出的真实红集为准**：若条数或名字不符，
