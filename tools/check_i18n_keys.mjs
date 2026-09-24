@@ -82,8 +82,8 @@ const FRONTEND = join(ROOT, "frontend");
 
    2026-09-25 Task 7（规则编辑器）41 → 33：上一段给本任务预留的那 8 个键**全部消费**，
    一个不剩 —— `rule_name` `rule_senders` `rule_keywords` `rule_body` `rule_del` 由 app.js
-   新增的 mtRenderRules() 内联 `t()` 取用；`rule_bad` 由 mtRenderRules() 与 mtRuleSave 的
-   点击处理器两处取用；`rule_saved` 由 mtRuleSave 的点击处理器取用；`rule_import_failed`
+   新增的 mtRenderRules() 内联 `t()` 取用；`rule_bad` 由 mtRenderRules()、mtSyncRuleGate() 与
+   mtRuleSave 的点击处理器**三处**取用；`rule_saved` 由 mtRuleSave 的点击处理器取用；`rule_import_failed`
    由 mtRuleImport 的导入回调取用。实测死键 33，与预留数 41 − 8 逐字吻合，故把本行下调到
    33 收紧防线（本任务不动上一段末尾那条路标：Task 8 → 30、Task 9 → 27、Task 10 → 21）。 */
 const DEAD_BASELINE = 33;

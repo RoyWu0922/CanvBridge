@@ -3634,8 +3634,17 @@ function mtLoadRules(){
   }
 }
 
+/* 写 localStorage。**返回是否写成功** —— `setItem` 会抛（配额满、隐私模式禁用站点存储），
+   而它是本页唯一的持久化出口：调用方必须能分辨「存下了」与「没存下」。
+   读的一侧（`mtLoadRules`）早就用 try/catch 兜住了，写的一侧一直没有 ——
+   无 catch 时异常会在调用方的 `setStatus(...)` **之前**抛出，用户看到的是「点了没反应」。 */
 function mtSaveRules(rules){
-  localStorage.setItem(MT_RULES_KEY, JSON.stringify(rules));
+  try{
+    localStorage.setItem(MT_RULES_KEY, JSON.stringify(rules));
+    return true;
+  }catch(e){
+    return false;
+  }
 }
 
 /* 名称必填，且发件人 / 关键词至少一个非空。两者都空的规则**在后端会被丢弃**
@@ -3740,7 +3749,8 @@ $("mtRuleList").addEventListener("input", mtSyncRuleGate);
 $("mtRuleSave").addEventListener("click", () => {
   mtReadRulesFromPanel();
   if(!mtRules.every(mtRuleValid)){ mtRenderRules(); setStatus(t("mailtodo.rule_bad"), "err"); return; }
-  mtSaveRules(mtRules);
+  /* 按**写入结果**报告，不是按「走到这里了」报告 —— 见 mtSaveRules 的注释。 */
+  if(!mtSaveRules(mtRules)){ setStatus(t("mailtodo.rule_save_failed"), "err"); return; }
   setStatus(t("mailtodo.rule_saved", { n: mtRules.length }), "ok");
   loadMailTodo();                       // 规则改了立刻重算分类
 });
@@ -3771,10 +3781,14 @@ $("mtRuleImport").addEventListener("click", () => {
       const rid = x => (x && typeof x.id === "string") ? x.id : "";
       /* 合并而不是覆盖：导入的是「加几条」，把用户手写的规则顶掉是破坏性的。
          同 id 视作同一条，用导入的那份覆盖（本地 id 由 mtNewRule 生成，不会撞）。 */
+      const prev = mtRules;
       const byId = new Map(mtRules.map(r => [r.id, r]));
       arr.forEach(r => { if(rid(r)) byId.set(r.id, r); });
       mtRules = [...byId.values()];
-      mtSaveRules(mtRules);
+      /* 写失败 ⇒ **连内存一起退回**：不退回的话镜像与 localStorage 就不一致了 ——
+         用户看到的是没导入进去，而下一次保存会把这批没存下的规则顺带写进去。
+         这条路径没有成功提示（面板重渲就是提示），所以失败必须**明确报**。 */
+      if(!mtSaveRules(mtRules)){ mtRules = prev; setStatus(t("mailtodo.rule_save_failed"), "err"); return; }
       mtRenderRules();
     });
     fr.readAsText(f);
