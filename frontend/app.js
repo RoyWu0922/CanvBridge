@@ -2437,6 +2437,33 @@ let mailState = { mails: [], groups: null, loading: false, error: "" };
 let mtDays = 14;
 const MT_RULES_KEY = "sc_mailRules";
 const MT_DONE_KEY  = "sc_mailDone";
+/* 指纹的分隔符与折行归一**也声明在这段早声明区里** —— 与上面 mtDays 同一个判据，
+   只是这一条今天**还没炸**，靠的是一行短路：`renderMailTodo()` 写计数那行是
+   `(mtState.loading || mtState.error || !mtState.mails.length) ? "" : t(..., mtTodoCount())`，
+   而页面加载时 `mtState.mails` 是 `[]` ⇒ `mtTodoCount()` 根本不被求值。
+   **这是巧合，不是保障**：把 `mtState` 声明处填上邮件（Task 9 若要缓存邮件就会这么写）
+   立刻炸 —— 探针实测把那一行前提翻掉后，栈逐帧就是
+   `app.js:2476`（顶层 applyLang）→ `applyLang (i18n.js:967)` → `renderMailTodo (:3567)`
+   → `mtTodoCount (:3632)` → `mtFingerprint (:3609)` → `Cannot access 'mtFold' before initialization`；
+   且同一批 `const`（连 `HUB_REFRESH_TTL`）全部留在 TDZ ⇒ app.js 顶层余下代码整段不执行。
+   `mtFingerprint` / `mtDoneKey` 是**函数声明**（提升），留在原处无所谓；
+   只有 `const` 必须提前。 */
+/* 分隔符**必须非空、且不会出现在字段内容里**。写成空串是最隐蔽的错法：
+   `{主题:"ab", 发件人:"c"}` 与 `{主题:"a", 发件人:"bc"}` 会拼出同一个键，
+   勾选状态于是挂到**另一封邮件**上 —— 界面上看不出任何异常。
+   这里用的两个控制字符在邮件头里不可能出现。
+   **必须写成转义序列**：把控制字符本身落进源码，它在编辑器与 diff 里都不可见、
+   grep 不到，任何一次复制粘贴或工具链改写都可能把它吃掉。 */
+const MT_SEP1 = "\u0001", MT_SEP2 = "\u0002";
+/* **先做折行归一**：后端回的主题是 IMAP 原始的折叠头，真实数据里就带 CRLF ——
+   实测本机 25 封里有 13 封的主题含 CR（`…CASH\r\n Online Training…`）。
+   指纹自己带 CR 不会坏，但勾选键要经 `data-done` 属性往返一趟，而
+   **HTML 解析器在预处理输入流时会把 CRLF / CR 归一成 LF、把 NUL 换成 U+FFFD**
+   （实测：`mtDoneKey(fp, 0)` 长 194、`dataset.done` 长 193，控制码从
+   `[13,10,1,1,2]` 变成 `[10,1,1,2]`）⇒ 写进去的键与读出来的键**不相等**：
+   复选框点下去永远不会显示为勾上、刷新后也读不回来。那是静默丢件，不是显示瑕疵。
+   在**指纹**这一层归一，所有消费者（items 键 / 勾选键 / 属性）就都看到同一个规范串。 */
+const mtFold = s => String(s || "").replace(/[\r\n\0]+/g, " ");
 let mtRules = mtLoadRules();                      // 从 localStorage 填镜像；声明即填，任何读者都不可能读到空
 let mtState = { mails: [], labels: {}, loading: false, error: "", warnings: [],
                 items: {}, extracting: false, extractWarnings: [], missing: 0 };
@@ -3584,7 +3611,40 @@ function renderMailTodo(){
   box.innerHTML = mtTodoHtml();
 }
 
-function mtTodoCount(){ return 0; }              // Task 8 填真值
+/* 邮件指纹：主题 + 发件人 + 收信时间 拼成的**稳定字符串键**。
+   **不是密码学哈希** —— 它只当 localStorage 的键，不需要抗碰撞，也不需要
+   `crypto.subtle`（那是异步的、还要 secure context，为一把键引入它不划算）。
+   **更不能用 IMAP UID**：UID 会随 UIDVALIDITY 变，服务器重整后缓存与勾选状态会
+   整批失效 —— 用户看到的是「我勾过的全没了」。 */
+function mtFingerprint(m){
+  return [mtFold(m.subject), mtFold(m.sender), mtFold(m.received)].join(MT_SEP1);
+}
+/* 勾选状态的键 = 邮件指纹 + **条目下标**。同一封邮件抽出两条待办时，
+   勾掉一条**不能**连带勾掉另一条 —— 只用指纹当键就会犯这个错。 */
+function mtDoneKey(fp, i){ return fp + MT_SEP2 + String(i); }
+
+function mtDoneSet(){
+  try{
+    const raw = localStorage.getItem(MT_DONE_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr : []);
+  }catch(e){ return new Set(); }
+}
+function mtSetDone(key, on){
+  const s = mtDoneSet();
+  if(on) s.add(key); else s.delete(key);
+  localStorage.setItem(MT_DONE_KEY, JSON.stringify([...s]));
+}
+
+function mtTodoCount(){
+  /* 只数**当前窗口**里的邮件，与 `mtTodoHtml()` 渲染的范围**逐字对齐** ——
+     否则用户会看到一个比清单上能数出来的数更大的数。items 保留窗口外的条目
+     （见 loadMailTodo：那是为了不重复花 token），但计数不能把它们算进来。 */
+  return mtState.mails.reduce((n, m) => {
+    const it = mtState.items[mtFingerprint(m)];
+    return n + ((it && it.reminders) || []).length;
+  }, 0);
+}
 
 function renderMailTodoWarnings(){
   const el = $("mtWarn");
@@ -3595,17 +3655,102 @@ function renderMailTodoWarnings(){
   el.textContent = msgs.join(" · ");
 }
 
-function mtTodoHtml(){                           // Task 8 填真值
-  return `<div class="card mail-empty">${esc(t("mailtodo.need_classify"))}</div>`;
+/* 待办清单：按分类分组。**一封邮件命中 N 个分类，就在 N 个组下各出现一次**，
+   但勾选状态共用同一把键（勾一处、各处同步）—— 见 spec §4「多标签邮件在清单里怎么摆」。
+   真正的伤害（同一件事被当三件事、勾了一处忘另一处）由共享键消掉；重复的**行**
+   只是分组视图的必然结果。 */
+function mtTodoHtml(){
+  const groups = new Map();                     // 分类名 -> [行]
+  const done = mtDoneSet();
+  mtState.mails.forEach(m => {
+    const fp = mtFingerprint(m);
+    const it = mtState.items[fp];
+    const rows = (it && it.reminders) || [];
+    if(!rows.length) return;                    // 没有待办的邮件不进清单（它可能只在时间表里）
+    const labels = mtState.labels[m.id] || [];
+    /* 标签是**后端去空白之后**的规则 id（`mail_rules.py` 的 `rid = rid.strip()`），
+       而本地 `mtRules` 里的 id 是原样的（导入路径不 trim）⇒ 比较前必须同样 trim，
+       否则一条 id 带空白的规则会落到 `|| rid` 分支、标题显示裸 id 而不是规则名。
+       **收口在读取点**：localStorage 里可能已经存着带空白的 id，写入口的规范化救不了存量。 */
+    const names = labels.length
+      ? labels.map(rid => (mtRules.find(r => String(r.id || "").trim() === rid) || {}).name || rid)
+      : [t("mailtodo.unmatched")];
+    names.forEach(n => {
+      if(!groups.has(n)) groups.set(n, []);
+      rows.forEach((rem, i) => {
+        const key = mtDoneKey(fp, i);
+        groups.get(n).push(`
+          <div class="mt-row">
+            <label class="check">
+              <input type="checkbox" data-done="${escAttr(key)}"${done.has(key) ? " checked" : ""}>
+              <span>${esc(rem.title || it.summary || "")}</span>
+            </label>
+            <em>${esc(mtFmtWhen(rem.due_date))}</em>
+            <em class="muted">${esc(mtWhoSent(m))}</em>
+          </div>`);
+      });
+    });
+  });
+  if(!groups.size) return `<div class="card mail-empty">${esc(t("mailtodo.need_classify"))}</div>`;
+  return [...groups.entries()].map(([name, rows]) =>
+    `<div class="card mt-group"><h4>${esc(name)}</h4>${rows.join("")}</div>`).join("");
+}
+
+function mtWhoSent(m){
+  /* 显示名优先（与邮件页一致）；没有显示名时**回落到地址** —— 有地址总比空着强。 */
+  return String(m.sender || m.sender_addr || "");
+}
+
+function mtFmtWhen(iso){
+  if(!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d) ? String(iso) : d.toLocaleString();
 }
 
 function mtScheduleHtml(){                       // Task 9 填真值
   return "";
 }
 
-async function loadMailTodo(){                   // Task 8 接后端
+async function loadMailTodo(){
+  if(mtState.loading) return false;
+  mtState.loading = true; mtState.error = ""; mtState.warnings = [];
+  renderMailTodo();
+  /* 规则里只要有 search_body，后端就要给**所有**邮件取正文（30 封约 3 秒）。
+     先说清楚在等什么，否则用户以为卡死了。 */
+  const reading = mtRules.some(r => r.search_body === true);
+  if(reading && $("mtMeta")) $("mtMeta").textContent = t("mailtodo.body_reading");
+  const r = await api("mail/classify", { days: mtDays, rules: mtRules });
+  mtState.loading = false;
+  if(r.ok !== true){
+    mtState.error = (r.error || t("mailtodo.load_failed"));
+    renderMailTodo();
+    return false;
+  }
+  mtState.mails = r.mails || [];
+  mtState.labels = {};
+  mtState.mails.forEach(m => { mtState.labels[m.id] = m.labels || []; });
+  mtState.warnings = r.warnings || [];
+  /* `mtState.items` 不在这里重映射。Task 9 的抽取**写入时就用的指纹键**
+     （计划 `:1904-1908`：`fpById[it.id]` 把响应里的 id 折成指纹再存），
+     而 `mtTodoHtml()` / `mtScheduleRows()` / `mtExtract()` 的 `have` 集合读的也是指纹。
+     曾经这里有过一段「id → 指纹」的重映射 —— 它按「items 是 id 键」的错误前提写，
+     实际每次刷新都把 items 覆盖成空对象，**静默删光用户花 token 抽出来的待办**。
+     键的形状只有一种，不需要、也不能在这里转换。 */
+  renderMailTodo();
   return true;
 }
+
+/* 勾选：事件委托。读**行上写的键**，绝不按下标或标题反推 —— 那类错位是静默的。 */
+$("mtTodo").addEventListener("change", e => {
+  const cb = e.target.closest("[data-done]");
+  if(!cb) return;
+  mtSetDone(cb.dataset.done, cb.checked);
+  renderMailTodo();                             // 多标签下同一把键的其它行要同步
+});
+
+$("mtRefresh").addEventListener("click", () => {
+  withBusy(t("mailtodo.refresh"), $("mtRefresh"), loadMailTodo);
+});
 
 /* 天数选择：改了立刻重算。**坏值回落到 14** —— `Number()` 吃的四种坏值（`""`→0、`"abc"`→NaN、
    `"0"`→0、`"-3"`→-3）全被 `isFinite && > 0` 拦下；真要漏出去，线上值会是 `null`

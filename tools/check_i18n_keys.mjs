@@ -85,8 +85,15 @@ const FRONTEND = join(ROOT, "frontend");
    新增的 mtRenderRules() 内联 `t()` 取用；`rule_bad` 由 mtRenderRules()、mtSyncRuleGate() 与
    mtRuleSave 的点击处理器**三处**取用；`rule_saved` 由 mtRuleSave 的点击处理器取用；`rule_import_failed`
    由 mtRuleImport 的导入回调取用。实测死键 33，与预留数 41 − 8 逐字吻合，故把本行下调到
-   33 收紧防线（本任务不动上一段末尾那条路标：Task 8 → 30、Task 9 → 27、Task 10 → 21）。 */
-const DEAD_BASELINE = 33;
+   33 收紧防线（本任务不动上一段末尾那条路标：Task 8 → 30、Task 9 → 27、Task 10 → 21）。
+
+   2026-09-25 Task 8（分类请求 + 待办清单）33 → 30：上一段给本任务预留的那 3 个键**全部消费**，
+   一个不剩 —— `body_reading` 由 loadMailTodo() 在「有规则要搜正文」时写进 `#mtMeta`；
+   `load_failed` 是 loadMailTodo() 失败分支的回退文案；`unmatched` 由 mtTodoHtml() 给
+   「一封都没命中任何规则」的邮件当分组名。三个都是内联 `t()` 字面量取用。实测死键 30，
+   与预留数 33 − 3 逐字吻合，故把本行下调到 30 收紧防线（本任务不动上一段末尾那条路标
+   剩下的那两档：Task 9 → 27、Task 10 → 21）。 */
+const DEAD_BASELINE = 30;
 
 /* 动态家族前缀：源码里存在 "wd." 这样的引号字面量，键由它拼出来
    （app.js 的 t("wd."+d)）。这类键无法被字面量扫描判活，只能按前缀整体放行。

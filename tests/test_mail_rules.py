@@ -6,11 +6,11 @@ def _mail(mid="1", addr="", subject="", body=""):
     return {"id": mid, "sender_addr": addr, "subject": subject, "body": body}
 
 
-# --- validate_rules：空规则是「匹配一切」的陷阱 ---
+# --- validate_rules：空规则是「谁也匹配不到」的死规则 ---
 
 def test_empty_rule_is_dropped_and_reported():
-    """`senders` 与 `keywords` 都空时，子串匹配退化成「任何字符串都包含空串」
-    ⇒ 整个邮箱被收进一个分类，而界面上看不出任何异常。必须丢弃**并报码**。"""
+    """`senders` 与 `keywords` 都空时**这条规则谁也匹配不到**（实测 `label_mails`
+    收到它返回空字典）⇒ 留着它等于用户以为设了筛选、其实什么都不会发生。必须丢弃**并报码**。"""
     rules, warnings = mail_rules.validate_rules([
         {"id": "r1", "name": "空", "senders": [], "keywords": []}])
     assert rules == []
@@ -18,7 +18,7 @@ def test_empty_rule_is_dropped_and_reported():
 
 
 def test_whitespace_only_items_are_dropped_and_reported():
-    """`["", "  "]` 里的空白串与空规则同罪。"""
+    """`["", "  "]` 里的空白串会被剥掉并报码；规则**本身还在**，照常参与匹配。"""
     rules, warnings = mail_rules.validate_rules([
         {"id": "r1", "name": "空白", "senders": ["", "  "], "keywords": ["报告"]}])
     assert rules[0]["senders"] == []

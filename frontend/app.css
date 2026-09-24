@@ -562,3 +562,7 @@ input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-all
 .mail-att { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 13px; }
 .mail-att-name { flex: 1; overflow-wrap: anywhere; }
 .mail-att-size { color: var(--muted, #888); font-size: 12px; }
+
+/* ---------- 邮件规则分类（待办 / 时间表） ---------- */
+.mt-row { display:flex; align-items:center; gap:10px; padding:8px 14px; border-top:1px solid var(--line, #eee); }
+.mt-group h4 { margin:0 0 8px; font-size:13px; color:var(--muted, #888); }
