@@ -205,7 +205,9 @@ def header_item(uid: str, msg, internaldate: datetime | None = None) -> dict:
         "id": uid,
         "subject": decode_mime_header(msg.get("Subject")),
         "sender": sender_name(msg.get("From")),
-        # 恒为**地址**（小写、去空白），供规则匹配用；不是显示名。
+        # parseaddr 解出的地址部分（小写、去空白），供规则匹配用；不是显示名。
+        # 但**不保证含 @**：拆不出地址时退回原文的小写形式（From: 老师 → "老师"），
+        # 所以下游不能假定 "@" in sender_addr，也不能据此做域名后缀提取。
         # `parseaddr` 不是新依赖：`sender_name` 内部已在用，`_addr_domain` 是同族先例 ——
         # 这是把「已经解出来又被丢掉」的东西留下。
         "sender_addr": parseaddr(msg.get("From"))[1].strip().lower(),

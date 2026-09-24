@@ -222,6 +222,7 @@ def test_list_mail_returns_contract_items(monkeypatch):
     assert set(by_id) == {"1", "2"}
     assert by_id["1"]["subject"] == "作业"
     assert by_id["1"]["sender"] == "老师"
+    assert by_id["1"]["sender_addr"] == "t@cityu.edu.hk"
     assert by_id["1"]["received"] == "2026-09-17T08:31:00+00:00"
     assert all(set(x) == {"id", "subject", "sender", "sender_addr", "received"}
                for x in out)
