@@ -3785,11 +3785,14 @@ async function mtExtract(){
        抽取的提示词明确允许省略「纯告知类邮件」（见 llm_client.py 的 _TODOS_SCHEMA），
        这不是异常、是规格。不记账的话这封信**每点一次按钮就被重读一遍正文、重问一次模型** ——
        而「别重复花 token」正是这个账本存在的理由。
-       空条目对三个读者都是**无操作**：`mtTodoHtml` 的 `rows.length` 为 0、直接 return；
-       `mtScheduleRows` 的两个循环都遍历空数组；`mtTodoCount` 加 0。
-       第四个读者 `mtHasItems()` **会翻转**（假 → 真）—— 那是**有意的**：
-       它正是 `mtEmptyMsg()` 拿来把空态从「还没抽过」改判成「这次没抽出来」的依据，
-       也是修复轮 1 那条连带改动的前提。 */
+       空条目对**四个**读者都是**无操作**：`mtTodoHtml` 的 `rows.length` 为 0、直接 return；
+       `mtScheduleRows` 的两个循环都遍历空数组；`mtTodoCount` 加 0；
+       `mtHasExtractedContent()` 按键取到条目后两个分支都落空（`reminders` 是空数组、
+       `calendar_events` 里没有带 start 的），⇒ 空条目给它的贡献恒为假、
+       它在与不在都不改这个函数的返回值。
+       第五个读者 `mtHasItems()` **会翻转**（假 → 真）—— 那是**有意的**，它的两个消费者
+       `mtEmptyMsg()` 与 `mtSchedEmptyMsg()` 正是靠这个翻转，把空态从「还没抽过」
+       改判成「这次没抽出来」。 */
     todo.forEach(m => {
       const fp = mtFingerprint(m);
       if(!mtState.items[fp]) mtState.items[fp] = { id: m.id, reminders: [], calendar_events: [] };
