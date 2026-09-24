@@ -2466,7 +2466,7 @@ const MT_SEP1 = "\u0001", MT_SEP2 = "\u0002";
 const mtFold = s => String(s || "").replace(/[\r\n\0]+/g, " ");
 let mtRules = mtLoadRules();                      // 从 localStorage 填镜像；声明即填，任何读者都不可能读到空
 let mtState = { mails: [], labels: {}, loading: false, error: "", warnings: [],
-                items: {}, extracting: false, extractWarnings: [], missing: 0 };
+                items: {}, extracting: false, extractWarnings: [], missing: 0, dropped: 0 };
 
 /* 详情弹层「当前这一封」的状态（`id` + `detail` + `detailId`）。
    **声明在这里、而不是末尾那段邮箱代码里**：与上面的 `mailState` 同一个道理，而且这一条
@@ -3672,11 +3672,22 @@ function mtTodoCount(){
   }, 0);
 }
 
+/* 警告码 → 它那句话里 `{n}` 该填哪个数。**不同的码数的是不同的东西**，不能一律喂 `missing`：
+   `ai_dropped` 数「模型给回来的结果里有几条指向了不存在的邮件」（后端只在 dropped > 0 时发这个码），
+   `ids_missing` 数「这次少给了几封信」。以前两个都喂 `missing` ⇒ `ai_dropped` 在
+   dropped=1 / missing=0 时把「0 条」印在屏幕上，而**只要这句话出现，那个数就一定是错的**。
+   其余四个码的文案里没有 `{n}`，给了也不显示。 */
+function mtWarnCount(code){
+  if(code === "ai_dropped") return mtState.dropped;
+  if(code === "ids_missing") return mtState.missing;
+  return 0;
+}
+
 function renderMailTodoWarnings(){
   const el = $("mtWarn");
   if(!el) return;
   const codes = [...(mtState.warnings || []), ...(mtState.extractWarnings || [])];
-  const msgs = codes.map(w => t("mailtodo.warn." + w, { n: mtState.missing }));
+  const msgs = codes.map(w => t("mailtodo.warn." + w, { n: mtWarnCount(w) }));
   el.hidden = !msgs.length;
   el.textContent = msgs.join(" · ");
 }
@@ -3749,6 +3760,7 @@ async function mtExtract(){
   mtState.extracting = true;
   mtState.extractWarnings = [];     // 上一次的警告描述的是上一次的结果，不能陪着这一次的错误条
   mtState.missing = 0;
+  mtState.dropped = 0;
   renderMailTodo();
   try{
     const r = await api("mail/extract", {
@@ -3764,14 +3776,25 @@ async function mtExtract(){
       const fp = fpById[it.id];
       if(fp) mtState.items[fp] = it;             // 键是**指纹**，不是 id（见 Task 8）
     });
+    /* 请求过、响应里却没给回来的信，**也要记进账本**（存一条没有内容的空条目）。
+       抽取的提示词明确允许省略「纯告知类邮件」（见 llm_client.py 的 _TODOS_SCHEMA），
+       这不是异常、是规格。不记账的话这封信**每点一次按钮就被重读一遍正文、重问一次模型** ——
+       而「别重复花 token」正是这个账本存在的理由。
+       空条目对三个读者都是**无操作**：`mtTodoHtml` 的 `rows.length` 为 0、直接 return；
+       `mtScheduleRows` 的两个循环都遍历空数组；`mtTodoCount` 加 0。 */
+    todo.forEach(m => {
+      const fp = mtFingerprint(m);
+      if(!mtState.items[fp]) mtState.items[fp] = { id: m.id, reminders: [], calendar_events: [] };
+    });
     const dropped = Number(r.dropped || 0);
     const missing = Number(r.missing || 0);
     mtState.missing = missing;
+    mtState.dropped = dropped;
     mtState.extractWarnings = (r.warnings || []).slice();
     if(missing && !mtState.extractWarnings.includes("ids_missing")){
       mtState.extractWarnings.push("ids_missing");   // 少给几条还答 ok 是静默丢件
     }
-    if(!Object.keys(mtState.items).length && !dropped && !missing){
+    if(!mtHasExtractedContent() && !dropped && !missing){
       setStatus(t("mailtodo.extract_none"), "info");
     }
   }catch(e){
@@ -3786,6 +3809,21 @@ async function mtExtract(){
    两处空态都要靠它分叉 —— 没抽过时说「这次没有抽出…」是假话（根本还没抽）。 */
 function mtHasItems(){
   return Object.keys(mtState.items || {}).length > 0;
+}
+
+/* 「这次抽出来的东西里，有没有能落到界面上的」—— 与 `mtHasItems()` 是**两件事**，别合并：
+   `mtHasItems()` 只回答「抽过没有」（空条目也算抽过），而这里问的是「抽出内容没有」。
+   只数**会在清单或时间表上出现一行**的条目：清单渲染 `reminders`（有没有日期都渲染），
+   时间表只收**带 start 的** calendar_events 与**带 due_date 的** reminders
+   —— 与 mtScheduleRows() 的两个 `if(!… ) return` 逐条对齐。
+   范围只看**当前窗口**的邮件，与 `mtTodoCount()` 的口径一致（窗口外的条目留着是为了不重复花 token）。 */
+function mtHasExtractedContent(){
+  return mtState.mails.some(m => {
+    const it = mtState.items[mtFingerprint(m)];
+    if(!it) return false;
+    if(((it.reminders) || []).length) return true;
+    return ((it.calendar_events) || []).some(ev => ev && ev.start);
+  });
 }
 
 /* 两处空态共用的一句话。**每个分支各写一条字面的键字符串** ——
