@@ -2443,8 +2443,8 @@ const MT_DONE_KEY  = "sc_mailDone";
    而页面加载时 `mtState.mails` 是 `[]` ⇒ `mtTodoCount()` 根本不被求值。
    **这是巧合，不是保障**：把 `mtState` 声明处填上邮件（Task 9 若要缓存邮件就会这么写）
    立刻炸 —— 探针实测把那一行前提翻掉后，栈逐帧就是
-   `app.js:2476`（顶层 applyLang）→ `applyLang (i18n.js:967)` → `renderMailTodo (:3567)`
-   → `mtTodoCount (:3632)` → `mtFingerprint (:3609)` → `Cannot access 'mtFold' before initialization`；
+   `顶层 applyLang()`（app.js）→ `applyLang` 里那句 `renderMailTodo` 钩子（i18n.js）→ `renderMailTodo`
+   → `mtTodoCount` → `mtFingerprint` → `Cannot access 'mtFold' before initialization`；
    且同一批 `const`（连 `HUB_REFRESH_TTL`）全部留在 TDZ ⇒ app.js 顶层余下代码整段不执行。
    `mtFingerprint` / `mtDoneKey` 是**函数声明**（提升），留在原处无所谓；
    只有 `const` 必须提前。 */
@@ -3630,10 +3630,20 @@ function mtDoneSet(){
     return new Set(Array.isArray(arr) ? arr : []);
   }catch(e){ return new Set(); }
 }
+/* 写 localStorage。与读的一侧（`mtDoneSet` 的 try/catch）对齐：`setItem` 会抛
+   （配额满、隐私模式禁用站点存储），而这里是勾选状态**唯一**的持久化出口。
+   无 catch 时异常会在调用方的 `renderMailTodo()` **之前**抛出 ⇒ 复选框停在
+   浏览器默认的已勾样子、什么都没存、也没有提示，F5 后勾消失 ——
+   与 `mtSaveRules` 那处同一形态（见它的注释）。 */
 function mtSetDone(key, on){
   const s = mtDoneSet();
   if(on) s.add(key); else s.delete(key);
-  localStorage.setItem(MT_DONE_KEY, JSON.stringify([...s]));
+  try{
+    localStorage.setItem(MT_DONE_KEY, JSON.stringify([...s]));
+    return true;
+  }catch(e){
+    return false;
+  }
 }
 
 function mtTodoCount(){
@@ -3744,7 +3754,14 @@ async function loadMailTodo(){
 $("mtTodo").addEventListener("change", e => {
   const cb = e.target.closest("[data-done]");
   if(!cb) return;
-  mtSetDone(cb.dataset.done, cb.checked);
+  /* 按**写入结果**分流，不是按「走到这里了」报告 —— 见 mtSetDone 的注释。
+     失败时也要重渲：`mtDoneSet()` 每次都重新读存储，重渲会把复选框退回**真实**状态
+     （不重渲它就停在假的已勾样子）。 */
+  if(!mtSetDone(cb.dataset.done, cb.checked)){
+    renderMailTodo();
+    setStatus(t("mailtodo.done_save_failed"), "err");
+    return;
+  }
   renderMailTodo();                             // 多标签下同一把键的其它行要同步
 });
 
