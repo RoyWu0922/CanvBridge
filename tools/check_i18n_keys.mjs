@@ -64,8 +64,22 @@ const FRONTEND = join(ROOT, "frontend");
    让它变成死键把计数顶到 22 超出基线 —— 与上面 `mail.unread` 同一形态，这个键没有
    任何「给下一个任务预留」的理由。实测死键仍为 21，与基线持平，故 DEAD_BASELINE
    不动。上面 Task 7 那行把 `mail.no_body` 与 `mail.unread` 并列为消费者，同样是
-   **当时**的事实，保留原样不改写。 */
-const DEAD_BASELINE = 21;
+   **当时**的事实，保留原样不改写。
+
+   2026-09-25 Task 6（邮件待办前端骨架）21 → 41：同一形态，同一个理由。按简报逐字加入的
+   34 个 `mailtodo.*`/`nav.mailtodo` 键里只有 14 个有消费者（`nav.mailtodo` `refresh`
+   `extract` `rules` `days` `todo_title` `sched_title` `rule_add` `rule_export` `rule_import`
+   `rule_save` 挂在 index.html 的 data-i18n 上；`empty` `count` `need_classify` 由 app.js 的
+   renderMailTodo() 调 t() 取用），余下 20 个是**给后面几个任务预留**的：Task 7（规则编辑器）
+   8 个 —— `rule_name` `rule_senders` `rule_keywords` `rule_body` `rule_del` `rule_bad`
+   `rule_saved` `rule_import_failed`；Task 8（分类请求与待办清单）3 个 —— `body_reading`
+   `load_failed` `unmatched`；Task 9（时间表）3 个 —— `extract_failed` `extract_none`
+   `extracting`；Task 10（自检收口）6 个 —— `warn.bad_rule` `warn.empty_rule`
+   `warn.blank_item` `warn.ai_unusable` `warn.ai_dropped` `warn.ids_missing`（Task 10 把这
+   6 个加进 `DYNAMIC_PREFIXES`）。8 + 3 + 3 + 6 = 20，与实测增量 41 − 21 = 20 逐字吻合。
+   这 20 个键被各自任务的渲染代码消费后，死键应逐轮回落到**当时的实测值**：
+   Task 7 → 33、Task 8 → 30、Task 9 → 27、Task 10 → 21。 */
+const DEAD_BASELINE = 41;
 
 /* 动态家族前缀：源码里存在 "wd." 这样的引号字面量，键由它拼出来
    （app.js 的 t("wd."+d)）。这类键无法被字面量扫描判活，只能按前缀整体放行。
