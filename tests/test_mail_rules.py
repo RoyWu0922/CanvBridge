@@ -101,6 +101,19 @@ def test_sender_matches_a_bare_domain_suffix():
     assert mail_rules.label_mails(rules, [_mail(addr="a.b@cityu.edu.hk")]) == {"1": ["r1"]}
 
 
+def test_sender_matches_case_insensitively():
+    """地址侧的匹配同样大小写不敏感（规格：匹配前把待查文本也小写化）。
+
+    本用例专钉 `label_mails` 里 `addr = ... .lower()` 那一步。上面几条 `test_sender_*`
+    的 `addr` 夹具**全是小写**，删掉那一步它们一条都不会红（实测：15 条全绿）；
+    规则侧的小写化由 `_clean_items` 负责，不靠本用例。
+    """
+    rules, _ = mail_rules.validate_rules([
+        {"id": "r1", "name": "李教授", "senders": ["li.wei@cityu.edu.hk"]}])
+    assert mail_rules.label_mails(
+        rules, [_mail(addr="Li.Wei@CityU.EDU.HK")]) == {"1": ["r1"]}
+
+
 def test_senders_and_keywords_are_or_within_one_rule():
     """一条规则内两个列表是**或**（见本任务「语义」一节的说明）。"""
     rules, _ = mail_rules.validate_rules([
