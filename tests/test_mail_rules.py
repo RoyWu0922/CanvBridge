@@ -160,3 +160,10 @@ def test_non_list_matching_list_is_reported_rather_than_silently_dropped():
     rules, warnings = mail_rules.validate_rules([{"id": "r2", "keywords": ["x"]}])
     assert warnings == []
     assert rules[0]["senders"] == []
+
+
+def test_non_list_top_level_rules_is_reported_rather_than_silently_dropped():
+    """`rules` 本身传成非数组 ⇒ **全部规则**消失、界面上「一封都没分类」且无解释。"""
+    rules, warnings = mail_rules.validate_rules("oops")
+    assert rules == []
+    assert warnings == ["bad_rule"]
