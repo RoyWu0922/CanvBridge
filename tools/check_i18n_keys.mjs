@@ -92,14 +92,28 @@ const FRONTEND = join(ROOT, "frontend");
    `load_failed` 是 loadMailTodo() 失败分支的回退文案；`unmatched` 由 mtTodoHtml() 给
    「一封都没命中任何规则」的邮件当分组名。三个都是内联 `t()` 字面量取用。实测死键 30，
    与预留数 33 − 3 逐字吻合，故把本行下调到 30 收紧防线（本任务不动上一段末尾那条路标
-   剩下的那两档：Task 9 → 27、Task 10 → 21）。 */
-const DEAD_BASELINE = 30;
+   剩下的那两档：Task 9 → 27、Task 10 → 21）。
+
+   2026-09-25 Task 10（自检收口）30 → 21：上一段末尾那条路标给本任务预留的最后一档到位了 ——
+   `mailtodo.warn.` 整族 6 个键（`ai_dropped` `ai_unusable` `bad_rule` `blank_item`
+   `empty_rule` `ids_missing`）由 app.js 的 `t("mailtodo.warn."+w, {n})` 按**警告码**拼出来，
+   字面量扫描判不了活 —— 与 `wd.` / `library.warn.` 同一形态（跨语言边界的是**码**、不是句子）。
+   故本任务把 `mailtodo.warn.` 加进 DYNAMIC_PREFIXES：整族从「死键」转为「动态家族的活键」，
+   那 6 个键不再计入死键。本段跨的是 30 → 21 **两档**：本文件自 Task 8 的 69bda0a 起未再变过
+   （Task 9 没留段落），所以基线还停在 30，而不是路标里的 27。
+   实测（两个数都是加前缀前后当场跑出来的，不是推算）：加前缀**之前**死键 27 ——
+   正是上一段路标给 Task 9 预留的那一档 —— 其清单里 `mailtodo.warn.*` 恰好是上面那 6 个，
+   而 i18n.js 里该族正好 6 个不同的键、每个 zh/en 各写一次（共 12 处）；
+   加前缀**之后**死键 21，与上一段路标的「Task 10 → 21」逐字吻合，故把本行下调到 21 收紧防线。
+   本任务不动上一段末尾那条路标。 */
+const DEAD_BASELINE = 21;
 
 /* 动态家族前缀：源码里存在 "wd." 这样的引号字面量，键由它拼出来
    （app.js 的 t("wd."+d)）。这类键无法被字面量扫描判活，只能按前缀整体放行。
    `library.warn.` 是同一形态：app.js 的 t("library.warn."+w) 把后端回的**警告码**
-   翻成句子（警告必须是码而不是句子，否则英文界面会冒中文），所以整族按前缀放行。 */
-const DYNAMIC_PREFIXES = ["wd.", "library.warn."];
+   翻成句子（警告必须是码而不是句子，否则英文界面会冒中文），所以整族按前缀放行。
+   `mailtodo.warn.` 是第三个：app.js 的 t("mailtodo.warn."+w, {n}) 同一形态。 */
+const DYNAMIC_PREFIXES = ["wd.", "library.warn.", "mailtodo.warn."];
 
 /* 只取到 const LANG 为止：后半段是 t()/applyLang() 等运行时代码，
    在 Node 里跑会碰到 document / localStorage。前半段是一次纯对象字面量赋值。 */
