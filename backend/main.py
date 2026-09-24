@@ -132,7 +132,8 @@ def _mail_index(v) -> int | None:
 def _mail_id_list(v) -> list[str] | None:
     """请求里的邮件 id 列表：必须是非空数组、每项都是非空**字符串**。
 
-    不做任何隐式转换（`3` 不变成 `"3"`）—— 与既有的 `_mail_uid` / `_mail_index` 同一口径。
+    不做任何隐式转换（`3` 不变成 `"3"`）。形状与 `_mail_uid` / `_mail_index` **不同**：
+    那两个要求全数字串 / 非负整数，本函数只要求非空字符串。
     返回 `None` 表示形状不合法。
     """
     if not isinstance(v, list) or not v:

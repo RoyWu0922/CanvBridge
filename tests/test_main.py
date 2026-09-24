@@ -2332,7 +2332,9 @@ def test_mail_classify_tolerates_a_mail_missing_from_fetch_bodies(monkeypatch):
 # --- 邮件待办抽取 ---
 
 def test_mail_extract_maps_indices_back_to_mail_ids(monkeypatch):
-    monkeypatch.setattr(mail_client, "list_mail", lambda days: _mt_mails())
+    seen_days = []
+    monkeypatch.setattr(mail_client, "list_mail",
+                        lambda days: (seen_days.append(days), _mt_mails())[1])
     monkeypatch.setattr(mail_client, "fetch_bodies",
                         lambda items: {"A": "下周五前交实验报告", "B": ""})
     seen = {}
@@ -2350,6 +2352,9 @@ def test_mail_extract_maps_indices_back_to_mail_ids(monkeypatch):
         "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
         "ids": ["A"], "days": 7, "language": "zh"}).json()
     assert body["ok"] is True
+    # 窗口**原样透传**：这是本端点 body 里多出来的 `days` 唯一的存在理由 ——
+    # 后端不许另定一个固定窗口，否则两个端点的窗口静默漂移。
+    assert seen_days == [7]
     # index 是回指锚，必须从 0 连续编号
     assert [m["index"] for m in seen["mails"]] == [0]
     assert seen["mails"][0]["body"] == "下周五前交实验报告"
@@ -2387,12 +2392,17 @@ def test_mail_extract_skips_the_model_when_nothing_matches(monkeypatch):
 
 
 def test_mail_extract_rejects_a_missing_or_bad_ids(monkeypatch):
+    calls = []
+    monkeypatch.setattr(mail_client, "list_mail",
+                        lambda days: (calls.append(days), _mt_mails())[1])
     for bad in [None, [], "A", ["A", 3], ["A", "  "], [""]]:
         body = TestClient(main.app).post("/api/mail/extract", json={
             "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m",
             "ids": bad}).json()
         assert body["ok"] is False, bad
         assert "ids" in body["error"]
+    # 校验必须先于取信 —— 形状不合法的 ids 永远不该走到连邮箱那一步。
+    assert calls == []
 
 
 def test_mail_extract_reports_the_mail_phase(monkeypatch):
@@ -2418,3 +2428,18 @@ def test_mail_extract_llm_failure_reports_llm_phase(monkeypatch):
         "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "ids": ["A"]}).json()
     assert body["ok"] is False
     assert body["reason"] == "llm"
+
+
+def test_mail_extract_passes_warning_codes_and_dropped_through(monkeypatch):
+    """警告**以码跨语言传递**（全局约束）：本端点只转发 `extract_todos` 的码与计数，
+    自己**不造句**。把这两个字段写死成 `[]` / `0` 全绿，而前端此后再也拿不到
+    「AI 有 N 条结果指向了不存在的邮件」——静默丢件，页面上只剩一句「没有待办」。"""
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: _mt_mails())
+    monkeypatch.setattr(mail_client, "fetch_bodies", lambda items: {"A": "x"})
+    monkeypatch.setattr(llm_client, "extract_todos",
+                        lambda *a, **k: {"items": [], "warnings": ["ai_dropped"],
+                                         "dropped": 3})
+    body = TestClient(main.app).post("/api/mail/extract", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "ids": ["A"]}).json()
+    assert body["warnings"] == ["ai_dropped"]
+    assert body["dropped"] == 3
