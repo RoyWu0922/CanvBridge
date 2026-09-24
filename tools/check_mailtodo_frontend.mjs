@@ -9,8 +9,23 @@
  * 固定清单。所以新开一个，只守这一页。
  *
  * 零出网：`fetch` 是桩，**只**接住 `/api/mail/extract`（回固定夹具、并记下每次请求的 `ids`），
- * 其余 URL 一律 throw —— 死掉比打出去好。全部夹具都是合成的：发件地址用 RFC 2606 保留域
+ * 其余 URL 一律 throw。**挡住出网**这一半成立：throw 发生在真实 `fetch` 之前。
+ * 但「响亮地死掉」只在**直接**调 `fetch` 的路径上成立 —— 产品路径走 `frontend/util.js` 的 `api()`，
+ * 它把 fetch 的异常吞成 `{ok:false, error:t("status.backend_fail")}`（实测：让桩抛，
+ * `api("mail/extract", …)` 回 `{"ok":false,"error":"无法连接后端，请确认服务已启动"}`），
+ * 于是「桩没挂上」表现为**另一种红**：实测把桩改成对**所有** URL 都抛，红的正是 S10 那两行
+ * —— `S10 正对照：第 1 次抽取把**两封**都发了出去（实得 ids 条数 null）` 与
+ * `S10 请求过、响应里没给回来的信，第 2 次不再被请求（fetch 次数 0 → 0）` ——
+ * 而 `自检不该发起 fetch` 这句话在输出里 **0 次**露面。
+ * 全部夹具都是合成的：发件地址用 RFC 2606 保留域
  * （`s0@example.invalid` / `s1@example.invalid`，永不解析），不含任何真实邮件内容或 token。
+ *
+ * 已知覆盖缺口（**不是假绿**，本检查器没有声称守事件线）：DOM 替身的 `addEventListener`
+ * 是空函数（`getElementById` 造出来的节点上是 `addEventListener(){}`，见下），所以
+ * `$("mtTodo").addEventListener("change", …)` 这条事件路径在本文件里**零覆盖** ——
+ * 勾选状态的持久化只由 S4/S5 直接调 `mtSetDone` 走到，没有一条断言经过真实事件。
+ * 同目录的 `check_mail_frontend.mjs` 用 `elListeners` 把处理器捕获下来（`elListeners[id][type]`），
+ * 本文件没有这一步；要补是另一件事。
  *
  * 装配照抄 `check_mail_frontend.mjs` 的做法：最小 DOM 替身 + **逐文件** `runInContext`
  * （保持浏览器那四个 `<script>` 的边界，**不拼成一个脚本** —— 拼接会改变顶层 `let`/`const`
@@ -257,6 +272,11 @@ okTry(() => {
 okTry(() => {
   const a = val(`mtFingerprint(${JSON.stringify(M1)})`), b = val(`mtFingerprint(${JSON.stringify(M1)})`);
   seen = why(a === b ? a : [a, b]);
+  /* 守卫，与 S2/S3 同一道、同一写法：`val()` 把沙箱里的异常**吞掉**并返回未传的 `fallback`
+     ⇒ 被测对象抛了时拿到的是 `undefined`，`undefined === undefined` **照绿**，而同一行的见证
+     当场印着 `实得 undefined` —— 判决与自己贴出的见证互相矛盾。所以先要求拿到的是
+     **非空真字符串**，再比相等。 */
+  if (typeof a !== "string" || !a) return false;
   return a === b;
 }, "S1 mtFingerprint 对同一封邮件两次调用返回相同串");
 
@@ -279,6 +299,10 @@ okTry(() => {
 
 okTry(() => {
   const fp = val(`mtFingerprint(${JSON.stringify(M1)})`);
+  /* 同一道守卫（理由同 S1）：`fp` 是 `undefined` 时，下面 `JSON.stringify(fp)` 会把字面量
+     `undefined` 直接拼进表达式 ⇒ 比的是 `"undefined0"` 与 `"undefined1"` 两个**退化出来的**
+     字符串，性质（下标不同 ⇒ 键不同）仍为真，却没有任何东西证明它拿到过真指纹。 */
+  if (typeof fp !== "string" || !fp) { seen = why(fp); return false; }
   const k0 = val(`mtDoneKey(${JSON.stringify(fp)}, 0)`);
   const k1 = val(`mtDoneKey(${JSON.stringify(fp)}, 1)`);
   seen = why([k0, k1]);
@@ -337,12 +361,18 @@ okTry(() => {
            reminders: [{title:"R1", due_date:"2026-09-02T09:00:00Z"}],
            calendar_events: [{title:"E1", start:"2026-09-03T09:00:00Z"}, {title:"E2", start:"2026-09-01T09:00:00Z"}] };`);
   const whens = val(`mtScheduleRows().map(r => r.when)`);
-  seen = why({ 夹具写入顺序: ["2026-09-03T09:00:00Z", "2026-09-01T09:00:00Z", "2026-09-02T09:00:00Z"], 实得when: whens });
+  /* 夹具自己的顺序**量出来**放进见证：上一版这里是手写的字面量 —— 见证里混进了一句没人量的
+     断言（本仓记过「探针的标签也会说谎」）。读的是夹具那两个数组本身，按 events → reminders 拼。 */
+  const fixtureOrder = val(`(() => { const it = mtState.items[mtFingerprint(mtState.mails[0])];
+      return [...it.calendar_events.map(e => e.start), ...it.reminders.map(r => r.due_date)]; })()`);
+  const fixtureAsc = Array.isArray(fixtureOrder) && fixtureOrder.every(
+    (s, i) => i === 0 || new Date(fixtureOrder[i - 1]).getTime() < new Date(s).getTime());
+  seen = why({ 夹具原始顺序: fixtureOrder, 夹具原始顺序已是升序: fixtureAsc, 实得when: whens });
   if (!Array.isArray(whens) || whens.length !== 3) return false;
   const ms = whens.map(s => new Date(s).getTime());
   if (ms.some(x => !isFinite(x))) return false;
-  /* 夹具写入顺序本身**不是**升序（E1 09-03 → E2 09-01 → R1 09-02，见上面 seen 里那一行）
-     ⇒ 「结果升序」不是恒真：不排序的实现会原样回吐那个非升序的数组。 */
+  /* 夹具原始顺序本身**不是**升序（E1 09-03 → E2 09-01 → R1 09-02，见上面 seen 里量出来的
+     `夹具原始顺序已是升序: false`）⇒ 「结果升序」不是恒真：不排序的实现会原样回吐那个非升序的数组。 */
   for (let i = 1; i < ms.length; i++) if (!(ms[i - 1] < ms[i])) return false;
   return new Set(whens).size === 3;
 }, "S7 mtScheduleRows() 按时间升序（夹具顺序非升序）");
