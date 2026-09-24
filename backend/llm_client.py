@@ -423,3 +423,116 @@ def summarize_mail(base_url: str, api_key: str, model: str,
         return {"groups": [], "warnings": [msg]}
     # 归一化刻意放在重试循环之外：归一自身的缺陷不该被吞成「无法解析为 JSON」
     return _normalize_groups(data, trimmed, language)
+
+
+# ---------------------------------------------------------------------------
+# 抽取路径：只抽「待办 + 带日期的日程」，不做任何分组
+# ---------------------------------------------------------------------------
+
+_TODOS_SCHEMA_ZH = """只输出如下 JSON，不要任何解释、不要 markdown 代码块：
+{"items":[{"mail_index":<输入里的邮件编号，整数>,
+  "summary":"一句话中文摘要",
+  "reminders":[{"title":"","due_date":"YYYY-MM-DDTHH:MM:SS","notes":""}],
+  "calendar_events":[{"title":"","start":"YYYY-MM-DDTHH:MM:SS","end":"YYYY-MM-DDTHH:MM:SS","location":"","notes":""}]}]}
+规则：
+- 邮件里**没有**明确截止时间时，calendar_events 与 reminders 都留空数组，绝不臆造日期。
+- 只列**要做的事**。纯告知类邮件（讲座宣传、系统维护）没有待办就留空，可以不出现在 items 里。
+- 每封输入邮件最多出现一次。"""
+
+_TODOS_SCHEMA_EN = """Output only the following JSON, no prose, no markdown fences:
+{"items":[{"mail_index":<the mail number from the input, integer>,
+  "summary":"one-sentence summary",
+  "reminders":[{"title":"","due_date":"YYYY-MM-DDTHH:MM:SS","notes":""}],
+  "calendar_events":[{"title":"","start":"YYYY-MM-DDTHH:MM:SS","end":"YYYY-MM-DDTHH:MM:SS","location":"","notes":""}]}]}
+Rules:
+- If a mail states **no** explicit deadline, leave calendar_events and reminders empty. Never invent dates.
+- List only **action items**. Purely informational mail may be omitted entirely.
+- Each input mail appears at most once."""
+
+
+def _build_extract_prompt(mails: list[dict], language: str = "zh") -> str:
+    if language == "en":
+        head = "Extract action items and dated events from the mails below.\n"
+        schema = _TODOS_SCHEMA_EN
+    else:
+        head = "从下面的邮件里抽出待办事项与带日期的日程。\n"
+        schema = _TODOS_SCHEMA_ZH
+    parts = [head, schema, "\n---\n"]
+    for m in mails:
+        parts.append(
+            f"### 邮件 #{m['index']}\n"
+            f"主题：{m.get('subject', '')}\n"
+            f"发件人：{m.get('sender', '')}\n"
+            f"时间：{m.get('received', '')}\n"
+            f"正文：\n{m.get('body', '')}\n\n")
+    return "".join(parts)
+
+
+def _keep_dicts(v) -> list:
+    """只留对象元素；非列表一律回空数组。
+
+    形状坏掉时给**空**，绝不把字符串塞进渲染层 —— 前端对它做 `.map()`，
+    一个字符串会让整页白屏而不是少几行。
+    """
+    return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
+
+
+def _normalize_extract(data: dict, mails: list[dict], language: str) -> dict:
+    """收敛抽取结果。越界 / 非整数 mail_index 一律丢 —— 绝不能把 AI 编的内容
+    挂到真实邮件上（与 `_normalize_groups` 同一条纪律）。
+
+    警告出**码**不出句子：前端按 `mailtodo.warn.<code>` 取双语，出句子会让英文界面冒中文。
+    """
+    items_in = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items_in, list):
+        return {"items": [], "warnings": ["ai_unusable"], "dropped": 0}
+    out: list[dict] = []
+    dropped = 0
+    for it in items_in:
+        if not isinstance(it, dict):
+            continue
+        idx = it.get("mail_index")
+        # `isinstance(True, int)` 为真 ⇒ 布尔必须**显式**挡在前面，否则被当成下标 1
+        if isinstance(idx, bool) or not isinstance(idx, int) or not (0 <= idx < len(mails)):
+            dropped += 1
+            continue
+        summary = it.get("summary")
+        out.append({
+            "mail_index": idx,
+            "summary": summary if isinstance(summary, str) and summary.strip()
+                       else _excerpt(mails[idx]),
+            "reminders": _keep_dicts(it.get("reminders")),
+            "calendar_events": _keep_dicts(it.get("calendar_events")),
+        })
+    warnings = ["ai_dropped"] if dropped else []
+    return {"items": out, "warnings": warnings, "dropped": dropped}
+
+
+def extract_todos(base_url: str, api_key: str, model: str,
+                  mails: list[dict], language: str = "zh") -> dict:
+    """从邮件正文里抽出待办与带日期的日程。**这是本设计里 AI 唯一的活。**
+
+    `mails` 每项：{index, subject, sender, received, body}。
+    返回 {"items": [...], "warnings": [码], "dropped": int}；整体失败时 items 为空、
+    warnings 有话说，**绝不静默降级**。
+    """
+    if not mails:
+        return {"items": [], "warnings": [], "dropped": 0}
+    trimmed = trim_bodies(mails)
+    prompt = _build_extract_prompt(trimmed, language)
+    data = None           # 首次就抛异常时，循环后的 isinstance 守卫要有值可查
+    for _attempt in range(2):
+        try:
+            content = _call_chat(base_url, api_key, model, prompt, json_mode=True)
+            data = _parse_json(content)
+            if not isinstance(data, dict):
+                raise ValueError("LLM 返回非 JSON 对象")
+            break
+        except (requests.RequestException, ValueError, KeyError, TypeError, RuntimeError):
+            # 与 `summarize_mail` 同一写法：值正确性上冗余（下一轮赋值会覆盖），
+            # 与后面那行 isinstance 守卫合起来才防住 UnboundLocalError
+            data = None
+            continue
+    if not isinstance(data, dict):
+        return {"items": [], "warnings": ["ai_unusable"], "dropped": 0}
+    return _normalize_extract(data, trimmed, language)

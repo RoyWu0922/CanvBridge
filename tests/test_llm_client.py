@@ -390,3 +390,92 @@ def test_summarize_mail_requests_jsondecodeerror_takes_parse_branch(monkeypatch)
     assert r["groups"] == []
     # 肯定式：钉住「就是解析那一支」，不写成「不等于网络那一支」
     assert "返回内容无法解析为 JSON" in r["warnings"][0]
+
+
+# --- extract_todos：抽取路径 ---
+
+def _ex_mail(idx=0, mid="A", subject="作业", body="下周五前交实验报告"):
+    return {"index": idx, "id": mid, "subject": subject, "sender": "李老師",
+            "received": "2026-09-17T08:31:00Z", "body": body}
+
+
+def test_extract_todos_normalizes_items(monkeypatch):
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: json.dumps({
+        "items": [{"mail_index": 0, "summary": "交实验报告",
+                   "reminders": [{"title": "交实验报告", "due_date": "2026-09-25T23:59:00",
+                                  "notes": ""}],
+                   "calendar_events": []}]}))
+    r = llm_client.extract_todos("u", "k", "m", [_ex_mail()])
+    assert r["warnings"] == []
+    assert r["dropped"] == 0
+    assert r["items"][0]["mail_index"] == 0
+    assert r["items"][0]["summary"] == "交实验报告"
+    assert r["items"][0]["reminders"][0]["title"] == "交实验报告"
+
+
+def test_extract_todos_drops_out_of_range_index(monkeypatch):
+    """**绝不能把 AI 编的内容挂到真实邮件上** —— 与 _normalize_groups 同一条纪律。"""
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: json.dumps({
+        "items": [{"mail_index": 7, "summary": "编的", "reminders": [], "calendar_events": []},
+                  {"mail_index": 0, "summary": "真的", "reminders": [], "calendar_events": []}]}))
+    r = llm_client.extract_todos("u", "k", "m", [_ex_mail()])
+    assert [it["summary"] for it in r["items"]] == ["真的"]
+    assert r["dropped"] == 1
+    assert "ai_dropped" in r["warnings"]
+
+
+def test_extract_todos_drops_boolean_index(monkeypatch):
+    """`True` 是 `int` 的子类 —— 不显式挡掉就会被当成下标 1。"""
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: json.dumps({
+        "items": [{"mail_index": True, "summary": "x", "reminders": [], "calendar_events": []}]}))
+    r = llm_client.extract_todos("u", "k", "m", [_ex_mail(0), _ex_mail(1)])
+    assert r["items"] == []
+    assert r["dropped"] == 1
+
+
+def test_extract_todos_unusable_structure_is_reported(monkeypatch):
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: json.dumps({"nope": 1}))
+    r = llm_client.extract_todos("u", "k", "m", [_ex_mail()])
+    assert r["items"] == []
+    assert r["warnings"] == ["ai_unusable"]
+
+
+def test_extract_todos_falls_back_to_excerpt_when_summary_is_blank(monkeypatch):
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: json.dumps({
+        "items": [{"mail_index": 0, "summary": "   ", "reminders": [], "calendar_events": []}]}))
+    r = llm_client.extract_todos("u", "k", "m", [_ex_mail()])
+    assert r["items"][0]["summary"].startswith("下周五前交实验报告")
+
+
+def test_extract_todos_non_list_fields_become_empty_arrays(monkeypatch):
+    """形状坏掉时给空数组，绝不把字符串塞进渲染层。"""
+    monkeypatch.setattr(llm_client, "_call_chat", lambda *a, **k: json.dumps({
+        "items": [{"mail_index": 0, "summary": "s", "reminders": "oops",
+                   "calendar_events": [1, {"title": "ok"}]}]}))
+    r = llm_client.extract_todos("u", "k", "m", [_ex_mail()])
+    assert r["items"][0]["reminders"] == []
+    assert r["items"][0]["calendar_events"] == [{"title": "ok"}]
+
+
+def test_extract_todos_empty_input_skips_the_model(monkeypatch):
+    called = []
+    monkeypatch.setattr(llm_client, "_call_chat",
+                        lambda *a, **k: (called.append(1), "{}")[1])
+    r = llm_client.extract_todos("u", "k", "m", [])
+    assert called == []
+    assert r == {"items": [], "warnings": [], "dropped": 0}
+
+
+def test_extract_todos_retries_once_then_reports(monkeypatch):
+    """两轮都抛 requests 异常 ⇒ 报「结构不可用」，不是「无法解析」。"""
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise requests.RequestException("network down")
+
+    monkeypatch.setattr(llm_client, "_call_chat", boom)
+    r = llm_client.extract_todos("u", "k", "m", [_ex_mail()])
+    assert len(calls) == 2
+    assert r["items"] == []
+    assert r["warnings"] == ["ai_unusable"]
