@@ -335,9 +335,9 @@ def test_keyword_does_not_see_body_unless_search_body():
 def test_sender_rule_matches_the_address_form():
     """规则写地址，就按地址匹配。
 
-    **别把这句读成「和显示名无关」**——`sender_addr` 在 `From` 拆不出地址时
-    退回的是**原文小写**（`From: 老师` → `"老师"`），所以按名字写的规则**也会**命中，
-    见下一条。本用例名原先叫 `..._not_display_name`，那半句是没被断言的过头话。
+    **别把这句读成「和显示名无关」**——`sender_addr` 在 `From` 拆不出地址时退回的是
+    **原文的首个空白分隔词**（`From: 老师` → `"老师"`、**`From: Li Wei` → `"li"`**），
+    所以按名字写的规则**也会**命中，见下一条。本用例名原先叫 `..._not_display_name`。
     """
     rules, _ = mail_rules.validate_rules([
         {"id": "r1", "name": "李教授", "senders": ["li.wei@cityu.edu.hk"]}])
