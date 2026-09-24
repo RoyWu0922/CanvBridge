@@ -39,7 +39,7 @@
 | `tools/check_i18n_keys.mjs` | i18n 自检；动态家族白名单 | 改（`DYNAMIC_PREFIXES` 加前缀） |
 | `tools/check_mailtodo_frontend.mjs` | **新页自检**：守住「勾选键 = 指纹而非 UID」 | 新建 |
 | `tests/test_mail_rules.py` | 规则引擎用例 | 新建 |
-| `tests/test_mail_client.py` | 契约键用例 | 改（2 处断言 + 2 处残留） |
+| `tests/test_mail_client.py` | 契约键用例 | 改（5 处键集合断言 + 3 处名字/文案残留） |
 | `tests/test_main.py` | 两个新端点用例 | 改（追加 + 3 处残留） |
 | `tests/test_llm_client.py` | 新归一的用例 | 改（追加） |
 
@@ -62,7 +62,17 @@
 
 - [ ] **Step 1: 先改测试，把契约钉到 5 个键**
 
-`tests/test_mail_client.py` 里改名并改断言（这两条现在会红，因为它们要求恰好 4 个键）：
+`tests/test_mail_client.py` 里改名并改断言。
+
+**（pre-flight 实测补正，2026-09-24）** 改 `header_item` 会让**文件里全部 5 处键集合断言**变红，不只下面列的那两条。另外 3 处**不在原锚点内**，必须一并改，否则 Step 4 的「全文件 PASS」根本达不到：
+
+| 位置 | 所属用例 | 处理 |
+|---|---|---|
+| `tests/test_mail_client.py:226` | `test_list_mail_returns_contract_items`（`def` 在 `:216`） | 集合里补 `"sender_addr"` |
+| `tests/test_mail_client.py:295` | `test_list_mail_returns_exactly_contract_keys`（`def` 在 `:286`） | 同上 |
+| `tests/test_mail_client.py:334` | `test_do_list_applies_select_scope`（`def` 在 `:298`） | 同上。**注意 `:334` 是断言行、`:335` 是文案行 —— 相邻但两回事，只改 `:335` 会漏** |
+
+下面两条现在就会红，因为它们要求恰好 4 个键：
 
 ```python
 def test_header_item_shape_exactly_five_keys():
@@ -144,7 +154,7 @@ _CONTRACT_KEYS = ("id", "subject", "sender", "sender_addr", "received")
 - [ ] **Step 4: 跑测试，确认全绿**
 
 Run: `.venv/bin/python -m pytest tests/test_mail_client.py -q`
-Expected: PASS（全文件）
+Expected: PASS（全文件）—— **前提是 Step 1 那张补正表里的三处断言也改了**；漏一处这里就会红，而那红不是本任务引入的缺陷，是计划漏写。
 
 - [ ] **Step 5: 清掉「四个键」家族的同族残留（改一处 ≠ 改一类）**
 
@@ -157,12 +167,28 @@ Expected: PASS（全文件）
 | `backend/mail_client.py:455` | 代码本身不动（它按 `_CONTRACT_KEYS` 迭代，自动跟随） |
 | `tests/test_mail_client.py:309` | docstring 里的用例名 → 改成新名 `test_header_item_shape_exactly_five_keys` |
 | `tests/test_mail_client.py:335` | 「对外契约恰好四个键」→ 改「五个键」 |
+| `tests/test_mail_client.py:712` | 旧用例名的 `def` 行本身也要改名 —— 只改 `:309` 与 `:1818` 里的引用会留下一个**指向不存在名字**的引用 |
 | `tests/test_main.py:1817-1819` | 注释里的键序列与**指名引用**的用例名一起改（键序列补 `sender_addr`，用例名换新名） |
 | `tests/test_main.py:2034` | 「响应只有这四个键」→ 改「这五个键」 |
 
 - [ ] **Step 6: 更新 `tests/test_main.py` 里的夹具，让它们继续描述真实契约**
 
-`/api/mail/summarize` 的夹具是 monkeypatch 的裸字典，加键后**不会变红**，但它描述的不再是真实契约 —— 这种「夹具与实现静默分家」正是日后漏键不被发现的产地。两处夹具各补 `"sender_addr"`，并把 `:2043` 的断言补上该键：
+`/api/mail/summarize` 与 `/api/mail/list` 的夹具是 monkeypatch 的裸字典，加键后**不会变红**，但它描述的不再是真实契约 —— 这种「夹具与实现静默分家」正是日后漏键不被发现的产地。
+
+**（pre-flight 实测补正，2026-09-24）** 这类 4 键字面量在 `tests/test_main.py` 里有 **9 处、分属 8 个用例**，不是「两处」：
+
+| 用例 | 字面量位置 | 承重与否 |
+|---|---|---|
+| `test_mail_summarize_joins_bodies_and_groups` | `:2010` | **承重** —— 它喂的正是 `:2043` 那条断言，不补则该断言变红 |
+| `test_mail_list_returns_mails` | `:1809` | 描述性 |
+| `test_mail_list_tolerates_bodyless_request` | `:1843` | 描述性 |
+| `test_mail_summarize_indexes_are_contiguous` | `:2058`、`:2059` | 描述性 |
+| `test_mail_summarize_returns_mails_too` | `:2081` | 描述性 |
+| `test_mail_summarize_fetch_bodies_failure_reports_mail_phase` | `:2111` | 描述性 |
+| `test_mail_summarize_llm_failure_reports_llm_phase` | `:2125` | 描述性 |
+| `test_mail_summarize_missing_body_falls_back_to_empty` | `:2158`、`:2159` | 描述性 |
+
+**9 处全部补 `"sender_addr": ""`**（`:2010` 那处按真实契约补地址亦可）—— 只补「两处」会让另外 7 处继续描述一个已经不存在的契约，而本步骤存在的理由恰恰是消掉这一类。并把 `:2043` 的断言补上该键：
 
 ```python
     assert all(set(m) == {"id", "subject", "sender", "sender_addr", "received",
