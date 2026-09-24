@@ -455,6 +455,8 @@ def test_extract_todos_non_list_fields_become_empty_arrays(monkeypatch):
     r = llm_client.extract_todos("u", "k", "m", [_ex_mail()])
     assert r["items"][0]["reminders"] == []
     assert r["items"][0]["calendar_events"] == [{"title": "ok"}]
+    assert r["dropped"] == 0
+    assert r["warnings"] == []
 
 
 def test_extract_todos_empty_input_skips_the_model(monkeypatch):
@@ -484,9 +486,12 @@ def test_extract_todos_retries_once_then_reports(monkeypatch):
 def test_extract_todos_shape_broken_items_are_declared_silent(monkeypatch):
     """形状坏掉的**元素**静默跳过：不计 `dropped`、不报警。
 
-    这不是「应当如此」的背书，是**当前契约的记录** —— 与 `_normalize_groups`
-    （见同文件里 `items: ["交实验报告"]` 那条 groups 用例）和 `_keep_dicts`
-    同一条口径，两者的 docstring 都明写了「只丢弃、不留痕」。
+    这不是「应当如此」的背书，是**当前契约的记录** —— 与 `_normalize_groups` 同一个
+    形状口径：它的 docstring 明写了「其余畸形形状……只丢弃、不留痕」，同一形状另有
+    groups 用例钉着（`items: ["交实验报告"]`）。`_keep_dicts` 的过滤同样静默，但它的
+    docstring **只**写了「只留对象元素」、没承诺留痕 —— 那一条由
+    `test_extract_todos_non_list_fields_become_empty_arrays` 的 `dropped` / `warnings`
+    断言钉着。
     对照：越界下标**要**计数报警，见 `test_extract_todos_drops_out_of_range_index` ——
     两者刻意不同，别当成一件事。
     """
