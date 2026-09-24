@@ -73,6 +73,16 @@
 | `tests/test_mail_client.py:295` | `test_list_mail_returns_exactly_contract_keys`（`def` 在 `:286`） | 同上 |
 | `tests/test_mail_client.py:334` | `test_do_list_applies_select_scope`（`def` 在 `:298`） | 同上。**注意 `:334` 是断言行、`:335` 是文案行 —— 相邻但两回事，只改 `:335` 会漏** |
 
+**（Task 1 复审补正 — Minor 2）** 上表三处只补**键名**。`test_list_mail_returns_contract_items` 走的是
+**端到端**路径（IMAP 头 → `header_item` → `_do_list` 白名单裁剪 → `list_mail`），补完键名之后，
+这条路径上 `sender_addr` 的**值**仍然从无断言 —— 白名单里把值写错、或 `header_item` 的产物在
+`_do_list` 里被换成别的东西，全文件照绿。它的夹具 `:217-219` 恰好就是 `老师 <t@cityu.edu.hk>` 那一对
+（**正是本键存在的理由**），所以在 `:222-225` 那几行旁边补一条：
+
+```python
+    assert by_id["1"]["sender_addr"] == "t@cityu.edu.hk"
+```
+
 下面两条现在就会红，因为它们要求恰好 4 个键：
 
 ```python
@@ -144,9 +154,9 @@ _CONTRACT_KEYS = ("id", "subject", "sender", "sender_addr", "received")
         "id": uid,
         "subject": decode_mime_header(msg.get("Subject")),
         "sender": sender_name(msg.get("From")),
-        # 「parseaddr」解出的地址部分（小写、去空白），供规则匹配用；不是显示名。
-        # 但**不保证含「@」**：拆不出地址时退回原文的小写形式（`From: 老师` → `"老师"`），
-        # 所以下游不能假定 `"@" in sender_addr`，也不能据此做域名后缀提取。
+        # parseaddr 解出的地址部分（小写、去空白），供规则匹配用；不是显示名。
+        # 但**不保证含 @**：拆不出地址时退回原文的小写形式（From: 老师 → "老师"），
+        # 所以下游不能假定 "@" in sender_addr，也不能据此做域名后缀提取。
         # `parseaddr` 不是新依赖：`sender_name` 内部已在用，`_addr_domain` 是同族先例 ——
         # 这是把「已经解出来又被丢掉」的东西留下。
         "sender_addr": parseaddr(msg.get("From"))[1].strip().lower(),
