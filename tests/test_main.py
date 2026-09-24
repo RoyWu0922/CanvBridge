@@ -2253,8 +2253,9 @@ def test_mail_classify_defaults_to_fourteen_days(monkeypatch):
     seen = {}
     monkeypatch.setattr(mail_client, "list_mail",
                         lambda days: (seen.setdefault("d", days), [])[1])
-    TestClient(main.app).post("/api/mail/classify", json={}).json()
+    r = TestClient(main.app).post("/api/mail/classify", json={})
     assert seen["d"] == 14
+    assert r.json()["ok"] is True        # 不能靠异常分支蒙混过关
 
 
 def test_mail_classify_only_fetches_bodies_when_a_rule_needs_them(monkeypatch):
@@ -2263,11 +2264,13 @@ def test_mail_classify_only_fetches_bodies_when_a_rule_needs_them(monkeypatch):
     called = []
     monkeypatch.setattr(mail_client, "fetch_bodies",
                         lambda items: (called.append(items), {})[1])
-    TestClient(main.app).post("/api/mail/classify", json={
-        "rules": [{"id": "r1", "senders": ["li.wei@cityu.edu.hk"]}]}).json()
+    r1 = TestClient(main.app).post("/api/mail/classify", json={
+        "rules": [{"id": "r1", "senders": ["li.wei@cityu.edu.hk"]}]})
+    assert r1.json()["ok"] is True
     assert called == []
-    TestClient(main.app).post("/api/mail/classify", json={
-        "rules": [{"id": "r1", "keywords": ["x"], "search_body": True}]}).json()
+    r2 = TestClient(main.app).post("/api/mail/classify", json={
+        "rules": [{"id": "r1", "keywords": ["x"], "search_body": True}]})
+    assert r2.json()["ok"] is True
     assert len(called) == 1
 
 
@@ -2309,3 +2312,18 @@ def test_mail_classify_failure_is_200_json(monkeypatch):
     body = r.json()
     assert body["ok"] is False
     assert "邮箱会话已失效" in body["error"]
+
+
+def test_mail_classify_tolerates_a_mail_missing_from_fetch_bodies(monkeypatch):
+    """`fetch_bodies` **可以不返回每一封** —— `mail_client` 里有两处 `continue`
+    会把畸形条目跳过（`:510` / `:514`）。所以 `bodies.get(m["id"], "")` 的缺省是承重的：
+    缺了它，缺席那封抛 `KeyError` → 被 `except` 吞成 `{ok:false}` ⇒ 整个窗口一封都不返回。"""
+    monkeypatch.setattr(mail_client, "list_mail", lambda days: _mt_mails())
+    monkeypatch.setattr(mail_client, "fetch_bodies",
+                        lambda items: {"A": "补充：实验报告提交"})   # B 刻意缺席
+    body = TestClient(main.app).post("/api/mail/classify", json={"rules": [
+        {"id": "r1", "keywords": ["实验报告"], "search_body": True}]}).json()
+    assert body["ok"] is True
+    assert body["count"] == 2
+    assert body["mails"][0]["labels"] == ["r1"]
+    assert body["mails"][1]["labels"] == []
