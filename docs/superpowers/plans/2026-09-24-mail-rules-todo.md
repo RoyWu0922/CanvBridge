@@ -56,8 +56,8 @@
 
 **Interfaces:**
 - Consumes: 无（第一个任务）
-- Produces: 邮件条目多一个键 `sender_addr: str` —— `parseaddr` 解出的**地址部分**，已小写、已去空白，**不是显示名**；拆不出地址时退回**原文的小写形式**，两者都没有时为 `""`。`_CONTRACT_KEYS` 变为 5 元组。**后续所有任务的规则匹配都吃这个键。**
-  ⚠️ **它不保证含 `@`**（Task 1 复审实测更正，原写「恒为小写地址」是假的）：`From: "Li Wei"` → `"li wei"`、`From: 老师` → `"老师"`。下游**不得**假定 `"@" in sender_addr`，也不得据此做域名后缀提取。好的一面是「按发件人名字匹配」顺带可用。
+- Produces: 邮件条目多一个键 `sender_addr: str` —— `parseaddr` 解出的**地址部分**，已小写、已首尾去空白，**不是显示名**；解不出地址时退回 `parseaddr` 自己的兜底（**原文的首个空白分隔词**，带引号则整段），两者都没有时为 `""`。`_CONTRACT_KEYS` 变为 5 元组。**后续所有任务的规则匹配都吃这个键。**
+  ⚠️ **它不保证是地址、也不保证含 `@`**（Task 1 **两轮**复审实测更正；原写「恒为小写地址」，第一版更正写「退回原文的小写形式」—— **两版都是假的全称**）：实测 `From: "Li Wei"` → `"li wei"`、`From: 老师` → `"老师"`、**`From: Li Wei` → `"li"`（不是 `"li wei"`）**。下游**不得**假定 `"@" in sender_addr`，也不得据此做域名后缀提取（`_addr_domain` 对这类值静默返回 `""`，建在它上面的规则会永不命中）。好的一面是「按发件人名字匹配」顺带可用。
 
 **背景（为什么必须做）：** `/api/mail/list` 的 `sender` 是**显示名优先、退回地址**（`mail_client.py:90` `sender_name`：`return name or addr`），通常**根本不含邮箱地址**。用户按「教授邮箱」写的规则会一条都匹配不上，且**完全静默**。
 
@@ -76,12 +76,18 @@
 **（Task 1 复审补正 — Minor 2）** 上表三处只补**键名**。`test_list_mail_returns_contract_items` 走的是
 **端到端**路径（IMAP 头 → `header_item` → `_do_list` 白名单裁剪 → `list_mail`），补完键名之后，
 这条路径上 `sender_addr` 的**值**仍然从无断言 —— 白名单里把值写错、或 `header_item` 的产物在
-`_do_list` 里被换成别的东西，全文件照绿。它的夹具 `:217-219` 恰好就是 `老师 <t@cityu.edu.hk>` 那一对
-（**正是本键存在的理由**），所以在 `:222-225` 那几行旁边补一条：
+`_do_list` 里被换成别的东西，全文件照绿。它的夹具 `:217-219` 是 `老师 <t@cityu.edu.hk>` ——
+**正是本键存在的理由**那一对。把夹具的地址**改成混合大小写**，并在 `:222-225` 旁补一条：
 
 ```python
+    # 夹具改为：_hdr(subject="作业", sender="老师 <T@CityU.EDU.HK>")
     assert by_id["1"]["sender_addr"] == "t@cityu.edu.hk"
 ```
+
+**为什么夹具要用混合大小写**（Task 1 复审实测，不是我的推断）：夹具若用小写地址，这条断言只在
+「地址↔显示名取错」那个变异下红，在「去掉 `.lower()`」那个变异下**照绿**；改成混合大小写后两个变异它都红
+—— 于是它成为**端到端那条路上大小写压平的唯一守卫**（此前只有字段级那条用例守着，而大小写压平
+正是计划说的「本键存在的理由」）。
 
 下面两条现在就会红，因为它们要求恰好 4 个键：
 
@@ -154,9 +160,12 @@ _CONTRACT_KEYS = ("id", "subject", "sender", "sender_addr", "received")
         "id": uid,
         "subject": decode_mime_header(msg.get("Subject")),
         "sender": sender_name(msg.get("From")),
-        # parseaddr 解出的地址部分（小写、去空白），供规则匹配用；不是显示名。
-        # 但**不保证含 @**：拆不出地址时退回原文的小写形式（From: 老师 → "老师"），
-        # 所以下游不能假定 "@" in sender_addr，也不能据此做域名后缀提取。
+        # parseaddr 解出的地址部分（小写、首尾去空白），供规则匹配用；不是显示名。
+        # **不保证是地址、也不保证含 @**：解不出地址时退回 parseaddr 自己的兜底 ——
+        # 原文的**首个空白分隔词**（带引号则整段）。实测：From: 老师 → "老师"、
+        # From: Li Wei → "li"（**不是** "li wei"）、From: "Li Wei" → "li wei"。
+        # 所以下游不能假定 "@" in sender_addr，也不能据此做域名后缀提取 ——
+        # `_addr_domain` 对这类值静默返回空串，建在它上面的规则会**永不命中**。
         # `parseaddr` 不是新依赖：`sender_name` 内部已在用，`_addr_domain` 是同族先例 ——
         # 这是把「已经解出来又被丢掉」的东西留下。
         "sender_addr": parseaddr(msg.get("From"))[1].strip().lower(),
