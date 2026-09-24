@@ -231,6 +231,9 @@ git commit -m "feat(mail): 条目新增 sender_addr（地址，供规则匹配�
 
 **Interfaces:**
 - Consumes: Task 1 的 `sender_addr` 键。
+  ⚠️ **它不保证含 `@`**（Task 1 复审实测，见 Task 1 Interfaces 的更正）：`From: 老师` → `"老师"`。
+  所以本模块**只能做子串匹配**，**不得**加 `if "@" not in addr: continue` 这类守卫，
+  也不得做域名后缀提取 —— 那会把「按发件人名字匹配」这条路静默砍掉，而用户的规则看起来完全正常。
 - Produces:
   - `WARNING_CODES: tuple[str, ...]` = `("bad_rule", "empty_rule", "blank_item")`
   - `validate_rules(raw) -> tuple[list[dict], list[str]]` —— 规则每项形如 `{"id": str, "name": str, "senders": list[str], "keywords": list[str], "search_body": bool}`，`senders`/`keywords` 里的串**已小写化、已去空白**；第二项是**去重后**的警告码。
