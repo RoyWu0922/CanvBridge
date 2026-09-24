@@ -2437,7 +2437,7 @@ let mailState = { mails: [], groups: null, loading: false, error: "" };
 let mtDays = 14;
 const MT_RULES_KEY = "sc_mailRules";
 const MT_DONE_KEY  = "sc_mailDone";
-let mtRules = [];                                 // 规则（localStorage 的镜像）
+let mtRules = mtLoadRules();                      // 从 localStorage 填镜像；声明即填，任何读者都不可能读到空
 let mtState = { mails: [], labels: {}, loading: false, error: "", warnings: [],
                 items: {}, extracting: false, extractWarnings: [], missing: 0 };
 
@@ -3607,10 +3607,177 @@ async function loadMailTodo(){                   // Task 8 接后端
   return true;
 }
 
-/* 天数选择：改了立刻重算。**坏值回落到 14**，绝不把 NaN/空串原样传给后端
-   （后端 `days: int` 收到 NaN 会抛 422，而 422 体是合法 JSON、前端那条 catch 拦不到）。 */
+/* 天数选择：改了立刻重算。**坏值回落到 14** —— `Number()` 吃的四种坏值（`""`→0、`"abc"`→NaN、
+   `"0"`→0、`"-3"`→-3）全被 `isFinite && > 0` 拦下；真要漏出去，线上值会是 `null`
+   （`JSON.stringify({days: NaN})` ⇒ `{"days":null}`），而 `days: int` 收到显式 `null` 会抛 422，
+   422 体是合法 JSON、`util.js:31-32` 那条 catch 拦不到。 */
 $("mtDaysSel").addEventListener("change", e => {
   const n = Number(e.target.value);
   mtDays = Number.isFinite(n) && n > 0 ? n : 14;
   loadMailTodo();
+});
+
+/* ---- 规则：localStorage <-> 编辑器 ---- */
+
+/* 读规则。**解析失败一律回空数组**：localStorage 里的坏 JSON 不能让整页炸掉，
+   那与「规则丢了」是同一件事，而且用户可以重新导入。
+   **同一件事的另一半**：`JSON.parse` 成功、但元素不是对象（`[null]` / `[3]` —— 用户手改过
+   localStorage、或导入过形状不对的文件都会产生）**不在那条 catch 的射程里**，而
+   `mtRenderRules()` 的模板串直接读 `r.name` ⇒ `TypeError`。故返回前把元素也滤一遍。 */
+function mtLoadRules(){
+  try{
+    const raw = localStorage.getItem(MT_RULES_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr.filter(r => r && typeof r === "object" && !Array.isArray(r)) : [];
+  }catch(e){
+    return [];
+  }
+}
+
+function mtSaveRules(rules){
+  localStorage.setItem(MT_RULES_KEY, JSON.stringify(rules));
+}
+
+/* 名称必填，且发件人 / 关键词至少一个非空。两者都空的规则**在后端会被丢弃**
+   （`mail_rules.py` 的 `validate_rules` 报 `empty_rule` 后 `continue`），
+   界面上就是「存下了一条、它却什么也不做」—— 但**这里就得拦住**：
+   让用户存下一条注定被丢的规则，是最糟的那种「看起来正常」。 */
+function mtRuleValid(r){
+  if(!r || !String(r.name || "").trim()) return false;
+  const has = xs => Array.isArray(xs) && xs.some(x => String(x || "").trim());
+  return has(r.senders) || has(r.keywords);
+}
+
+function mtNewRule(){
+  return { id: "r-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7),
+           name: "", senders: [], keywords: [], search_body: false };
+}
+
+/* 一个多行文本框 <-> 一个字符串数组。读写都用它，免得两侧的空行口径分家。 */
+function mtLinesToArr(v){ return String(v || "").split("\n").map(s => s.trim()).filter(Boolean); }
+function mtArrToLines(a){ return (Array.isArray(a) ? a : []).join("\n"); }
+
+function mtRenderRules(){
+  const box = $("mtRuleList");
+  if(!box) return;
+  box.innerHTML = mtRules.map((r, i) => `
+    <div class="card mt-rule" data-ri="${i}">
+      <label class="field"><span>${esc(t("mailtodo.rule_name"))}</span>
+        <input type="text" data-f="name" value="${escAttr(r.name || "")}"></label>
+      <label class="field"><span>${esc(t("mailtodo.rule_senders"))}</span>
+        <textarea data-f="senders" rows="2">${esc(mtArrToLines(r.senders))}</textarea></label>
+      <label class="field"><span>${esc(t("mailtodo.rule_keywords"))}</span>
+        <textarea data-f="keywords" rows="2">${esc(mtArrToLines(r.keywords))}</textarea></label>
+      <label class="check"><input type="checkbox" data-f="search_body"${r.search_body ? " checked" : ""}>
+        <span>${esc(t("mailtodo.rule_body"))}</span></label>
+      <button class="btn" data-del="${i}">${esc(t("mailtodo.rule_del"))}</button>
+    </div>`).join("");
+  const hint = $("mtRuleHint");
+  if(hint) hint.textContent = mtRules.every(mtRuleValid) ? "" : t("mailtodo.rule_bad");
+  const save = $("mtRuleSave");
+  if(save) save.disabled = !mtRules.every(mtRuleValid);   // 空规则**存不下**
+}
+
+/* 从面板读回规则（保存与增删前都要走这一步，别让编辑中的内容被静默丢弃）。 */
+function mtReadRulesFromPanel(){
+  $$("#mtRuleList .mt-rule").forEach(el => {
+    const i = Number(el.dataset.ri);
+    if(!mtRules[i]) return;
+    const val = f => { const n = el.querySelector(`[data-f="${f}"]`); return n ? n.value : ""; };
+    mtRules[i].name = val("name").trim();
+    mtRules[i].senders = mtLinesToArr(val("senders"));
+    mtRules[i].keywords = mtLinesToArr(val("keywords"));
+    const cb = el.querySelector('[data-f="search_body"]');
+    mtRules[i].search_body = !!(cb && cb.checked);
+  });
+  return mtRules;
+}
+
+/* 「能不能存」这一个判据有两个读者（提示行 + 保存按钮），而 `disabled` 若只在渲染那一刻
+   算一次，用户打完字按钮**还是灰的** —— 而它是唯一能把规则存进 localStorage 的入口
+   （`disabled` 的按钮不派发 click）。实测（Chromium，8332）：新增一条规则、往名称与关键词
+   各填好值之后 `#mtRuleSave.disabled` 仍为 `true`，点它什么也不发生、`localStorage`
+   里始终没有 `sc_mailRules`；补上本监听器后同一串动作 ⇒ 按钮变可用、状态条「已保存 1 条规则」。
+   顺带把镜像同步过来：`mtRenderRules()` 是**按 `mtRules` 重画**的，镜像落后于面板时
+   收起再展开就会把面板里的字丢掉（实测：面板显示「未同步的名字」、镜像仍是「已同步」，
+   收起再展开后面板回到「已同步」）。这里**只改这两个元素、不重渲** —— 重渲会连输入框的
+   焦点与光标位置一起丢掉。 */
+function mtSyncRuleGate(){
+  mtReadRulesFromPanel();
+  const ok = mtRules.every(mtRuleValid);
+  const hint = $("mtRuleHint");
+  if(hint) hint.textContent = ok ? "" : t("mailtodo.rule_bad");
+  const save = $("mtRuleSave");
+  if(save) save.disabled = !ok;
+}
+
+$("mtRules").addEventListener("click", () => {
+  const p = $("mtRulePanel");
+  p.hidden = !p.hidden;
+  if(!p.hidden) mtRenderRules();
+});
+
+$("mtRuleAdd").addEventListener("click", () => {
+  mtReadRulesFromPanel();
+  mtRules.push(mtNewRule());
+  mtRenderRules();
+});
+
+$("mtRuleList").addEventListener("click", e => {
+  const b = e.target.closest("[data-del]");
+  if(!b) return;
+  mtReadRulesFromPanel();
+  mtRules.splice(Number(b.dataset.del), 1);
+  mtRenderRules();
+});
+
+/* 面板里改一个字就重算闸门（理由见 mtSyncRuleGate 的注释）。
+   用 `input` 而不是 `change`：`input` 覆盖文本框 / 多行框 / 复选框三种控件，且是**逐键**
+   触发的；`change` 对文本框要等失焦，用户填完名字直接去点按钮时按钮还是灰的 —— 那正是
+   本监听器要修掉的那个时点。 */
+$("mtRuleList").addEventListener("input", mtSyncRuleGate);
+
+$("mtRuleSave").addEventListener("click", () => {
+  mtReadRulesFromPanel();
+  if(!mtRules.every(mtRuleValid)){ mtRenderRules(); setStatus(t("mailtodo.rule_bad"), "err"); return; }
+  mtSaveRules(mtRules);
+  setStatus(t("mailtodo.rule_saved", { n: mtRules.length }), "ok");
+  loadMailTodo();                       // 规则改了立刻重算分类
+});
+
+/* 导出 / 导入：给「规则在 localStorage、换浏览器就没了」兜底（spec §4）。 */
+$("mtRuleExport").addEventListener("click", () => {
+  mtReadRulesFromPanel();
+  const blob = new Blob([JSON.stringify(mtRules, null, 2)], {type: "application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "mail-rules.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+$("mtRuleImport").addEventListener("click", () => {
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "application/json,.json";
+  inp.addEventListener("change", () => {
+    const f = inp.files && inp.files[0];
+    if(!f) return;
+    const fr = new FileReader();
+    fr.addEventListener("load", () => {
+      let arr = null;
+      try{ arr = JSON.parse(String(fr.result)); }catch(e){ arr = null; }
+      /* 不是数组就**明确报错**，不静默吞掉 —— 导错文件却看起来没反应最气人。 */
+      if(!Array.isArray(arr)){ setStatus(t("mailtodo.rule_import_failed"), "err"); return; }
+      const rid = x => (x && typeof x.id === "string") ? x.id : "";
+      /* 合并而不是覆盖：导入的是「加几条」，把用户手写的规则顶掉是破坏性的。
+         同 id 视作同一条，用导入的那份覆盖（本地 id 由 mtNewRule 生成，不会撞）。 */
+      const byId = new Map(mtRules.map(r => [r.id, r]));
+      arr.forEach(r => { if(rid(r)) byId.set(r.id, r); });
+      mtRules = [...byId.values()];
+      mtSaveRules(mtRules);
+      mtRenderRules();
+    });
+    fr.readAsText(f);
+  });
+  inp.click();
 });

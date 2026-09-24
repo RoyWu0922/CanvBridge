@@ -78,8 +78,15 @@ const FRONTEND = join(ROOT, "frontend");
    `warn.blank_item` `warn.ai_unusable` `warn.ai_dropped` `warn.ids_missing`（Task 10 把这
    6 个加进 `DYNAMIC_PREFIXES`）。8 + 3 + 3 + 6 = 20，与实测增量 41 − 21 = 20 逐字吻合。
    这 20 个键被各自任务的渲染代码消费后，死键应逐轮回落到**当时的实测值**：
-   Task 7 → 33、Task 8 → 30、Task 9 → 27、Task 10 → 21。 */
-const DEAD_BASELINE = 41;
+   Task 7 → 33、Task 8 → 30、Task 9 → 27、Task 10 → 21。
+
+   2026-09-25 Task 7（规则编辑器）41 → 33：上一段给本任务预留的那 8 个键**全部消费**，
+   一个不剩 —— `rule_name` `rule_senders` `rule_keywords` `rule_body` `rule_del` 由 app.js
+   新增的 mtRenderRules() 内联 `t()` 取用；`rule_bad` 由 mtRenderRules() 与 mtRuleSave 的
+   点击处理器两处取用；`rule_saved` 由 mtRuleSave 的点击处理器取用；`rule_import_failed`
+   由 mtRuleImport 的导入回调取用。实测死键 33，与预留数 41 − 8 逐字吻合，故把本行下调到
+   33 收紧防线（本任务不动上一段末尾那条路标：Task 8 → 30、Task 9 → 27、Task 10 → 21）。 */
+const DEAD_BASELINE = 33;
 
 /* 动态家族前缀：源码里存在 "wd." 这样的引号字面量，键由它拼出来
    （app.js 的 t("wd."+d)）。这类键无法被字面量扫描判活，只能按前缀整体放行。

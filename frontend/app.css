@@ -150,10 +150,10 @@ body { overflow-wrap:anywhere; }
 .card-head h2 { margin:0; font-size:16px; font-weight:700; letter-spacing:-.01em; }
 .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(248px,1fr)); gap:12px; }
 .field { display:flex; flex-direction:column; gap:5px; font-size:12px; font-weight:500; color:var(--muted); }
-input[type=text],input[type=password],input[type=date],select { padding:8px 12px; border:1px solid var(--border);
+input[type=text],input[type=password],input[type=date],select,textarea { padding:8px 12px; border:1px solid var(--border);
   border-radius:var(--radius-sm); background:var(--surface); color:var(--ink); outline:none; min-width:0;
   transition:border-color .15s, box-shadow .15s; }
-input:focus, select:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+input:focus, select:focus, textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
 input:disabled { background:var(--surface-2); color:var(--muted); cursor:not-allowed; }
 .row { display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; }
 
