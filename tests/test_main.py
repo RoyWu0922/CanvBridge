@@ -1427,10 +1427,14 @@ def test_library_search_warns_once_when_the_year_window_is_clamped(monkeypatch):
 def test_library_search_compiles_two_different_param_sets(monkeypatch):
     """两个 scope 的过滤参数**不是同一套**（spec §6）。
 
-    差异点是 **`domain` 与 `attribute`（PC 独有）**，**不是 `tlevel`** ——
-    spec §6 把 tlevel 也算进「PC 独有」，实测为假（本馆有 tlevel 且过滤生效：
-    34,105 → 45），所以 tlevel 现在两侧都发。这里补正向断言把它钉住，
-    免得日后有人照规格把 tlevel 又挪回 `is_pc` 门控里。
+    差异点是 **`domain` / `attribute` / `tlevel` 三者都 PC 独有**（spec §6 原样成立）。
+    `tlevel` 曾在 2026-09-20 被挪出这个门控，依据是「本馆 `machine learning` +
+    同行评审 = 45，非空 ⇒ 本馆也生效」；2026-09-24 复测推翻了那个**结论**
+    （数字没错，错在拿非空当可用）：该 facet 在本馆只覆盖 **0.65%** 的记录
+    （PC 侧 58.21%），发出去会把本馆那栏清零 —— 实测 `machine learning education`
+    + 同行评审 + [2020 TO 2026] 本馆 **1** 条、四词查询 **0** 条，摘掉后分别是
+    3241 / 1162。所以它回到了 `is_pc` 门控里，本馆侧的失效由 `tlevel_dropped`
+    警告码说出来（不静默）。
     """
     _patch_library(monkeypatch)
     seen = {}
@@ -1447,9 +1451,9 @@ def test_library_search_compiles_two_different_param_sets(monkeypatch):
                                 "exclude_retracted": True, "domains": ["MEDLINE"]}})
     pc_inc = seen["CentralIndex"].get("q_include") or []
     local_inc = seen["MyInstitution"].get("q_include") or []
-    # 两侧**都**发 tlevel（实测推翻 spec §6 的「PC 独有」）
+    # tlevel 回到 PC 独有（本馆侧覆盖率 0.65%，发出去等于清零）
     assert "facet_tlevel,exact,peer_reviewed" in pc_inc
-    assert "facet_tlevel,exact,peer_reviewed" in local_inc
+    assert "facet_tlevel,exact,peer_reviewed" not in local_inc
     # 真正只属于 PC 的两个 facet
     assert "domain,exact,MEDLINE" in pc_inc
     assert "domain,exact,MEDLINE" not in local_inc

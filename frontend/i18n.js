@@ -421,6 +421,7 @@ const I18N = {
     "library.warn.rtype_narrowed": "AI 选了多个文献类型，只采用了第一个（图书馆接口无法在同类内取并集）",
     "library.warn.domains_narrowed": "AI 选了多个来源库，只采用了第一个（图书馆接口无法在同类内取并集）",
     "library.warn.rtype_dropped": "AI 选的文献类型在某类来源里没有对应类型，那一栏未按类型筛选",
+    "library.warn.tlevel_dropped": "本馆馆藏几乎没有同行评审/开放获取标记，这个条件在本馆那一栏没有生效（外部数据库那栏正常筛了）",
     "library.warn.year_narrowed": "年份跨度过大，只保留了最近的一段（更早的结果未包含）",
   },
   en: {
@@ -845,6 +846,7 @@ const I18N = {
     "library.warn.rtype_narrowed": "AI picked several item types — only the first was used (the library API can't union values within one category)",
     "library.warn.domains_narrowed": "AI picked several source databases — only the first was used (the library API can't union values within one category)",
     "library.warn.rtype_dropped": "The item types the AI picked don't exist in one of the sources — that column isn't filtered by type",
+    "library.warn.tlevel_dropped": "CityU Holdings rarely carries peer-review/open-access tags — that filter wasn't applied to the holdings column (the external-databases column is filtered normally)",
     "library.warn.year_narrowed": "The year range was very wide — only the most recent span was applied (earlier results excluded)",
   },
 };

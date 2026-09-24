@@ -158,19 +158,38 @@ def test_compile_filters_excludes_retracted():
     assert exc == ["facet_attribute,exact,retracted_publication"]
 
 
-def test_compile_filters_tlevel_applies_to_both_scopes():
-    """**实测推翻了 spec §6 的前提。** 规格写「tlevel 是 Primo Central 独有的 facet」，
-    可本馆**有** tlevel，而且过滤真的生效：`any,contains,machine learning` 本馆
-    无过滤 **34,105** → `facet_tlevel,exact,peer_reviewed` **45**。
+def test_compile_filters_tlevel_is_external_only():
+    """**本馆不发 tlevel**（2026-09-24 修正；本条此前叫
+    `..._tlevel_applies_to_both_scopes`）。
 
-    留着旧的 PC-only 门控 = 用户勾的「同行评审」「开放获取」在本馆那栏**静默失效**
-    —— 这正是本次要修的那一类缺陷，不能在修别的 facet 时把它留在原地。两个 scope 都发。
+    旧判据是「本馆 `machine learning` + 同行评审 = **45**，非空 ⇒ 本馆有 tlevel
+    且过滤生效」。那个数字本身没错（我复核过：34,237 → 45），**错在拿「非空」当
+    「可用」**：该 facet 在本馆只覆盖 **0.65%** 的记录，PC 侧覆盖 **58.21%**。
+
+    全库实测（`q = any,contains,the`，2026-09-24）：
+
+      · 本馆 1,507,450 → 同行评审 9,815（0.65%）· 开放获取 16,395（1.09%）
+      · PC   2,176,789 → 同行评审 1,267,193（58.21%）· 开放获取 1,004,899（46.16%）
+
+    发出去等于把本馆那栏清零。同一批真实查询摘掉 tlevel 前后的本馆条数：
+
+      · `machine learning education` + 同行评审 + [2020 TO 2026]：**1 → 3241**
+      · 四词 `machine learning education prediction` + 同行评审：**0 → 1162**
+      · `deep learning image segmentation` + 同行评审：**0 → 2087**
+      · 同行评审 + 开放获取 + `blockchain supply chain`：**0 → 1027**
+      · 【对照】没要 tlevel 的查询：1162 → 1162、7267 → 7267（一个数都没动）
+
+    这正是 spec §6 原本的分流。本馆那栏不再按同行评审筛这件事**由警告码说出来**，
+    见 `test_narrowing_warnings_reports_a_tlevel_filter_that_vanished`。
     """
     parsed = {"peer_reviewed_only": True, "open_access_only": True}
-    for scope in ("MyInstitution", "CentralIndex"):
-        inc, _ = library_query.compile_filters(parsed, scope)
-        assert "facet_tlevel,exact,peer_reviewed" in inc, scope
-        assert "facet_tlevel,exact,open_access" in inc, scope
+    local_inc, _ = library_query.compile_filters(parsed, "MyInstitution")
+    assert [e for e in local_inc if e.startswith("facet_tlevel")] == []
+    pc_inc, _ = library_query.compile_filters(parsed, "CentralIndex")
+    assert [e for e in pc_inc if e.startswith("facet_tlevel")] == [
+        "facet_tlevel,exact,peer_reviewed",
+        "facet_tlevel,exact,open_access",
+    ]
 
 
 def test_compile_filters_attribute_stays_external_only():
@@ -434,7 +453,8 @@ def test_compile_filters_keeps_only_one_value_per_facet():
     成立范围仅限**互斥**取值。反例就在本文件：
     `test_compile_filters_emits_both_tlevel_values_because_they_intersect` ——
     tlevel 的两个标志**可以同时成立**，两条都发换来的是**非空交集**
-    （本馆 45 ∩ 250 = **21**、PC 896,913 ∩ 953,408 = **533,967**）。
+    （PC 896,913 ∩ 953,408 = **533,967**）。
+    同轮实测的本馆 45 ∩ 250 = 21 自 2026-09-24 起本馆不再发 tlevel，**已不可复现**。
     判据是「这几个取值互斥还是可叠加」，**不是**「是不是同一个 facet」。
 
     试过的 9 种「同 facet OR」写法全部无效（重复参数 / `|,|` 两种拼法 /
@@ -779,20 +799,22 @@ def test_compile_filters_emits_both_tlevel_values_because_they_intersect():
     而那正是用户勾两个框时想要的语义（「同行评审**且**开放获取」）。
 
     2026-09-20 实测（q = `any,contains,machine learning`，`|,|` 连接成一个 qInclude）：
-      · 本馆：peer_reviewed **45**、open_access **250** → 两个都发 **21**（= 交集，非空）
-      · PC  ：896,913 / 953,408               → 两个都发 **533,967**（= 交集，非空）
+      · PC：896,913 / 953,408 → 两个都发 **533,967**（= 交集，非空）
 
     两条都**严格小于**各自单独的值 ⇒ tlevel 是逐条可多值的，交集真的有内容，
     不是被 AND 成空集。若哪天有人为「统一」把它改成只发第一条，
     用户勾的两个框里会有一个静默失效，这条用例会红。
+
+    **只在 `CentralIndex` 上断言**：本馆自 2026-09-24 起整个不发 tlevel
+    （覆盖率 0.65%，见 `test_compile_filters_tlevel_is_external_only`），
+    所以「两个值可叠加」这条在本馆侧已经**无从观测**。
     """
     both = {"peer_reviewed_only": True, "open_access_only": True}
-    for scope in ("MyInstitution", "CentralIndex"):
-        inc, _ = library_query.compile_filters(both, scope)
-        assert [e for e in inc if e.startswith("facet_tlevel")] == [
-            "facet_tlevel,exact,peer_reviewed",
-            "facet_tlevel,exact,open_access",
-        ], scope
+    inc, _ = library_query.compile_filters(both, "CentralIndex")
+    assert [e for e in inc if e.startswith("facet_tlevel")] == [
+        "facet_tlevel,exact,peer_reviewed",
+        "facet_tlevel,exact,open_access",
+    ]
 
 
 def test_narrowing_warnings_reports_a_type_filter_that_vanished():
@@ -830,6 +852,29 @@ def test_narrowing_warnings_reports_a_clamped_year_window():
     assert "year_narrowed" not in library_query.narrowing_warnings(
         {"year_from": 2020, "year_to": 2026}, "MyInstitution"), "30 年内，没被抬过"
     assert "year_narrowed" not in library_query.narrowing_warnings({}, "MyInstitution")
+
+
+def test_narrowing_warnings_reports_a_tlevel_filter_that_vanished():
+    """本馆不再发 tlevel ⇒ 用户要的「同行评审 / 开放获取」在本馆那栏**没生效**，
+    必须说出来 —— 照 `rtype_dropped` 的既定模式：那一栏没按你要的条件筛，就要讲，
+    否则回显/界面上看着筛了，实际返回的是全部类型。
+
+    **只在 `MyInstitution` 报，PC 不报**：PC 侧 tlevel 覆盖率 58%，是真的筛了。
+    两侧都报会让用户以为 PC 那栏也没筛 —— 那是把警告变成谎言。
+    """
+    parsed = {"peer_reviewed_only": True}
+    assert "tlevel_dropped" in library_query.narrowing_warnings(parsed, "MyInstitution")
+    assert "tlevel_dropped" not in library_query.narrowing_warnings(parsed, "CentralIndex")
+
+    # 用户**没要** tlevel 时不该报：本馆那栏本来就没这个约束，谈不上「消失」。
+    # 报它会把警告训练成噪声，用户下次就不看了。
+    assert "tlevel_dropped" not in library_query.narrowing_warnings({}, "MyInstitution")
+    assert "tlevel_dropped" not in library_query.narrowing_warnings(
+        {"open_access_only": False, "peer_reviewed_only": False}, "MyInstitution")
+
+    # 两个标记任一个为真都要报（不能只看 peer_reviewed）。
+    assert "tlevel_dropped" in library_query.narrowing_warnings(
+        {"open_access_only": True}, "MyInstitution")
 
 
 # ---------- 警告码的跨语言契约 ----------

@@ -64,7 +64,8 @@ def test_build_params_joins_filters_into_one_qInclude_value():
 
     ⚠️ 上面这句的实测证据**只覆盖异 facet**（下面 4 组数字全是 rtype × creationdate）。
     **别把它推广成「重复同名参数一律只认第一个」**：同 facet 且取值**可叠加**时
-    重复发是**取交集**而非只认第一个（tlevel 实测 21 / 533,967，见
+    重复发是**取交集**而非只认第一个（tlevel 实测 PC 533,967；同轮的本馆 21 自
+    2026-09-24 起本馆不再发 tlevel 而**不可复现**，见
     `test_library_query.test_compile_filters_emits_both_tlevel_values_because_they_intersect`）。
     两种行为并存、**成因未查明**，本层只登记实测、不据此做假设。
     实测（`q = any,contains,machine learning`）：
@@ -118,7 +119,8 @@ def test_build_params_sends_exactly_one_qInclude_param_on_the_wire():
       所以 `compile_filters` 对**互斥值**（rtype / domain）只发一个，把「多值」
       挡在编码之前，而不是指望这里能 OR；而**可叠加**的值（`tlevel` 的
       `peer_reviewed` + `open_access`）仍然全发 —— 它们的交集正是用户勾两个框时
-      想要的语义，实测非空（本馆 21 / PC 533,967）。取舍规则见 `compile_filters`。
+      想要的语义，实测非空（PC 533,967；同轮的本馆 21 自 2026-09-24 起本馆不再发
+      tlevel，**已不可复现**）。取舍规则见 `compile_filters`。
     """
     p = library_client.build_params(
         "CentralIndex", "q",

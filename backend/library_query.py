@@ -85,6 +85,7 @@ WARNING_CODES = (
     "domains_dropped",   # parse_natural：LLM 编了词表里没有的来源库名
     "rtype_narrowed",    # narrowing_warnings：多个**互斥**类型，只用了第一个
     "rtype_dropped",     # narrowing_warnings：用户要的类型本 scope 一个都没有
+    "tlevel_dropped",    # narrowing_warnings：本馆不发 tlevel，那一栏没按同行评审/开放获取筛
     "domains_narrowed",  # narrowing_warnings：多个来源库，只用了第一个
     "year_narrowed",     # narrowing_warnings：年份窗口被 _YEAR_SPAN_CAP 抬掉了老端
 )
@@ -340,6 +341,9 @@ def narrowing_warnings(parsed: dict, scope: str) -> list[str]:
       · `rtype_narrowed`    —— 求交后仍多于一个**互斥**的文献类型，只用了第一个
       · `rtype_dropped`     —— 用户要的文献类型本 scope **一个都没有**，整条类型约束
                                消失（这一栏根本没按类型筛，回显却还写着它）
+      · `tlevel_dropped`    —— 用户要了同行评审 / 开放获取，而本 scope **不发 tlevel**
+                               （只在 `MyInstitution` 报：该 facet 在本馆只覆盖 0.65%
+                               的记录，发出去等于把那栏清零，见 `compile_filters`）
       · `domains_narrowed`  —— 多于一个来源库，只用了第一个（只在 PC 报，本馆不发
                                domain 过滤）
       · `year_narrowed`     —— `_YEAR_SPAN_CAP` 把年份窗口从**老的那一端**抬掉了
@@ -364,6 +368,14 @@ def narrowing_warnings(parsed: dict, scope: str) -> list[str]:
         out.append("rtype_narrowed")
     if parsed.get("rtype") and not surviving:
         out.append("rtype_dropped")
+    # 本馆不发 tlevel（见 `compile_filters`）⇒ 用户要的「同行评审 / 开放获取」在
+    # 本馆那栏**没生效**，照 `rtype_dropped` 的既定模式说出来。
+    # **只在 MyInstitution 报**：PC 侧 tlevel 覆盖率 58%，是真的筛了；两侧都报会让
+    # 用户以为外部库那栏也没筛 —— 那是把警告变成谎言。
+    # 用户**没要** tlevel 时不报：本馆那栏本来就没这个约束，谈不上「消失」。
+    if scope == "MyInstitution" and (parsed.get("peer_reviewed_only")
+                                     or parsed.get("open_access_only")):
+        out.append("tlevel_dropped")
     if scope == "CentralIndex" and len(parsed.get("domains") or []) > 1:
         out.append("domains_narrowed")
     if _year_window_is_narrowed(parsed):
@@ -408,9 +420,10 @@ def compile_filters(parsed: dict, scope: str) -> tuple[list[str], list[str]]:
     # 它成立的范围仅限**互斥的备选值**：rtype 的取值、domain 的来源库 —— 这些取两个
     # 的交集恒为空，没有任何用户会想要。
     # 反例是下面的 `tlevel`：`peer_reviewed` 与 `open_access` 可以**同时成立**，两条
-    # 都发换来的是**交集**，而交集恰恰是用户勾两个框时想要的语义 —— 实测本馆
-    # 45 ∩ 250 = **21**、PC 896,913 ∩ 953,408 = **533,967**，都不是 0
-    # （2026-09-20 实测，q = `any,contains,machine learning`）。
+    # 都发换来的是**交集**，而交集恰恰是用户勾两个框时想要的语义 —— 实测 PC
+    # 896,913 ∩ 953,408 = **533,967**，不是 0
+    # （2026-09-20 实测，q = `any,contains,machine learning`；同轮测得本馆
+    # 45 ∩ 250 = 21，但 2026-09-24 起本馆不再发 `tlevel`，那组数字**已不可复现**）。
     # 所以判据是「这几个值互斥还是可叠加」，**不是**「是不是同一个 facet」。
     #
     # 词表挡掉值只在**整条类型约束都消失**时才报 `rtype_dropped`：还剩至少一个值 ⇒
@@ -451,24 +464,39 @@ def compile_filters(parsed: dict, scope: str) -> tuple[list[str], list[str]]:
         if domains:
             include.append(f"domain,exact,{domains[0]}")
 
-    # **tlevel 两个 scope 都发 —— spec §6 的门控在这里是错的。**
-    # 规格写「tlevel / attribute / domain 都是 Primo Central 独有的 facet」，
-    # 实测推翻了 tlevel 那半：本馆**有** tlevel，而且过滤真的生效 ——
-    # `any,contains,machine learning` 本馆无过滤 **34,105** →
-    # `facet_tlevel,exact,peer_reviewed` **45**、`facet_tlevel,exact,open_access` **250**。
-    # 若照规格只在 PC 发，用户勾的「同行评审 / 开放获取」在本馆那栏就**静默失效**
-    # —— 正是本次在修的那一类缺陷，不能修别的 facet 时把它留在原地。
+    # **tlevel 只在 PC 发**（2026-09-24 修正；spec §6 原本就把它列进「PC 独有」）。
+    #
+    # 它曾在 2026-09-20 被挪出这个门控，依据是「本馆 `any,contains,machine learning`
+    # + 同行评审 = **45**，非空 ⇒ 本馆也有这个 facet 且过滤生效」。那个数字本身没错
+    # （2026-09-24 复核：34,237 → 45），**错在拿「非空」当「可用」** —— 判据是覆盖率：
+    #
+    #   全库实测（`q = any,contains,the`，2026-09-24）：
+    #     · 本馆 1,507,450 → 同行评审   9,815（**0.65%**）· 开放获取  16,395（ 1.09%）
+    #     · PC   2,176,789 → 同行评审 1,267,193（**58.21%**）· 开放获取 1,004,899（46.16%）
+    #
+    # 对本馆它筛掉 **99.35%**，等于把那一栏清零。同一批真实查询、摘掉 tlevel 前后的
+    # 本馆条数（2026-09-24 实测）：
+    #     · `machine learning education` + 同行评审 + [2020 TO 2026]：**1 → 3241**
+    #     · 四词 `machine learning education prediction` + 同行评审：**0 → 1162**
+    #     · `deep learning image segmentation` + 同行评审：**0 → 2087**
+    #     · 同行评审 + 开放获取 + `blockchain supply chain`：**0 → 1027**
+    #     · 【对照】没要 tlevel 的查询：1162 → 1162、7267 → 7267（一个数都没动）
+    # 界面占位符自己举的例子（「…的同行评审论文」）正是这一类。
+    #
+    # 本馆那栏**没按你要的条件筛**这件事由 `narrowing_warnings` 的 `tlevel_dropped`
+    # 说出来 —— 不静默，照 `rtype_dropped` 的既定模式。
     #
     # **两个勾同时给出两条同 facet 表达式，是刻意的 —— 别把它「统一」成只发一条。**
     # 两条连接后是 AND = **交集**，而交集恰恰是「同行评审**且**开放获取」的语义：
-    # 实测本馆 45 ∩ 250 = **21**、PC 896,913 ∩ 953,408 = **533,967**，两个都非空且都
-    # 严格小于各自单独的值 —— 可见 tlevel 是**逐条可多值**的，交集真的有内容。
+    # 实测 PC 896,913 ∩ 953,408 = **533,967**，非空且严格小于各自单独的值 ——
+    # 可见 tlevel 是**逐条可多值**的，交集真的有内容。
     # （对比 rtype / domain：那两个的值互斥，交集恒为空，所以只发第一个并报窄化。）
-    # 若这里改成只发第一条，用户勾的两个框会有一个**静默失效** —— 那正是本次的缺陷类型。
-    if parsed.get("peer_reviewed_only"):
-        include.append("facet_tlevel,exact,peer_reviewed")
-    if parsed.get("open_access_only"):
-        include.append("facet_tlevel,exact,open_access")
+    # 若这里改成只发第一条，用户勾的两个框会有一个**静默失效**。
+    if is_pc:
+        if parsed.get("peer_reviewed_only"):
+            include.append("facet_tlevel,exact,peer_reviewed")
+        if parsed.get("open_access_only"):
+            include.append("facet_tlevel,exact,open_access")
 
     # `attribute`（撤稿标记）仍**只在 PC** —— 与 tlevel 相反，这个门控实测成立：
     # 本馆把它当 qExclude 发出去**一条都不排除**（实测 34,105 → 34,105，差 0），
