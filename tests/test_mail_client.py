@@ -740,12 +740,12 @@ def test_contract_keys_is_exactly_the_five_public_keys():
 
 
 def test_header_item_sender_addr_is_the_address_not_the_display_name():
-    """`sender` 显示名优先、**不含**地址，规则要按邮箱匹配就必须有本键。
+    """`sender` 有显示名时用显示名、没有显示名时退回地址，规则要按邮箱匹配就必须有本键。
     大写域名必须被压平，否则用户按 `li.wei@cityu.edu.hk` 写的小写规则会静默匹配不上。"""
     m = _msg(subject="作业", sender="Li Wei <Li.Wei@CityU.EDU.HK>",
              date="Thu, 17 Sep 2026 16:31:00 +0800")
     it = mail_client.header_item("42", m)
-    assert it["sender"] == "Li Wei"                     # 显示名优先，且不含地址
+    assert it["sender"] == "Li Wei"                     # 有显示名时用显示名，没有显示名时退回地址
     assert it["sender_addr"] == "li.wei@cityu.edu.hk"   # 地址、小写
 
 
@@ -774,6 +774,9 @@ def test_header_item_sender_addr_falls_back_to_a_non_address_string():
     assert mail_client.header_item("2", _raw_from(b"Li:Wei"))["sender_addr"] == "wei"
     assert mail_client.header_item("3", _raw_from(b", Li Wei"))["sender_addr"] == ""
     assert mail_client.header_item("4", _raw_from(b"Li <>"))["sender_addr"] == ""
+    # 去掉引号会变成另一个形状（`Li Wei` → "li"，见上），所以这一条**不能**写成 `Li Wei`
+    assert mail_client.header_item("5", _raw_from(b'"Li Wei"'))["sender_addr"] == "li wei"
+    assert mail_client.header_item("6", _raw_from(b"a<b>"))["sender_addr"] == "b"
 
 
 # --- select_scope：按 INTERNALDATE 的纯日期窗口，fail-open（见裁定 D）---

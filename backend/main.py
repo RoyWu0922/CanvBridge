@@ -1195,7 +1195,7 @@ def mail_extract(req: MailExtractRequest):
     """
     ids = _mail_id_list(req.ids)
     if ids is None:
-        return {"ok": False, "error": "邮件编号列表（ids）必须是非空数字串数组"}
+        return {"ok": False, "error": "邮件编号列表（ids）必须是非空字符串数组"}
     phase = "mail"
     try:
         mails = mail_client.list_mail(req.days)

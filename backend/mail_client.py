@@ -208,7 +208,7 @@ def header_item(uid: str, msg, internaldate: datetime | None = None) -> dict:
         # parseaddr 解出的地址部分（小写、首尾去空白），供规则匹配用；不是显示名。
         # **不保证是地址、不保证含 @、也不保证非空** —— 解不出地址时它会落回
         # parseaddr 内部的其它分支，那些分支的形状**别去猜**：本注释改过三版，
-        # 前两版都在猜机制（「恒为地址」「退回原文小写」），都被实测证伪。
+        # 被证伪的机制猜测：「恒为地址」「退回原文小写」「退回首个空白分隔词」。
         # 实测（生产路径 `message_from_bytes`，见 tests 里的锚用例）：
         #   `Li Wei <Li.Wei@CityU.EDU.HK>` → "li.wei@cityu.edu.hk"   `Li Wei` → "li"
         #   `"Li Wei"` → "li wei"   `Li:Wei` → "wei"   `a<b>` → "b"

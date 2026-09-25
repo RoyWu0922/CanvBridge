@@ -122,12 +122,12 @@ def test_contract_keys_is_exactly_the_five_public_keys():
 
 ```python
 def test_header_item_sender_addr_is_the_address_not_the_display_name():
-    """`sender` 显示名优先、**不含**地址，规则要按邮箱匹配就必须有本键。
+    """`sender` 有显示名时用显示名、没有显示名时退回地址，规则要按邮箱匹配就必须有本键。
     大写域名必须被压平，否则用户按 `li.wei@cityu.edu.hk` 写的小写规则会静默匹配不上。"""
     m = _msg(subject="作业", sender="Li Wei <Li.Wei@CityU.EDU.HK>",
              date="Thu, 17 Sep 2026 16:31:00 +0800")
     it = mail_client.header_item("42", m)
-    assert it["sender"] == "Li Wei"                     # 显示名优先，且不含地址
+    assert it["sender"] == "Li Wei"                     # 有显示名时用显示名，没有显示名时退回地址
     assert it["sender_addr"] == "li.wei@cityu.edu.hk"   # 地址、小写
 
 
@@ -162,7 +162,7 @@ _CONTRACT_KEYS = ("id", "subject", "sender", "sender_addr", "received")
         "sender": sender_name(msg.get("From")),
         # parseaddr 解出的地址部分（小写、首尾去空白），供规则匹配用；不是显示名。
         # **不保证是地址、不保证含 @、也不保证非空** —— 解不出地址时它落回 parseaddr 内部的
-        # 其它分支，形状**别去猜**（本注释改过三版，前两版都在猜机制、都被实测证伪）。
+        # 其它分支，形状**别去猜**（本注释改过三版；被证伪的机制猜测：「恒为地址」「退回原文小写」「退回首个空白分隔词」）。
         # 实测（生产路径）：`Li Wei <Li.Wei@CityU.EDU.HK>` → "li.wei@cityu.edu.hk"、`Li Wei` → "li"、
         # `"Li Wei"` → "li wei"、`Li:Wei` → "wei"、`a<b>` → "b"、`, Li Wei` → ""、`Li <>` → ""。
         # 所以下游**只能按子串匹配**（可能是非地址值，也可能是空串），不得假定
@@ -518,7 +518,7 @@ def label_mails(rules: list[dict], mails: list[dict]) -> dict[str, list[str]]:
 - [ ] **Step 4: 跑测试，逐条确认都真的执行了**
 
 Run: `.venv/bin/python -m pytest tests/test_mail_rules.py -v`
-Expected: PASS —— **15 条**全绿，且 `-v` 列表里每条用例名都在。若条数少于 15，先查是哪条没被收集。
+Expected: PASS —— 用例全绿（条数以 `--collect-only` 为准，别照抄本行的数字），且 `-v` 列表里每条用例名都在。若条数不符，先查是哪条没被收集。
 （原写 14：Task 1 复审后补了 `test_sender_rule_can_match_a_non_address_value`（原名 `..._display_name_too`，因该名与实测不符已改）。**先按 15 核对，不符再查，不要照抄数字**。）
 
 - [ ] **Step 5: 变异检验（证明关键守卫承重）**
@@ -1159,7 +1159,7 @@ def mail_extract(req: MailExtractRequest):
     """
     ids = _mail_id_list(req.ids)
     if ids is None:
-        return {"ok": False, "error": "邮件编号列表（ids）必须是非空数字串数组"}
+        return {"ok": False, "error": "邮件编号列表（ids）必须是非空字符串数组"}
     phase = "mail"
     try:
         mails = mail_client.list_mail(req.days)
@@ -1815,7 +1815,7 @@ function mtTodoHtml(){
 }
 
 function mtWhoSent(m){
-  /* 显示名优先（与邮件页一致）；地址**不上屏** —— 它只用于匹配。 */
+  /* 显示名优先（与邮件页一致）；没有显示名时**回落到地址** —— 有地址总比空着强。 */
   return String(m.sender || m.sender_addr || "");
 }
 

@@ -323,7 +323,7 @@ def _normalize_groups(data: dict, mails: list[dict], language: str) -> dict:
     """把模型输出收敛成可信结构：越界 index 丢弃、坏字段回退。
 
     留痕的确切保证：越界 / 非整数 mail_index 的条目被丢弃时留痕；未被任何条目引用的
-    邮件留痕。其余畸形形状（如某组 items 全是非 dict）只丢弃、不留痕 —— 不承诺「全程留痕」。
+    邮件留痕。其余畸形形状（如某组 items 全是非 dict）只丢弃、不计 `dropped`、不新增专属码 —— 被丢条目引用的邮件**仍会**经覆盖检查留痕 —— 不承诺「全程留痕」。
     """
     other = "Other" if language == "en" else "其他"
     warnings: list[str] = []
@@ -366,7 +366,7 @@ def _normalize_groups(data: dict, mails: list[dict], language: str) -> dict:
         if types_out:
             out.append({"course": str(g.get("course") or other), "types": types_out})
     # 覆盖检查：prompt 要求每封邮件都被归类，没被任何条目引用的邮件必须留痕 ——
-    # 否则「AI 返回垃圾」与「邮箱是空的」在 UI 上无法区分（docstring 的「绝不静默降级」）。
+    # 否则「AI 返回垃圾」与「邮箱是空的」在 UI 上无法区分（`summarize_mail` docstring 的「绝不静默降级」）。
     placed = {it["mail_index"] for g in out for ty in g["types"] for it in ty["items"]}
     missing = len(mails) - len(placed)
     if missing > 0:

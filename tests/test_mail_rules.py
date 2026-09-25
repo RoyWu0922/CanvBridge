@@ -24,6 +24,17 @@ def test_whitespace_only_items_are_dropped_and_reported():
     assert rules[0]["senders"] == []
     assert rules[0]["keywords"] == ["报告"]
     assert warnings.count("blank_item") == 1        # 去重：同一码只报一次
+    # 「规则还在、照常参与匹配」这句得自己有条锚：关键词那条路照常命中，不因发件人那侧被剥空而失效。
+    assert mail_rules.label_mails(rules, [_mail(subject="报告")]) == {"1": ["r1"]}
+
+
+def test_rule_whose_items_are_all_blank_is_dropped_as_empty_rule():
+    """剥完两个列表都空 ⇒ 按 `empty_rule` 整条丢弃（`WARNING_CODES` 里 `blank_item` 那半句）。
+    **次序亦然**：`blank_item` 在剥空白项时报出、`empty_rule` 在整条丢弃时报出。"""
+    rules, warnings = mail_rules.validate_rules([
+        {"id": "r1", "name": "空白", "senders": ["", "  "], "keywords": []}])
+    assert rules == []
+    assert warnings == ["blank_item", "empty_rule"]
 
 
 def test_bad_rules_are_dropped_and_reported_once():
@@ -105,7 +116,7 @@ def test_sender_matches_case_insensitively():
     """地址侧的匹配同样大小写不敏感（规格：匹配前把待查文本也小写化）。
 
     本用例专钉 `label_mails` 里 `addr = ... .lower()` 那一步。上面几条 `test_sender_*`
-    的 `addr` 夹具**全是小写**，删掉那一步它们一条都不会红（实测：15 条全绿）；
+    的 `addr` 夹具**全是小写**，删掉那一步它们一条都不会红（实测：当时 15 条全绿）；
     规则侧的小写化由 `_clean_items` 负责，不靠本用例。
     """
     rules, _ = mail_rules.validate_rules([
