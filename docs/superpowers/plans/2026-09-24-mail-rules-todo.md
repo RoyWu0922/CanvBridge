@@ -519,7 +519,7 @@ def label_mails(rules: list[dict], mails: list[dict]) -> dict[str, list[str]]:
 
 Run: `.venv/bin/python -m pytest tests/test_mail_rules.py -v`
 Expected: PASS —— 用例全绿（条数以 `--collect-only` 为准，别照抄本行的数字），且 `-v` 列表里每条用例名都在。若条数不符，先查是哪条没被收集。
-（原写 14：Task 1 复审后补了 `test_sender_rule_can_match_a_non_address_value`（原名 `..._display_name_too`，因该名与实测不符已改）。**先按 15 核对，不符再查，不要照抄数字**。）
+（原写 14：Task 1 复审后补了 `test_sender_rule_can_match_a_non_address_value`（原名 `..._display_name_too`，因该名与实测不符已改）。**按 --collect-only 的条数核对，不符再查，不要照抄数字**。）
 
 - [ ] **Step 5: 变异检验（证明关键守卫承重）**
 

@@ -30,7 +30,7 @@ def test_whitespace_only_items_are_dropped_and_reported():
 
 def test_rule_whose_items_are_all_blank_is_dropped_as_empty_rule():
     """剥完两个列表都空 ⇒ 按 `empty_rule` 整条丢弃（`WARNING_CODES` 里 `blank_item` 那半句）。
-    **次序亦然**：`blank_item` 在剥空白项时报出、`empty_rule` 在整条丢弃时报出。"""
+    **本条规则的**次序亦然：`blank_item` 在剥空白项时报出、`empty_rule` 在整条丢弃时报出。"""
     rules, warnings = mail_rules.validate_rules([
         {"id": "r1", "name": "空白", "senders": ["", "  "], "keywords": []}])
     assert rules == []

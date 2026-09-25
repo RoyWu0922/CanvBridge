@@ -323,7 +323,7 @@ def _normalize_groups(data: dict, mails: list[dict], language: str) -> dict:
     """把模型输出收敛成可信结构：越界 index 丢弃、坏字段回退。
 
     留痕的确切保证：越界 / 非整数 mail_index 的条目被丢弃时留痕；未被任何条目引用的
-    邮件留痕。其余畸形形状（如某组 items 全是非 dict）只丢弃、不计 `dropped`、不新增专属码 —— 被丢条目引用的邮件**仍会**经覆盖检查留痕 —— 不承诺「全程留痕」。
+    邮件留痕。其余畸形形状（如某组 items 全是非 dict）只丢弃、不计 `dropped`、不新增专属码 —— 这些条目覆盖不到的邮件**仍会**经覆盖检查留痕 —— 不承诺「全程留痕」。
     """
     other = "Other" if language == "en" else "其他"
     warnings: list[str] = []
