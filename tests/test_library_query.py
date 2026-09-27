@@ -84,9 +84,68 @@ def test_validate_parsed_truncates_long_strings():
 
 # ---------- build_q / compile_filters ----------
 
-def test_build_q_joins_keywords_with_or():
+def test_build_q_ands_keywords_and_ors_synonyms():
+    """关键词之间是 AND，同义词各自是「或」的一支。
+
+    旧版的用例叫 `..._joins_keywords_with_or`，**名字说 or，断言钉的却是空格**
+    （`"any,contains,a b c"`）—— 同一个误会也写在规格 §6 里。实测空格在
+    `any,contains` 里是 **AND**（本馆 `machine` 81,797 → `machine learning`
+    34,241 → `+deep` 9,664），于是同义词从「扩召回」变成「再收窄一次」。
+
+    规格 §6 自己的示例（keywords ["machine learning","education"] + synonyms
+    ["ML","learning analytics"]）照旧形状拼出来本馆只剩 **103** 条；按下面这个
+    形状拼是本馆 **15,776** / PC **2,651,547**。
+    """
     q = library_query.build_q({"keywords": ["a", "b"], "synonyms": ["c"]})
-    assert q == "any,contains,a b c"
+    assert q == "any,contains,a b OR c"
+
+
+def test_build_q_without_synonyms_is_all_and():
+    """没有同义词时一个 OR 都不留 —— 这一支必须与旧行为逐字节相同。"""
+    assert library_query.build_q({"keywords": ["a", "b"]}) == "any,contains,a b"
+    assert library_query.build_q({"keywords": ["machine learning"]}) == \
+        "any,contains,machine learning"
+
+
+def test_build_q_never_emits_a_dangling_or():
+    """悬空或裸的 `OR` 会让本馆返回 0 —— 本函数任何分支都不许拼出来。
+
+    实测（本馆）：`machine OR` = 0、`OR machine` = 0、`OR` = 0
+    （PC 侧不报错，而是静默退化成只剩其中一词、甚至匹配全库）。
+    最容易踩的正是「没有关键词、只有同义词」这一支：朴素的拼接会写成
+    `any,contains, OR a`。
+    """
+    assert library_query.build_q({"keywords": [], "synonyms": ["a", "b"]}) == \
+        "any,contains,a OR b"
+    assert library_query.build_q({"keywords": [], "synonyms": ["a"]}) == "any,contains,a"
+    assert library_query.build_q({"keywords": ["a"], "synonyms": []}) == "any,contains,a"
+
+    # 不变式：四种输入形状下，q 都不以 OR 开头/结尾，也不等于一个裸 OR。
+    # **必须 strip**：朴素的 `" ".join(kws) + "".join(" OR " + s ...)` 在没有
+    # 关键词时拼出的是 `" OR a OR b"`（前导空格），不 strip 就骗过 startswith。
+    for parsed in ({"keywords": [], "synonyms": []}, {"keywords": ["a"]},
+                   {"keywords": [], "synonyms": ["a"]},
+                   {"keywords": ["a"], "synonyms": ["b", "c"]}):
+        q = library_query.build_q(parsed)
+        body = q[len("any,contains,"):].strip()
+        assert body != "OR"
+        assert not body.startswith("OR ")
+        assert not body.endswith(" OR")
+
+
+def test_build_q_drops_terms_that_are_exactly_or():
+    """恰为 `OR` 的词不能进 q —— 只能丢，因为 Primo 没有可用的分组/转义。
+
+    大写会被当运算符：实测本馆 `machine OR learning` = 261,061（并集），
+    而 `machine or learning` = 34,241（三个词 AND ⇒ 小写是字面量）。
+    小写则是一个只会收窄召回的字面量（261,061 → 34,241），留着有害无益。
+    分组/转义实测都不存在：`{machine learning}` 与 `(machine learning)`
+    本馆都是 34,241，与空格 AND 的基线一模一样。
+    """
+    assert library_query.build_q({"keywords": ["OR", "machine"]}) == "any,contains,machine"
+    assert library_query.build_q({"keywords": ["or"]}) == "any,contains,"
+    assert library_query.build_q({"keywords": ["a"], "synonyms": ["Or", "b"]}) == \
+        "any,contains,a OR b"
 
 
 def test_build_q_falls_back_to_any_when_empty():

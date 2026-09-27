@@ -1147,6 +1147,16 @@ def test_library_search_sends_the_compiled_q_to_the_client(monkeypatch):
     assert seen[library_client.SCOPE_LOCAL] == "any,contains,ml papers"
     assert seen[library_client.SCOPE_EXTERNAL] == "any,contains,ml papers"
 
+    # 上面那次 `synonyms` 是空的 ⇒ `build_q` 的「或」分支整个看不见，被架空也照样绿。
+    # 补上有同义词的那一半，契约才算钉全：关键词 AND、同义词各自 OR。
+    seen.clear()
+    body = client.post("/api/library/search", json={
+        "llm_base_url": "u", "llm_api_key": "k", "llm_model": "m", "page": 2,
+        "parsed": {"keywords": ["ml", "papers"], "synonyms": ["deep learning"]}}).json()
+    assert body["ok"] is True
+    assert seen[library_client.SCOPE_LOCAL] == "any,contains,ml papers OR deep learning"
+    assert seen[library_client.SCOPE_EXTERNAL] == "any,contains,ml papers OR deep learning"
+
 
 def test_library_search_wraps_upstream_failure(monkeypatch):
     _patch_library(monkeypatch)

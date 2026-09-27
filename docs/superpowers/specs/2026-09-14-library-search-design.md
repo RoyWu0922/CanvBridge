@@ -214,11 +214,15 @@ LLM 的产物是**结构化 JSON，不是 Primo 查询串**。理由：可校验
 
 编译规则：
 
-- `keywords + synonyms` → `q=any,contains,...`
+- `keywords + synonyms` → `q=any,contains,...`。**关键词之间是 AND，同义词各自做一支「或」**：`any,contains,<关键词以空格相连> OR <同义词1> OR <同义词2>`（关键词为空时，同义词彼此用 `OR` 相连）。**2026-09-28 修正如上** —— 本行原为「两者的词一律用空格拼起来」，实测量与理由见本节末。
 - `rtype` → `qInclude=rtype,exact,<值>`（**复数形式**）
 - `domains` → `qInclude=domain,exact,<值>`，**值必须来自 Primo 自己的 domain 词表**（§4.2），LLM 只能从词表里挑。**只作用于 `CentralIndex`**——`domain` 是 PC 侧的来源库概念，本馆馆藏记录没有这个维度。
 - `year_from/to` → `qInclude=creationdate,exact,<年>`，逐年一条（`qInclude` 语法已实测；区间形式的专用参数未验，**不作为默认**，验通后可换成区间优化，属性能改进不属功能）
 - **`areas` 不编译成任何参数**（§4.1）——它只是提示词的输入，用来引导 LLM 选上面那些值。回显出来让用户看见 LLM 理解成了什么。
+
+> **为什么不能把两者的词一律用空格拼起来（2026-09-28 实测）**：空格在 `any,contains` 里是 **AND** —— 本馆 `machine` 81,797 → `machine learning` 34,241 → `+deep` 9,664。所以把同义词也用空格拼进去，等于让**每一个同义词再收窄一次**，与「同义词用来扩召回」的本意相反：上面那组示例词（keywords `["machine learning","education"]` + synonyms `["ML","learning analytics"]`）照旧形状拼出来本馆只剩 **103** 条，按新形状拼是本馆 **15,776** / PC **2,651,547**。
+>
+> 同批实测还量到两条，编译时都必须守住：**大写 `OR` 才是运算符**（`machine OR learning` = 261,061 并集，而 `machine or learning` = 34,241 = 三词 AND），且**悬空或裸的 `OR` 让本馆返回 0**（`machine OR` / `OR machine` / `OR` 三者本馆均为 0；PC 侧不报错，而是静默退化成只剩其中一词、甚至匹配全库）。所以：只发大写 `OR`，任何一条编译分支都不许拼出两侧没有词的 `OR`。Primo 侧没有可用的分组或转义 —— `{machine learning}` 与 `(machine learning)` 本馆都是 34,241，与空格 AND 的基线一模一样。
 
 **只在「外部数据库块」生效的过滤**（`tlevel` / `attribute` 是 Primo Central 的 facet，本馆馆藏记录没有这两个维度，套到 `MyInstitution` 上会得到 0 或静默失效）：
 

@@ -265,7 +265,26 @@ def parse_natural(base_url: str, api_key: str, model: str, text: str, *,
 
 
 def build_q(parsed: dict) -> str:
-    """关键词 + 同义词 → Primo 的 q 参数。空的话给个合法兜底，上游才不 400。
+    """关键词保持 AND、同义词各自做一支「或」→ Primo 的 q 参数。空的话给个合法兜底，上游才不 400。
+
+    **空格在 `any,contains` 里是 AND**（2026-09-28 实测本馆：`machine` 81,797 →
+    `machine learning` 34,241 → `+deep` 9,664；PC 同向）。旧版把
+    `keywords + synonyms` 一律用空格拼起来，等于让每一个同义词**再收窄一次**，
+    与它「扩召回」的本意相反 —— 实测规格 §6 自己的那组示例词，照旧形状拼出来
+    本馆只剩 **103** 条。
+
+    契约：`"any,contains," + " ".join(keywords) + "".join(" OR " + s for s in synonyms)`；
+    关键词为空时同义词之间用 `" OR "` 相连。同一组示例词实测（本馆 / PC）：
+    **103 → 15,776** / 1,094 → 2,651,547。
+
+    **大写 `OR` 是运算符，小写不是**（实测 `machine OR learning` = 261,061 并集，
+    而 `machine or learning` = 34,241 = 三词 AND）。**悬空或裸的 `OR` 让本馆返回 0**
+    （`machine OR` / `OR machine` / `OR` 三者本馆均为 0；PC 侧不报错，静默退化成
+    只剩其中一词、甚至匹配全库）—— 所以每条分支都要保证 `OR` 两侧都有词。
+
+    **恰为 `OR` 的词直接丢**：大写会被当运算符，小写只是个收窄召回的字面量
+    （261,061 → 34,241）。没有可用的转义或分组 —— 实测 `{machine learning}` 与
+    `(machine learning)` 本馆都是 34,241，与空格 AND 的基线一模一样。
 
     **去重（保序）**：`parse_natural` 在 LLM 只给 synonyms 时会拿它顶上 keywords，
     却不清空来源字段（那份 parsed 还要原样回显给用户，不该被改），于是同一批词会
@@ -276,12 +295,24 @@ def build_q(parsed: dict) -> str:
     两边走同一个函数才能保证第 2 页的 q 与第 1 页**逐字节相同**（spec §8）。
     """
     seen: set[str] = set()
-    uniq: list[str] = []
-    for term in list(parsed.get("keywords") or []) + list(parsed.get("synonyms") or []):
-        if term not in seen:
-            seen.add(term)
-            uniq.append(term)
-    return "any,contains," + " ".join(uniq)
+
+    def _dedupe(terms: list[str]) -> list[str]:
+        out: list[str] = []
+        for term in terms:
+            if term.strip().upper() == "OR":
+                continue                  # 见 docstring：恰为 OR 的词只能丢
+            if term not in seen:
+                seen.add(term)
+                out.append(term)
+        return out
+
+    kws = _dedupe(parsed.get("keywords") or [])
+    syns = _dedupe(parsed.get("synonyms") or [])
+    if not kws:
+        # 没有关键词 ⇒ 同义词自己就是全部，彼此是「或」。这一支不能写成
+        # `" ".join(kws) + "".join(" OR " + s ...)`：那会拼出 `any,contains, OR a`。
+        return "any,contains," + " OR ".join(syns)
+    return "any,contains," + " ".join(kws) + "".join(" OR " + s for s in syns)
 
 
 def _surviving_rtypes(parsed: dict, scope: str) -> list[str]:
